@@ -554,6 +554,11 @@ kpcest_err_handler: Max errors exceeded..Closing connection
 
     @section ora_releasenotes Release Notes
 
+    @subsection oracle3_3_3 oracle Driver Version 3.3.3
+    - fixed array binds of strings with values 32K bytes or longer; in this case the values are all bound as CLOB
+      values
+      (<a href="https://github.com/qorelanguage/qore/issues/4899">issue 4899</a>)
+
     @subsection oracle3_3_2 oracle Driver Version 3.3.2
     - fixed building with \c qpp from %Qore 1.12.4+
 
