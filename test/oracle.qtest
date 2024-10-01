@@ -9,6 +9,8 @@
 %requires QUnit
 %requires oracle
 
+%requires BulkSqlUtil
+
 %exec-class OracleTest
 
 # Originally ODBC module test.
@@ -148,10 +150,13 @@ class OracleTest inherits QUnit::Test {
 
     private {
         *Datasource ds;
-        const tableName = "oracle_test_table";
+        const TableName = "oracle_test_table";
+        const BulkTableName = "oracle_bulk_test_table";
+        const BulkCount = 20;
     }
 
     constructor() : QUnit::Test("OracleTest", "1.0", \ARGV) {
+        addTestCase("bulk test", \bulkTest());
         addTestCase("Basic test", \basicTest());
         addTestCase("Types test", \typesTest());
         addTestCase("Timezone test", \timezoneTest());
@@ -176,7 +181,7 @@ class OracleTest inherits QUnit::Test {
     globalTearDown() {
         if (ds) {
             try {
-                ds.exec("DROP TABLE " + tableName);
+                ds.exec("DROP TABLE " + TableName);
             } catch (hash<ExceptionInfo> ex) {
                 if (ex.err != "DBI:ORACLE:OCI-ERROR")
                     rethrow;
@@ -195,49 +200,90 @@ class OracleTest inherits QUnit::Test {
 
         ds = new Datasource(connStr);
         ds.open();
-        if (m_options.verbose > 1) {
+        if (m_options.verbose > 2) {
             printf("serverVersion: %y\n", ds.getServerVersion());
             printf("clientVersion: %y\n", ds.getClientVersion());
         }
     }
 
-    basicTest() {
+    bulkTest() {
         try {
-            ds.exec("DROP TABLE " + tableName);
+            ds.exec("DROP TABLE " + BulkTableName);
         } catch (hash<ExceptionInfo> ex) {
             if (ex.err != "DBI:ORACLE:OCI-ERROR")
                 rethrow;
         }
         ds.commit();
-        assertEq(0, ds.exec("CREATE TABLE " + tableName + " (id int PRIMARY KEY, text varchar(128))"));
+        assertEq(0, ds.exec("CREATE TABLE " + BulkTableName + " (id int primary key, str clob, bin blob)"));
         ds.commit();
 
         on_exit {
-            ds.exec("DROP TABLE " + tableName);
+            ds.exec("DROP TABLE " + BulkTableName);
             ds.commit();
         }
 
-        assertEq(1, ds.exec("INSERT INTO " + tableName + " (id, text) VALUES (1, 'abcdef123456')"));
+        AbstractTable t = (new Table(ds, BulkTableName)).getTable();
+        {
+            string str = strmul('X', 64 * 1024);
+            binary bin = str.toBinary();
+
+            BulkInsertOperation ins(t);
+            on_error {
+                ins.discard();
+                ins.rollback();
+            }
+            on_success {
+                ins.flush();
+                ins.commit();
+            }
+
+            map ins.queueData({
+                "id": $1,
+                "str": str,
+                "bin": bin,
+            }), xrange(BulkCount);
+        }
+
+        assertEq(BulkCount, t.select().str.size());
+    }
+
+    basicTest() {
+        try {
+            ds.exec("DROP TABLE " + TableName);
+        } catch (hash<ExceptionInfo> ex) {
+            if (ex.err != "DBI:ORACLE:OCI-ERROR")
+                rethrow;
+        }
+        ds.commit();
+        assertEq(0, ds.exec("CREATE TABLE " + TableName + " (id int PRIMARY KEY, text varchar(128))"));
         ds.commit();
 
-        assertEq(1, ds.exec("INSERT INTO " + tableName + " (id, text) VALUES (%v, %v)", 2, "test 789 abc lorem ipsum"));
+        on_exit {
+            ds.exec("DROP TABLE " + TableName);
+            ds.commit();
+        }
+
+        assertEq(1, ds.exec("INSERT INTO " + TableName + " (id, text) VALUES (1, 'abcdef123456')"));
+        ds.commit();
+
+        assertEq(1, ds.exec("INSERT INTO " + TableName + " (id, text) VALUES (%v, %v)", 2, "test 789 abc lorem ipsum"));
         ds.commit();
 
         assertThrows("ORACLE-BIND-VALUE-ERROR", "Plain hash/list cannot be bound",
-            sub() { ds.exec("INSERT INTO " + tableName + " (id, text) VALUES (%v, %v)", 3, {}); });
+            sub() { ds.exec("INSERT INTO " + TableName + " (id, text) VALUES (%v, %v)", 3, {}); });
 
         assertThrows("DBI:ORACLE:OCI-ERROR", "invalid SQL statement", sub() { ds.exec("bla bla bla"); });
 
         hash results1 = {"id": (1, 2), "text": ("abcdef123456", "test 789 abc lorem ipsum")};
         list results2 = ({"id": 1, "text": "abcdef123456"}, {"id": 2, "text": "test 789 abc lorem ipsum"});
 
-        assertEq(results1, ds.exec("SELECT * FROM " + tableName));
-        assertEq(results1, ds.select("SELECT * FROM " + tableName));
-        assertEq(results2, ds.selectRows("SELECT * FROM " + tableName));
+        assertEq(results1, ds.exec("SELECT * FROM " + TableName));
+        assertEq(results1, ds.select("SELECT * FROM " + TableName));
+        assertEq(results2, ds.selectRows("SELECT * FROM " + TableName));
 
-        assertThrows("BIND-ERROR", \ds.select(), ("select * from " + tableName + " where id in (%v)", (1, 2)));
-        assertThrows("BIND-ERROR", \ds.selectRows(), ("select * from " + tableName + " where id in (%v)", (1, 2)));
-        assertThrows("BIND-ERROR", \ds.exec(), ("select * from " + tableName + " where id in (%v)", (1, 2)));
+        assertThrows("BIND-ERROR", \ds.select(), ("select * from " + TableName + " where id in (%v)", (1, 2)));
+        assertThrows("BIND-ERROR", \ds.selectRows(), ("select * from " + TableName + " where id in (%v)", (1, 2)));
+        assertThrows("BIND-ERROR", \ds.exec(), ("select * from " + TableName + " where id in (%v)", (1, 2)));
     }
 
     prepareTypesTest() {
@@ -268,7 +314,7 @@ class OracleTest inherits QUnit::Test {
 
     typesTest() {
         prepareTypesTest();
-        if (m_options.verbose > 1) {
+        if (m_options.verbose > 2) {
             printf("\n**************************\n");
             printf("The following columns and their types are tested in the 'types test':\n");
             foreach string col in (ColumnNamesAndTypes.iterator()) {
@@ -279,7 +325,7 @@ class OracleTest inherits QUnit::Test {
 
         ds.setOption("numeric-numbers", True);
         try {
-            ds.exec("DROP TABLE " + tableName);
+            ds.exec("DROP TABLE " + TableName);
         } catch (hash<ExceptionInfo> ex) {
             if (ex.err != "DBI:ORACLE:OCI-ERROR")
                 rethrow;
@@ -287,7 +333,7 @@ class OracleTest inherits QUnit::Test {
         ds.commit();
 
         string def = sprintf(" (%s)", foldl $1 + ", " + $2, ColumnNamesAndTypes);
-        assertEq(0, ds.exec("CREATE TABLE " + tableName + def));
+        assertEq(0, ds.exec("CREATE TABLE " + TableName + def));
         ds.commit();
 
         list arguments = ();
@@ -301,7 +347,7 @@ class OracleTest inherits QUnit::Test {
         valdef = valdef.substr(0, valdef.size()-1);
 
         SQLStatement stmt = new SQLStatement(ds);
-        stmt.prepare("INSERT INTO " + tableName + sprintf(" (%s) VALUES (", foldl $1 + ", " + $2, Columns.keys()) + valdef + ")");
+        stmt.prepare("INSERT INTO " + TableName + sprintf(" (%s) VALUES (", foldl $1 + ", " + $2, Columns.keys()) + valdef + ")");
         stmt.bindArgs(arguments);
         stmt.exec();
         stmt.commit();
@@ -314,7 +360,7 @@ class OracleTest inherits QUnit::Test {
                 expected_results{key} = expected_results{key}.values;
         }
 
-        hash actual_results = ds.exec("SELECT * FROM " + tableName);
+        hash actual_results = ds.exec("SELECT * FROM " + TableName);
 
         # on alpine linux treat the bindbl case separately
         if ((ENV.MACHTYPE ?? "").find("alpine") > -1) {
@@ -331,7 +377,7 @@ class OracleTest inherits QUnit::Test {
 
         assertEq(expected_results, actual_results);
 
-        ds.exec("DROP TABLE " + tableName);
+        ds.exec("DROP TABLE " + TableName);
         ds.commit();
     }
 
@@ -341,40 +387,40 @@ class OracleTest inherits QUnit::Test {
         tzDs.open();
 
         try {
-            tzDs.exec("DROP TABLE " + tableName);
+            tzDs.exec("DROP TABLE " + TableName);
         } catch (hash<ExceptionInfo> ex) {
             if (ex.err != "DBI:ORACLE:OCI-ERROR")
                 rethrow;
         }
         tzDs.commit();
 
-        assertEq(0, tzDs.exec("CREATE TABLE " + tableName + " (id int, t timestamp)"));
+        assertEq(0, tzDs.exec("CREATE TABLE " + TableName + " (id int, t timestamp)"));
         tzDs.commit();
 
-        assertEq(1, tzDs.exec("INSERT INTO " + tableName + " (id, t) VALUES (%v, %v)", 1, 2016-01-11T00:00:00Z));
+        assertEq(1, tzDs.exec("INSERT INTO " + TableName + " (id, t) VALUES (%v, %v)", 1, 2016-01-11T00:00:00Z));
         tzDs.commit();
-        assertEq(1, tzDs.exec("INSERT INTO " + tableName + " (id, t) VALUES (%v, %v)", 2, 2016-01-11T09:00:00+09:00));
+        assertEq(1, tzDs.exec("INSERT INTO " + TableName + " (id, t) VALUES (%v, %v)", 2, 2016-01-11T09:00:00+09:00));
         tzDs.commit();
 
         hash h = {"id": (1, 2), "t": (2016-01-11T09:00:00+09:00, 2016-01-11T09:00:00+09:00)};
-        assertEq(h, tzDs.select("SELECT * FROM " + tableName));
+        assertEq(h, tzDs.select("SELECT * FROM " + TableName));
 
         tzDs.close();
     }
 
     arrayBindTest() {
         try {
-            ds.exec("DROP TABLE " + tableName);
+            ds.exec("DROP TABLE " + TableName);
         } catch (hash<ExceptionInfo> ex) {
             if (ex.err != "DBI:ORACLE:OCI-ERROR")
                 rethrow;
         }
         ds.commit();
-        assertEq(0, ds.exec("CREATE TABLE " + tableName + " (id int, txt varchar(48))"));
+        assertEq(0, ds.exec("CREATE TABLE " + TableName + " (id int, txt varchar(48))"));
         ds.commit();
 
         SQLStatement stmt = new SQLStatement(ds);
-        stmt.prepare("INSERT INTO " + tableName + " (id, txt) VALUES (%v, %v)");
+        stmt.prepare("INSERT INTO " + TableName + " (id, txt) VALUES (%v, %v)");
 
         stmt.bindArgs((2, ("text", "abc", "lorem")));
         stmt.exec();
@@ -388,12 +434,12 @@ class OracleTest inherits QUnit::Test {
         stmt.commit();
 
         hash h = {"id": (2n, 2n, 2n, 4n, 5n, 6n), "txt": ("text", "abc", "lorem", "ipsum", "dolor", "sit")};
-        assertEq(h, ds.select("SELECT * FROM " + tableName));
+        assertEq(h, ds.select("SELECT * FROM " + TableName));
     }
 
     dateTest() {
         try {
-            ds.exec("DROP TABLE " + tableName);
+            ds.exec("DROP TABLE " + TableName);
         } catch (hash<ExceptionInfo> ex) {
             if (ex.err != "DBI:ORACLE:OCI-ERROR")
                 rethrow;
@@ -403,20 +449,20 @@ class OracleTest inherits QUnit::Test {
         date dt2 = 2017-11-11T20:09:54;
 
         ds.commit();
-        assertEq(0, ds.exec("create table " + tableName + " (dt date)"));
-        ds.exec("insert into %s (dt) values (%v)", tableName, dt1);
+        assertEq(0, ds.exec("create table " + TableName + " (dt date)"));
+        ds.exec("insert into %s (dt) values (%v)", TableName, dt1);
         ds.commit();
 
-        assertEq(("dt": dt1), ds.selectRow("select * from %s where dt = %v", tableName, dt1));
-        assertEq(1, ds.exec("update %s set dt = %v where dt = %v", tableName, dt2, dt1));
+        assertEq(("dt": dt1), ds.selectRow("select * from %s where dt = %v", TableName, dt1));
+        assertEq(1, ds.exec("update %s set dt = %v where dt = %v", TableName, dt2, dt1));
     }
 
     selectRowTest() {
         on_exit
             ds.rollback();
 
-        ds.exec("insert into %s (dt) values (%v)", tableName, now());
-        assertThrows("DBI-SELECT-ROW-ERROR", \ds.selectRow(), ("select * from %s", tableName));
+        ds.exec("insert into %s (dt) values (%v)", TableName, now());
+        assertThrows("DBI-SELECT-ROW-ERROR", \ds.selectRow(), ("select * from %s", TableName));
     }
 
     longTest() {
