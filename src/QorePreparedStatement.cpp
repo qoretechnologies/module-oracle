@@ -850,7 +850,8 @@ public:
                 assert(*xsink);
                 return -1;
             }
-            //printd(5, "%lu/%lu: descr: %p p: %p len: %lu\n", ind, l->size(), lhvec[ind], b->getPtr(), b->size());
+            //printd(5, "DynamicArrayBindBinaryGenericLob::setupBindImpl() %lu/%lu: descr: %p p: %p len: %lu\n", ind,
+            //    l->size(), lhvec[ind], b->getPtr(), b->size());
 
             // write the buffer data into the CLOB
             if (conn->writeLob(lhvec[ind], ptr, size, true,
@@ -862,14 +863,16 @@ public:
         bn.dtype = lob_type;
         bn.stmt.bindByPos(bn.bndp, pos, 0, sizeof(OCILobLocator*), lob_type, xsink, 0, OCI_DATA_AT_EXEC);
 
-        //printd(5, "DynamicArrayBindBinaryBlob::setupBind() this: %p size: %d\n", this, (int)l->size());
+        //printd(5, "DynamicArrayBindBinaryBlob::setupBind() this: %p size: %d (%s)\n", this, (int)l->size(),
+        //    lob_type == SQLT_BLOB ? "BLOB" : "CLOB");
         return 0;
     }
 
     DLLLOCAL virtual void bindCallbackImpl(OCIBind* bindp, ub4 iter, void** bufpp, ub4* alenp) {
         *bufpp = (void*)lhvec[iter];
         *alenp = 0;
-        //printd(5, "DynamicArrayBindBinaryBlob::bindCallbackImpl() ix: %d bufpp: %p (%p)\n", iter, bufpp, lhvec[iter]);
+        //printd(5, "DynamicArrayBindBinaryBlob::bindCallbackImpl() ix: %d bufpp: %p (%p)\n", iter, bufpp,
+        //    lhvec[iter]);
     }
 
     DLLLOCAL virtual int setupOutputBindImpl(OraBindNode& bn, int pos, ExceptionSink* xsink) {
