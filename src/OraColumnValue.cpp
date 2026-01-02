@@ -91,12 +91,12 @@ void OraColumnValue::del(ExceptionSink *xsink) {
 
         case SQLT_INTERVAL_YM:
             if (buf.oi)
-                OCIDescriptorFree(buf.odt, OCI_DTYPE_INTERVAL_YM);
+                OCIDescriptorFree(buf.oi, OCI_DTYPE_INTERVAL_YM);
             break;
 
         case SQLT_INTERVAL_DS:
             if (buf.oi)
-                OCIDescriptorFree(buf.odt, OCI_DTYPE_INTERVAL_DS);
+                OCIDescriptorFree(buf.oi, OCI_DTYPE_INTERVAL_DS);
             break;
 
         case SQLT_BIN:
