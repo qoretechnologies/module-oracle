@@ -148,13 +148,13 @@ public:
             ExceptionSink xsink;
             // remove object from list if reconnection fails
             if (o->reconnectSubscription(&xsink)) {
-               objects.erase(it);
+               it = objects.erase(it);
                if (objects.empty())
                   quit = true;
                aqCallbackThreadManager.dec();
+               o->qoreObject()->evalMethod("onSubscriptionLost", 0, &xsink);
+               continue;
             }
-
-            o->qoreObject()->evalMethod("onSubscriptionLost", 0, &xsink);
          }
 
          ++it;
@@ -427,7 +427,7 @@ bool AQQueuePriv::post(AQMessagePriv *message, ExceptionSink *xsink) {
 
     if (!OCI_MsgSetObject(&m_conn->ocilib, m, o, xsink)) {
        if (!*xsink)
-          xsink->raiseException("AQQUEUE-ERROR", "cannot se message object");
+          xsink->raiseException("AQQUEUE-ERROR", "cannot set message object");
        return false;
     }
 
