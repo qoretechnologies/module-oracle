@@ -396,6 +396,11 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
    e = checkerr(OCIAttrSet(usrhp, OCI_HTYPE_SESSION, (text *)pass.c_str(), pass.size(), OCI_ATTR_PASSWORD, errhp), "QoreOracleConnection::logon() Set password", xsink);
    if (e) return -1;
 
+   // Check for interrupt before server attach
+   if (qore_check_io_interrupt(xsink)) {
+      return -1;
+   }
+
    /* attach to the server - use default host? */
    e = checkerr(OCIServerAttach(srvhp, errhp, (text *)dblink.getBuffer(), dblink.size(), (ub4) OCI_DEFAULT), "QoreOracleConnection::logon() server attach", xsink);
    if (e) return -1;
@@ -403,6 +408,11 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
    /* set the server attribute in the service context */
    e = checkerr(OCIAttrSet(svchp, OCI_HTYPE_SVCCTX, srvhp, 0, OCI_ATTR_SERVER, errhp), "QoreOracleConnection::logon() server to service context", xsink);
    if (e) return -1;
+
+   // Check for interrupt before session begin
+   if (qore_check_io_interrupt(xsink)) {
+      return -1;
+   }
 
    /* log on */
    e = checkerr(OCISessionBegin(svchp, errhp, usrhp, OCI_CRED_RDBMS, OCI_DEFAULT), "QoreOracleConnection::logon() session begin", xsink);

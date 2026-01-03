@@ -140,7 +140,14 @@ QoreListNode* QoreOracleStatement::fetchRows(OraResultSet& resultset, int rows, 
     }
 
     // now finally fetch the data
+    int row_count = 0;
     while (next(xsink)) {
+        // Check for interrupt periodically during fetch (every 100 rows)
+        if ((row_count % 100) == 0 && qore_check_io_interrupt(xsink)) {
+            return nullptr;
+        }
+        ++row_count;
+
         QoreHashNode* h = fetchRow(resultset, xsink);
         if (!h) {
             return nullptr;

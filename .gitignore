@@ -47,3 +47,4 @@ docs/qlib/*.dox.h
 .cproject
 .project
 .settings/
+build/

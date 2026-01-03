@@ -2015,6 +2015,12 @@ QoreValue OraBindNode::getValue(bool horizontal, ExceptionSink* xsink) {
 
 int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oci_flags) {
     assert(conn.svchp);
+
+    // Check for interrupt before query execution
+    if (qore_check_io_interrupt(xsink)) {
+        return -1;
+    }
+
     ub4 iters;
     if (is_select) {
         iters = 0;
@@ -2031,6 +2037,11 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
         }
 
         assert(!*xsink);
+
+        // Check for interrupt before re-executing query after reconnection
+        if (qore_check_io_interrupt(xsink)) {
+            return -1;
+        }
 
         //printd(5, "QoreOracleStatement::execute() returned from OCILogon() status: %d\n", status);
         status = OCIStmtExecute(conn.svchp, stmthp, conn.errhp, iters, 0, 0, 0, OCI_DEFAULT | oci_flags);

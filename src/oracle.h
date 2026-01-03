@@ -29,6 +29,7 @@
 #include "oracle-config.h"
 #include "oracleobject.h"
 #include <qore/Qore.h>
+#include <qore/QoreSandboxManager.h>
 
 #include <vector>
 #include <string>
