@@ -440,11 +440,27 @@ int QoreOracleConnection::handleAlloc(void** hndlpp, unsigned type, const char* 
 }
 
 int QoreOracleConnection::commit(ExceptionSink* xsink) {
-   return checkerr(OCITransCommit(svchp, errhp, (ub4) 0), "QoreOracleConnection:commit()", xsink);
+   if (qore_check_io_interrupt(xsink)) {
+      return -1;
+   }
+   sword rc;
+   {
+      QoreOracleCancelHelper cancel_helper(svchp, errhp);
+      rc = OCITransCommit(svchp, errhp, (ub4) 0);
+   }
+   return checkerr(rc, "QoreOracleConnection:commit()", xsink);
 }
 
 int QoreOracleConnection::rollback(ExceptionSink* xsink) {
-   return checkerr(OCITransRollback(svchp, errhp, (ub4) 0), "QoreOracleConnection:rollback()", xsink);
+   if (qore_check_io_interrupt(xsink)) {
+      return -1;
+   }
+   sword rc;
+   {
+      QoreOracleCancelHelper cancel_helper(svchp, errhp);
+      rc = OCITransRollback(svchp, errhp, (ub4) 0);
+   }
+   return checkerr(rc, "QoreOracleConnection:rollback()", xsink);
 }
 
 DateTimeNode* QoreOracleConnection::getDate(OCIDate* dt) {
@@ -492,35 +508,63 @@ DateTimeNode* QoreOracleConnection::getTimestamp(bool get_tz, OCIDateTime *odt, 
 }
 
 BinaryNode *QoreOracleConnection::readBlob(OCILobLocator *lobp, ExceptionSink *xsink) {
+    // check for interrupt before LOB read
+    if (qore_check_io_interrupt(xsink)) {
+        return nullptr;
+    }
     // retrieve *LOB data
     void *dbuf = malloc(LOB_BLOCK_SIZE);
     ON_BLOCK_EXIT(free, dbuf);
     ub4 amt = 0;
 
     SimpleRefHolder<BinaryNode> b(new BinaryNode);
-    // read LOB data in streaming callback mode
-    if (checkerr(OCILobRead(svchp, errhp, lobp, &amt, 1, dbuf, LOB_BLOCK_SIZE, *b, readBlobCallback, 0, 0), "QoreOracleConnection::readBlob()", xsink))
+    // read LOB data in streaming callback mode with cancel helper for interruptibility
+    sword rc;
+    {
+        QoreOracleCancelHelper cancel_helper(svchp, errhp);
+        rc = OCILobRead(svchp, errhp, lobp, &amt, 1, dbuf, LOB_BLOCK_SIZE, *b, readBlobCallback, 0, 0);
+    }
+    if (checkerr(rc, "QoreOracleConnection::readBlob()", xsink))
         return nullptr;
     return b.release();
 }
 
 QoreStringNode *QoreOracleConnection::readClob(OCILobLocator *lobp, const QoreEncoding *enc, ExceptionSink *xsink) {
+    // check for interrupt before LOB read
+    if (qore_check_io_interrupt(xsink)) {
+        return nullptr;
+    }
     void *dbuf = malloc(LOB_BLOCK_SIZE);
     ON_BLOCK_EXIT(free, dbuf);
     ub4 amt = 0;
 
     QoreStringNodeHolder str(new QoreStringNode(enc));
-    // read LOB data in streaming callback mode
-    if (checkerr(OCILobRead(svchp, errhp, lobp, &amt, 1, dbuf, LOB_BLOCK_SIZE, *str, readClobCallback, (ub2)charsetid, 0), "QoreOracleConnection::readClob()", xsink))
+    // read LOB data in streaming callback mode with cancel helper for interruptibility
+    sword rc;
+    {
+        QoreOracleCancelHelper cancel_helper(svchp, errhp);
+        rc = OCILobRead(svchp, errhp, lobp, &amt, 1, dbuf, LOB_BLOCK_SIZE, *str, readClobCallback, (ub2)charsetid, 0);
+    }
+    if (checkerr(rc, "QoreOracleConnection::readClob()", xsink))
         return nullptr;
     return str.release();
 }
 
 int QoreOracleConnection::writeLob(OCILobLocator* lobp, void* bufp, oraub8 buflen, bool clob, const char* desc, ExceptionSink* xsink) {
+    // check for interrupt before LOB write
+    if (qore_check_io_interrupt(xsink)) {
+        return -1;
+    }
 #ifdef HAVE_OCILOBWRITE2
     oraub8 amtp = buflen;
-    if (buflen <= LOB_BLOCK_SIZE)
-        return checkerr(OCILobWrite2(svchp, errhp, lobp, &amtp, 0, 1, bufp, buflen, OCI_ONE_PIECE, 0, 0, charsetid, SQLCS_IMPLICIT), desc, xsink);
+    if (buflen <= LOB_BLOCK_SIZE) {
+        sword rc;
+        {
+            QoreOracleCancelHelper cancel_helper(svchp, errhp);
+            rc = OCILobWrite2(svchp, errhp, lobp, &amtp, 0, 1, bufp, buflen, OCI_ONE_PIECE, 0, 0, charsetid, SQLCS_IMPLICIT);
+        }
+        return checkerr(rc, desc, xsink);
+    }
 
     // retrieve *LOB data
     void* dbuf = malloc(LOB_BLOCK_SIZE);
@@ -528,6 +572,10 @@ int QoreOracleConnection::writeLob(OCILobLocator* lobp, void* bufp, oraub8 bufle
 
     oraub8 offset = 0;
     while (true) {
+        // check for interrupt periodically during chunked LOB write
+        if (offset && qore_check_io_interrupt(xsink)) {
+            return -1;
+        }
         ub1 piece;
         oraub8 len = buflen - offset;
         if (len > LOB_BLOCK_SIZE) {
@@ -543,7 +591,11 @@ int QoreOracleConnection::writeLob(OCILobLocator* lobp, void* bufp, oraub8 bufle
         // copy data to buffer
         memcpy(dbuf, ((char*)bufp) + offset, len);
 
-        sword rc = OCILobWrite2(svchp, errhp, lobp, &amtp, 0, 1, dbuf, len, piece, 0, 0, charsetid, SQLCS_IMPLICIT);
+        sword rc;
+        {
+            QoreOracleCancelHelper cancel_helper(svchp, errhp);
+            rc = OCILobWrite2(svchp, errhp, lobp, &amtp, 0, 1, dbuf, len, piece, 0, 0, charsetid, SQLCS_IMPLICIT);
+        }
         //printd(5, "QoreOracleConnection::writeLob() offset: "QLLD" len: "QLLD" amtp: "QLLD" total: "QLLD" rc: %d\n", offset, len, amtp, buflen, (int)rc);
         if (piece == OCI_LAST_PIECE) {
             if (rc != OCI_SUCCESS) {
@@ -561,8 +613,14 @@ int QoreOracleConnection::writeLob(OCILobLocator* lobp, void* bufp, oraub8 bufle
     }
 #else
     ub4 amtp = buflen;
-    if (buflen <= LOB_BLOCK_SIZE)
-        return checkerr(OCILobWrite(svchp, errhp, lobp, &amtp, 1, bufp, buflen, OCI_ONE_PIECE, 0, 0, charsetid, SQLCS_IMPLICIT), desc, xsink);
+    if (buflen <= LOB_BLOCK_SIZE) {
+        sword rc;
+        {
+            QoreOracleCancelHelper cancel_helper(svchp, errhp);
+            rc = OCILobWrite(svchp, errhp, lobp, &amtp, 1, bufp, buflen, OCI_ONE_PIECE, 0, 0, charsetid, SQLCS_IMPLICIT);
+        }
+        return checkerr(rc, desc, xsink);
+    }
 
     // retrieve *LOB data
     void* dbuf = malloc(LOB_BLOCK_SIZE);
@@ -570,6 +628,10 @@ int QoreOracleConnection::writeLob(OCILobLocator* lobp, void* bufp, oraub8 bufle
 
     ub4 offset = 0;
     while (true) {
+        // check for interrupt periodically during chunked LOB write
+        if (offset && qore_check_io_interrupt(xsink)) {
+            return -1;
+        }
         ub1 piece;
         ub4 len = buflen - offset;
         if (len > LOB_BLOCK_SIZE) {
@@ -585,7 +647,11 @@ int QoreOracleConnection::writeLob(OCILobLocator* lobp, void* bufp, oraub8 bufle
         // copy data to buffer
         memcpy(dbuf, ((char*)bufp) + offset, len);
 
-        sword rc = OCILobWrite(svchp, errhp, lobp, &amtp, 1, dbuf, len, piece, 0, 0, charsetid, SQLCS_IMPLICIT);
+        sword rc;
+        {
+            QoreOracleCancelHelper cancel_helper(svchp, errhp);
+            rc = OCILobWrite(svchp, errhp, lobp, &amtp, 1, dbuf, len, piece, 0, 0, charsetid, SQLCS_IMPLICIT);
+        }
         //printd(5, "QoreOracleConnection::writeLob() offset: "QLLD" len: "QLLD" amtp: "QLLD" total: "QLLD" rc: %d\n", offset, len, amtp, buflen, (int)rc);
         if (piece == OCI_LAST_PIECE) {
             if (rc != OCI_SUCCESS) {

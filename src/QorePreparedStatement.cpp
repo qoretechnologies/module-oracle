@@ -26,6 +26,38 @@
 #include <stdlib.h>
 #include <memory>
 
+//------------------------------------------------------------------------------
+// QoreOracleCancelHelper implementation
+//------------------------------------------------------------------------------
+
+QoreOracleCancelHelper::QoreOracleCancelHelper(OCISvcCtx* svchp, OCIError* errhp)
+    : svchp(svchp), errhp(errhp), sm(runtime_get_sandbox_manager()) {
+    if (sm && svchp && errhp) {
+        // Register cancel callback
+        sm->registerCancelCallback(this, [this]() -> bool {
+            // Load pointers atomically - they may be set to nullptr by destructor
+            OCISvcCtx* svc = this->svchp.load(std::memory_order_acquire);
+            OCIError* err = this->errhp.load(std::memory_order_acquire);
+            if (svc && err) {
+                // OCIBreak cancels the current OCI operation
+                sword status = OCIBreak(svc, err);
+                return status == OCI_SUCCESS;
+            }
+            return false;
+        });
+    }
+}
+
+QoreOracleCancelHelper::~QoreOracleCancelHelper() {
+    // Set pointers to nullptr atomically before unregistering to prevent
+    // use-after-free if a callback is currently being invoked
+    svchp.store(nullptr, std::memory_order_release);
+    errhp.store(nullptr, std::memory_order_release);
+    if (sm) {
+        sm->unregisterCancelCallback(this);
+    }
+}
+
 // OCI callback function for dynamic binds
 static sb4 ora_dynamic_bind_callback(void* ictxp, OCIBind* bindp, ub4 iter, ub4 index, void** bufpp, ub4* alenp,
         ub1* piecep, void** indp) {
@@ -2027,7 +2059,13 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
     } else {
         iters = !array_size ? 1 : array_size;
     }
-    int status = OCIStmtExecute(conn.svchp, stmthp, conn.errhp, iters, 0, 0, 0, OCI_DEFAULT | oci_flags);
+
+    int status;
+    {
+        // Register cancel callback for interruptible execution
+        QoreOracleCancelHelper cancel_helper(conn.svchp, conn.errhp);
+        status = OCIStmtExecute(conn.svchp, stmthp, conn.errhp, iters, 0, 0, 0, OCI_DEFAULT | oci_flags);
+    }
 
     //printd(5, "QoreOracleStatement::execute() stmthp: %p status: %d (OCI_ERROR: %d)\n", stmthp, status, OCI_ERROR);
     if (status == OCI_ERROR) {
@@ -2044,7 +2082,11 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
         }
 
         //printd(5, "QoreOracleStatement::execute() returned from OCILogon() status: %d\n", status);
-        status = OCIStmtExecute(conn.svchp, stmthp, conn.errhp, iters, 0, 0, 0, OCI_DEFAULT | oci_flags);
+        {
+            // Register cancel callback for interruptible execution (retry after reconnect)
+            QoreOracleCancelHelper cancel_helper(conn.svchp, conn.errhp);
+            status = OCIStmtExecute(conn.svchp, stmthp, conn.errhp, iters, 0, 0, 0, OCI_DEFAULT | oci_flags);
+        }
         if (status && conn.checkerr(status, who, xsink)) {
             return -1;
         }

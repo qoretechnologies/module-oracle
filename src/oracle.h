@@ -31,6 +31,7 @@
 #include <qore/Qore.h>
 #include <qore/QoreSandboxManager.h>
 
+#include <atomic>
 #include <vector>
 #include <string>
 
@@ -48,6 +49,26 @@
 #include "QoreOracleStatement.h"
 #include "QorePreparedStatement.h"
 #include "OraResultSet.h"
+
+//! RAII helper for Oracle statement cancellation
+/** Registers a cancel callback with the sandbox manager before blocking operations.
+    When requestInterrupt() is called, the callback will use OCIBreak() to cancel the operation.
+*/
+class QoreOracleCancelHelper {
+public:
+    DLLLOCAL QoreOracleCancelHelper(OCISvcCtx* svchp, OCIError* errhp);
+    DLLLOCAL ~QoreOracleCancelHelper();
+
+    // Non-copyable
+    QoreOracleCancelHelper(const QoreOracleCancelHelper&) = delete;
+    QoreOracleCancelHelper& operator=(const QoreOracleCancelHelper&) = delete;
+
+private:
+    // Use atomic pointers for thread safety with callback invocation
+    std::atomic<OCISvcCtx*> svchp;
+    std::atomic<OCIError*> errhp;
+    QoreSandboxManager* sm;
+};
 
 #define ORACLE_OBJECT "OracleObject"
 #define ORACLE_COLLECTION "OracleCollection"

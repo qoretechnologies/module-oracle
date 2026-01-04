@@ -59,8 +59,18 @@ int QoreOracleSimpleStatement::exec(const char* sql, unsigned len, ExceptionSink
         return -1;
     }
 
-    return conn.checkerr(OCIStmtExecute(conn.svchp, stmthp, conn.errhp, 1, 0, 0, 0, OCI_DEFAULT),
-        "QoreOracleSimpleStatement::exec", xsink);
+    // Check for interrupt before query execution
+    if (qore_check_io_interrupt(xsink)) {
+        return -1;
+    }
+
+    int status;
+    {
+        // Register cancel callback for interruptible execution
+        QoreOracleCancelHelper cancel_helper(conn.svchp, conn.errhp);
+        status = OCIStmtExecute(conn.svchp, stmthp, conn.errhp, 1, 0, 0, 0, OCI_DEFAULT);
+    }
+    return conn.checkerr(status, "QoreOracleSimpleStatement::exec", xsink);
 }
 
 QoreHashNode* QoreOracleStatement::fetchRow(OraResultSet& resultset, ExceptionSink* xsink) {
