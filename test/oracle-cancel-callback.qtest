@@ -1,0 +1,119 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+%new-style
+%enable-all-warnings
+%require-types
+%strict-args
+%no-child-restrictions
+
+%requires QUnit
+%requires oracle
+
+%exec-class OracleCancelCallbackTest
+
+#! Test Oracle cancel callback functionality for sandbox interruption
+class OracleCancelCallbackTest inherits QUnit::Test {
+    private {
+        *string connstr;
+    }
+
+    constructor() : QUnit::Test("OracleCancelCallbackTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE ?? shift ARGV;
+
+        if (!connstr) {
+            addTestCase("No database connection configured", \testNoDatabaseConfigured());
+        } else {
+            addTestCase("Oracle cancel callback test", \testOracleCancel());
+            addTestCase("Oracle blocked cancel test", \testOracleBlockedCancel());
+        }
+
+        set_return_value(main());
+    }
+
+    testNoDatabaseConfigured() {
+        testSkip("QORE_DB_CONNSTR_ORACLE not set; skipping cancel callback tests");
+    }
+
+    #! Test that Oracle operations can be cancelled via the cancel callback
+    testOracleCancel() {
+        SandboxManager sm();
+        Queue resultQueue();
+
+        Program p(PO_NO_CHILD_PO_RESTRICTIONS);
+        p.setSandboxManager(sm);
+        p.loadModule("oracle");
+
+        p.parse(sprintf("
+%%new-style
+%%require-types
+%%strict-args
+
+sub runQuery(Queue q, string connstr) {
+    Datasource ds(connstr);
+    ds.setAutoCommit(True);
+    q.push('connected');
+
+    try {
+        # DBMS_SESSION.SLEEP sleeps for the specified number of seconds
+        ds.exec('BEGIN DBMS_SESSION.SLEEP(10); END;');
+        q.push({'cancelled': False});
+    } catch (hash<ExceptionInfo> ex) {
+        q.push({'cancelled': True, 'err': ex.err, 'desc': ex.desc});
+    }
+}
+        ", "oracle_cancel"), "oracle_cancel_test");
+
+        background p.callFunction("runQuery", resultQueue, connstr);
+
+        auto connected = resultQueue.get(10s);
+        assertEq("connected", connected, "Connected to Oracle");
+
+        usleep(500ms);
+        sm.requestInterrupt();
+
+        hash<auto> result = resultQueue.get(5s);
+        assertEq(True, result.cancelled, "Oracle query was cancelled");
+        assertEq(True, exists result.err, "Exception was thrown: " + result.err);
+    }
+
+    #! Test Oracle cancel when query is blocked on server
+    testOracleBlockedCancel() {
+        SandboxManager sm();
+        Queue resultQueue();
+
+        Program p(PO_NO_CHILD_PO_RESTRICTIONS);
+        p.setSandboxManager(sm);
+        p.loadModule("oracle");
+
+        p.parse(sprintf("
+%%new-style
+%%require-types
+%%strict-args
+
+sub runBlockingQuery(Queue q, string connstr) {
+    Datasource ds(connstr);
+    ds.setAutoCommit(True);
+    q.push('connected');
+
+    try {
+        ds.exec('BEGIN DBMS_SESSION.SLEEP(60); END;');
+        q.push({'cancelled': False});
+    } catch (hash<ExceptionInfo> ex) {
+        q.push({'cancelled': True, 'err': ex.err});
+    }
+}
+        ", "oracle_blocked"), "oracle_blocked_test");
+
+        background p.callFunction("runBlockingQuery", resultQueue, connstr);
+
+        auto connected = resultQueue.get(10s);
+        assertEq("connected", connected, "Connected to Oracle");
+
+        usleep(1s);
+        sm.requestInterrupt();
+
+        hash<auto> result = resultQueue.get(5s);
+        assertEq(True, result.cancelled, "Blocked Oracle query was cancelled");
+    }
+}
