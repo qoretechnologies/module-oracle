@@ -36,22 +36,28 @@
 
 #include <memory>
 
-DLLEXPORT char qore_module_name[] = "oracle";
-DLLEXPORT char qore_module_version[] = PACKAGE_VERSION;
-DLLEXPORT char qore_module_description[] = "Oracle database driver";
-DLLEXPORT char qore_module_author[] = "David Nichols <david@qore.org>";
-DLLEXPORT char qore_module_url[] = "http://qore.org";
-DLLEXPORT int qore_module_api_major = QORE_MODULE_API_MAJOR;
-DLLEXPORT int qore_module_api_minor = QORE_MODULE_API_MINOR;
-DLLEXPORT qore_module_init_t qore_module_init = oracle_module_init;
-DLLEXPORT qore_module_ns_init_t qore_module_ns_init = oracle_module_ns_init;
-DLLEXPORT qore_module_delete_t qore_module_delete = oracle_module_delete;
-DLLEXPORT qore_license_t qore_module_license = QL_MIT;
-DLLEXPORT char qore_module_license_str[] = "MIT";
-
 void init_oracle_functions(QoreNamespace& ns);
 QoreClass* initAQMessageClass(QoreNamespace& ns);
 QoreClass* initAQQueueClass(QoreNamespace& ns);
+
+static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink);
+static void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink);
+static void oracle_module_delete();
+
+extern "C" DLLEXPORT void oracle_qore_module_desc(QoreModuleInfo& mod_info) {
+    mod_info.name = "oracle";
+    mod_info.version = PACKAGE_VERSION;
+    mod_info.desc = "Oracle database driver";
+    mod_info.author = "David Nichols <david@qore.org>";
+    mod_info.url = "http://qore.org";
+    mod_info.api_major = QORE_MODULE_API_MAJOR;
+    mod_info.api_minor = QORE_MODULE_API_MINOR;
+    mod_info.init = oracle_module_init;
+    mod_info.ns_init = oracle_module_ns_init;
+    mod_info.del = oracle_module_delete;
+    mod_info.license = QL_MIT;
+    mod_info.license_str = "MIT";
+}
 
 DBIDriver* DBID_ORACLE = nullptr;
 
@@ -346,7 +352,7 @@ static QoreValue oracle_opt_get(const Datasource* ds, const char* opt) {
 
 QoreNamespace OraNS("Qore::Oracle");
 
-QoreStringNode* oracle_module_init() {
+static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink) {
    QORE_TRACE("oracle_module_init()");
 
    init_oracle_functions(OraNS);
@@ -397,15 +403,13 @@ QoreStringNode* oracle_module_init() {
    methods.registerOption(DBI_OPT_TIMEZONE, "set the server-side timezone, value must be a string in the format accepted by Timezone::constructor() on the client (ie either a region name or a UTC offset like \"+01:00\"), if not set the server's time zone will be assumed to be the same as the client's", stringTypeInfo);
 
    DBID_ORACLE = DBI.registerDriver("oracle", methods, dbi_oracle_caps);
-
-   return 0;
 }
 
-void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns) {
+static void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink) {
    QORE_TRACE("oracle_module_ns_init()");
    qns->addInitialNamespace(OraNS.copy());
 }
 
-void oracle_module_delete() {
+static void oracle_module_delete() {
    QORE_TRACE("oracle_module_delete()");
 }

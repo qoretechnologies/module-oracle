@@ -24,8 +24,5 @@
 
 #define _QORE_ORACLE_MODULE_H
 
-QoreStringNode *oracle_module_init();
-void oracle_module_ns_init(QoreNamespace *rns, QoreNamespace *qns);
-void oracle_module_delete();
 
 #endif
