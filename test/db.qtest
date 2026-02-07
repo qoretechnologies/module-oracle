@@ -1,10 +1,7 @@
 #!/usr/bin/env qore
 # -*- mode: qore; indent-tabs-mode: nil -*-
 
-%new-style
-%enable-all-warnings
-%require-types
-%strict-args
+%modern
 
 %requires QUnit
 
@@ -277,7 +274,7 @@ public class DbTest inherits QUnit::Test {
             fail();
             ds.exec("delete from family where name = 'Test'");
         } catch (hash<ExceptionInfo> ex) {
-            assertTrue(True);
+            assertTrue(ex.err.val());
         }
         # signal parent thread to continue
         c.dec();

@@ -1,9 +1,6 @@
 #!/usr/bin/env qore
 
-%new-style
-%strict-args
-%require-types
-%enable-all-warnings
+%modern
 
 %requires oracle
 %requires ssh2

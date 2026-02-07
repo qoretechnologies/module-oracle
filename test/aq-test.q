@@ -1,6 +1,6 @@
 #!/usr/bin/env qore
 
-%new-style
+%modern
 %requires oracle
 
 const MSG_COUNT = 5;

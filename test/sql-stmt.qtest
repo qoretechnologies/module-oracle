@@ -1,10 +1,7 @@
 #!/usr/bin/env qore
 # -*- mode: qore; indent-tabs-mode: nil -*-
 
-%new-style
-%enable-all-warnings
-%require-types
-%strict-args
+%modern
 
 %disable-warning unreferenced-variable
 
@@ -167,7 +164,7 @@ public class SqlStmtTest inherits QUnit::Test {
             stmt.exec();
             fail();
         } catch (hash<ExceptionInfo> ex) {
-            assertTrue(True);
+            assertTrue(ex.err.val());
         }
 
         try {
@@ -176,7 +173,7 @@ public class SqlStmtTest inherits QUnit::Test {
             any rv = stmt.fetchColumns(-1);
             fail();
         } catch (hash<ExceptionInfo> ex) {
-            assertTrue(True);
+            assertTrue(ex.err.val());
         }
     }
 
