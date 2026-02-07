@@ -31,10 +31,10 @@
 //------------------------------------------------------------------------------
 
 QoreOracleCancelHelper::QoreOracleCancelHelper(OCISvcCtx* svchp, OCIError* errhp)
-    : svchp(svchp), errhp(errhp), sm(runtime_get_sandbox_manager()) {
-    if (sm && svchp && errhp) {
+    : svchp(svchp), errhp(errhp) {
+    if (smh && svchp && errhp) {
         // Register cancel callback
-        sm->registerCancelCallback(this, [this]() -> bool {
+        smh->registerCancelCallback(this, [this]() -> bool {
             // Load pointers atomically - they may be set to nullptr by destructor
             OCISvcCtx* svc = this->svchp.load(std::memory_order_acquire);
             OCIError* err = this->errhp.load(std::memory_order_acquire);
@@ -53,8 +53,8 @@ QoreOracleCancelHelper::~QoreOracleCancelHelper() {
     // use-after-free if a callback is currently being invoked
     svchp.store(nullptr, std::memory_order_release);
     errhp.store(nullptr, std::memory_order_release);
-    if (sm) {
-        sm->unregisterCancelCallback(this);
+    if (smh) {
+        smh->unregisterCancelCallback(this);
     }
 }
 

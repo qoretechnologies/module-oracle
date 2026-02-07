@@ -67,7 +67,7 @@ private:
     // Use atomic pointers for thread safety with callback invocation
     std::atomic<OCISvcCtx*> svchp;
     std::atomic<OCIError*> errhp;
-    QoreSandboxManager* sm;
+    QoreSandboxManagerHelper smh;
 };
 
 #define ORACLE_OBJECT "OracleObject"
