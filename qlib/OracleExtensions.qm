@@ -779,107 +779,106 @@ public class OracleDatasourceBase inherits Qore::SQL::AbstractDatasource, Oracle
         return m_ds.vselectRows(sql, elements argv ? argv[0] : NOTHING);
     }
 
-}
-
-#! Fill the attributes. @param userAutoInfo see @ref instrumentation_info_auto
-OracleDatasourceBase::constructor(*code userAutoInfo)
-    : OracleInstrumentationBase(userAutoInfo)
-{
-    userInfo = NOTHING;
-}
-
-#! Commit the transaction. Application info is cleared. DBMS_OUTPUT disabled.
-nothing OracleDatasourceBase::commit() {
-    # required to clear info
-    setAppInfo(NOTHING, False);
-    outputDisable();
-    m_ds.commit();
-}
-
-#! Rollback the transaction. Application info is cleared. DBMS_OUTPUT disabled.
-nothing OracleDatasourceBase::rollback() {
-    # required to clear info
-    setAppInfo(NOTHING, False);
-    outputDisable();
-    m_ds.rollback();
-}
-
-#! Set current OracleLongOps
-OracleDatasourceBase::setLongOpsProgress(OracleLongOps lo) {
-    hash res = m_ds.exec("declare
-        v_rindex     PLS_INTEGER := %v;
-        v_slno       PLS_INTEGER := %v;
-        v_obj        PLS_INTEGER;
-    BEGIN
-        --
-        if v_rindex is NULL then
-            v_rindex := DBMS_APPLICATION_INFO.set_session_longops_nohint;
-        end if;
-        --
-        DBMS_APPLICATION_INFO.set_session_longops(rindex  => v_rindex,
-                                          slno        => v_slno,
-                                          op_name     => %v,
-                                          target      => v_obj,
-                                          context     => %v,
-                                          sofar       => %v,
-                                          totalwork   => %v,
-                                          target_desc => %v,
-                                          units       => %v);
-        --
-        :out_rindex := v_rindex;
-        :out_slno := v_slno;
-        --
-    end;", lo.getRindex(), lo.getSlno(),
-           lo.op_name, lo.op_context, lo.sofar, lo.totalwork, lo.target_desc, lo.units,
-           Type::Int, Type::Int
-    );
-
-    if (!exists lo.getRindex())
-        lo.setRindex(res.out_rindex);
-    if (!exists lo.getSlno())
-        lo.setSlno(res.out_slno);
-}
-
-#! Explicitly enable DBMS_OUTPUT buffer
-OracleDatasourceBase::outputEnable(*int bufferSize) {
-    if (exists bufferSize && (bufferSize < 2000 || bufferSize > 1000000)) {
-        throw "ORACLE-SERVEROUTPUT-ERROR", sprintf("Buffer size has to be between 2000 and 1000000. Got: %d", bufferSize);
-    }
-    m_ds.exec("begin dbms_output.enable(%v); end;", bufferSize);
-}
-
-#! Explicitly close DBMS_OUTPUT buffer
-OracleDatasourceBase::outputDisable() {
-    if (m_ds.currentThreadInTransaction()) {
-        m_ds.exec("begin dbms_output.disable(); end;");
-    }
-}
-
-#! Append string to DBMS_OUTPUT buffer without end of line
-OracleDatasourceBase::outputPut(softstring text) {
-    outputEnable();
-    m_ds.exec("begin dbms_output.put(%v); end;", text);
-}
-
-#! Append string to DBMS_OUTPUT buffer with end of line
-OracleDatasourceBase::outputPutLine(softstring text) {
-    outputEnable();
-    m_ds.exec("begin dbms_output.put_line(%v); end;", text);
-}
-
-#! Get the DBMS_OUTPUT buffer
-*string OracleDatasourceBase::outputGet() {
-    int valid = 0;
-    string result;
-
-    while (valid == 0) {
-        hash res = m_ds.exec("begin dbms_output.get_line(:line, :valid); end;", Type::String, Type::Int);
-        valid = res.valid;
-        if (valid == 0)
-            result += res.line + "\n";
+    #! Fill the attributes. @param userAutoInfo see @ref instrumentation_info_auto
+    constructor(*code userAutoInfo)
+        : OracleInstrumentationBase(userAutoInfo)
+    {
+        userInfo = NOTHING;
     }
 
-    return result;
+    #! Commit the transaction. Application info is cleared. DBMS_OUTPUT disabled.
+    nothing commit() {
+        # required to clear info
+        setAppInfo(NOTHING, False);
+        outputDisable();
+        m_ds.commit();
+    }
+
+    #! Rollback the transaction. Application info is cleared. DBMS_OUTPUT disabled.
+    nothing rollback() {
+        # required to clear info
+        setAppInfo(NOTHING, False);
+        outputDisable();
+        m_ds.rollback();
+    }
+
+    #! Set current OracleLongOps
+    setLongOpsProgress(OracleLongOps lo) {
+        hash res = m_ds.exec("declare
+            v_rindex     PLS_INTEGER := %v;
+            v_slno       PLS_INTEGER := %v;
+            v_obj        PLS_INTEGER;
+        BEGIN
+            --
+            if v_rindex is NULL then
+                v_rindex := DBMS_APPLICATION_INFO.set_session_longops_nohint;
+            end if;
+            --
+            DBMS_APPLICATION_INFO.set_session_longops(rindex  => v_rindex,
+                                              slno        => v_slno,
+                                              op_name     => %v,
+                                              target      => v_obj,
+                                              context     => %v,
+                                              sofar       => %v,
+                                              totalwork   => %v,
+                                              target_desc => %v,
+                                              units       => %v);
+            --
+            :out_rindex := v_rindex;
+            :out_slno := v_slno;
+            --
+        end;", lo.getRindex(), lo.getSlno(),
+               lo.op_name, lo.op_context, lo.sofar, lo.totalwork, lo.target_desc, lo.units,
+               Type::Int, Type::Int
+        );
+
+        if (!exists lo.getRindex())
+            lo.setRindex(res.out_rindex);
+        if (!exists lo.getSlno())
+            lo.setSlno(res.out_slno);
+    }
+
+    #! Explicitly enable DBMS_OUTPUT buffer
+    outputEnable(*int bufferSize) {
+        if (exists bufferSize && (bufferSize < 2000 || bufferSize > 1000000)) {
+            throw "ORACLE-SERVEROUTPUT-ERROR", sprintf("Buffer size has to be between 2000 and 1000000. Got: %d", bufferSize);
+        }
+        m_ds.exec("begin dbms_output.enable(%v); end;", bufferSize);
+    }
+
+    #! Explicitly close DBMS_OUTPUT buffer
+    outputDisable() {
+        if (m_ds.currentThreadInTransaction()) {
+            m_ds.exec("begin dbms_output.disable(); end;");
+        }
+    }
+
+    #! Append string to DBMS_OUTPUT buffer without end of line
+    outputPut(softstring text) {
+        outputEnable();
+        m_ds.exec("begin dbms_output.put(%v); end;", text);
+    }
+
+    #! Append string to DBMS_OUTPUT buffer with end of line
+    outputPutLine(softstring text) {
+        outputEnable();
+        m_ds.exec("begin dbms_output.put_line(%v); end;", text);
+    }
+
+    #! Get the DBMS_OUTPUT buffer
+    *string outputGet() {
+        int valid = 0;
+        string result;
+
+        while (valid == 0) {
+            hash res = m_ds.exec("begin dbms_output.get_line(:line, :valid); end;", Type::String, Type::Int);
+            valid = res.valid;
+            if (valid == 0)
+                result += res.line + "\n";
+        }
+
+        return result;
+    }
 }
 
 #! OracleExtensions::OracleApplicationInfo holds user info for @ref instrumentation_info
@@ -1014,53 +1013,56 @@ sorted. It appears as the TARGET column of \c v$session_longops.
     return target;
 }
 
+    #! Do not use if you don't know what it is.
+    /** @retval *int rindex value
+
+    Rindex is a token which represents the \c v$session_longops row to
+    update. Set this to set_session_longops_nohint to start a new row.
+    Use the returned value from the prior call to reuse a row.
+     */
+    *int getRindex() {
+        return rindex;
+    }
+
+    #! Do not use if you don't know what it is.
+    /** @param i int a new value for rindex
+
+    Rindex is a token which represents the \c v$session_longops row to
+    update. Set this to set_session_longops_nohint to start a new row.
+    Use the returned value from the prior call to reuse a row.
+    */
+    setRindex(int i) {
+        if (!exists rindex) {
+            rindex = i;
+        } else {
+            throw "ORACLE-LONGOPS-ERROR", sprintf("Cannot set new value to rindex when there is already one set: %d", rindex);
+        }
+    }
+
+    #! Do not use if you don't know what it is.
+    /** @retval *int slno value
+
+        Slno saves information across calls to set_session_longops: It is
+        for internal use and should not be modified by the caller.
+     */
+    *int getSlno() {
+        return slno;
+    }
+
+    #! Do not use if you don't know what it is.
+    /** @param i int a new value for slno
+
+        Slno saves information across calls to set_session_longops: It is
+        for internal use and should not be modified by the caller.
+     */
+    setSlno(int i) {
+        if (!exists slno) {
+            slno = i;
+        } else {
+            throw "ORACLE-LONGOPS-ERROR", sprintf("Cannot set new value to slno when there is already one set: %d", slno);
+        }
+    }
 } # class OracleLongOps
-
-#! Do not use if you don't know what it is.
-/** @retval *int rindex value
-
-Rindex is a token which represents the \c v$session_longops row to
-update. Set this to set_session_longops_nohint to start a new row.
-Use the returned value from the prior call to reuse a row.
- */
-*int OracleLongOps::getRindex() {
-    return rindex;
-}
-#! Do not use if you don't know what it is.
-/** @param i int a new value for rindex
-
-Rindex is a token which represents the \c v$session_longops row to
-update. Set this to set_session_longops_nohint to start a new row.
-Use the returned value from the prior call to reuse a row.
-*/
-OracleLongOps::setRindex(int i) {
-    if (!exists rindex)
-        rindex = i;
-    else
-        throw "ORACLE-LONGOPS-ERROR", sprintf("Cannot set new value to rindex when there is already one set: %d", rindex);
-}
-
-#! Do not use if you don't know what it is.
-/** @retval *int rindex value
-
-    Slno saves information across calls to set_session_longops: It is
-    for internal use and should not be modified by the caller.
- */
-*int OracleLongOps::getSlno() {
-    return slno;
-}
-#! Do not use if you don't know what it is.
-/** @param i int a new value for slno
-
-    Slno saves information across calls to set_session_longops: It is
-    for internal use and should not be modified by the caller.
- */
-OracleLongOps::setSlno(int i) {
-    if (!exists slno)
-        slno = i;
-    else
-        throw "ORACLE-LONGOPS-ERROR", sprintf("Cannot set new value to slno when there is already one set: %d", slno);
-}
 
 
 #! OracleDatasourcePool class implementation
