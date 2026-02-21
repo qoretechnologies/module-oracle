@@ -41,10 +41,9 @@ class OracleCancelCallbackTest inherits QUnit::Test {
         p.setSandboxManager(sm);
         p.loadModule("oracle");
 
-        # Use a cross join of small CONNECT BY subqueries to create a massive result
-        # set without excessive memory usage. Each subquery generates 10000 rows,
-        # and the cross join produces 100M rows to count. This keeps the Oracle query
-        # executor actively processing, and OCIBreak can interrupt it.
+        # Use a cross join of CONNECT BY subqueries to create a massive result set
+        # without excessive memory usage. OCIBreak can interrupt the Oracle query
+        # executor during active processing.
         # DBMS_SESSION.SLEEP is not reliably interruptible by OCIBreak in Docker
         # environments (TCP OOB data limitations).
         p.parse(sprintf("
@@ -62,9 +61,9 @@ sub runQuery(Queue q, string connstr) {
 
     date start = now_us();
     try {
-        # cross join of two small subqueries: 10000 x 10000 = 100M rows to count
+        # cross join: 50000 x 50000 = 2.5B rows to count
         # memory-efficient since each subquery is small, but takes a very long time
-        ds.exec('select count(*) from (select level from dual connect by level <= 10000) a, (select level from dual connect by level <= 10000) b');
+        ds.exec('select count(*) from (select level from dual connect by level <= 50000) a, (select level from dual connect by level <= 50000) b');
         int elapsed_ms = (now_us() - start).durationMilliseconds();
         q.push({'cancelled': False, 'elapsed_ms': elapsed_ms});
     } catch (hash<ExceptionInfo> ex) {
@@ -79,8 +78,8 @@ sub runQuery(Queue q, string connstr) {
         auto connected = resultQueue.get(30s);
         assertEq("connected", connected, "Connected to Oracle");
 
-        # wait long enough for the query to be actively running on the server
-        usleep(2s);
+        # send interrupt quickly - the query should take many seconds
+        usleep(1s);
         sm.requestInterrupt();
 
         # wait for the result - cancel should complete within a few seconds
@@ -104,7 +103,7 @@ sub runQuery(Queue q, string connstr) {
         p.setSandboxManager(sm);
         p.loadModule("oracle");
 
-        # Use a cross join with different sizes for the second test
+        # Use a cross join with larger sizes for the second test
         p.parse(sprintf("
 %%new-style
 %%require-types
@@ -120,8 +119,8 @@ sub runBlockingQuery(Queue q, string connstr) {
 
     date start = now_us();
     try {
-        # cross join: 10000 x 20000 = 200M rows to count
-        ds.exec('select count(*) from (select level from dual connect by level <= 10000) a, (select level from dual connect by level <= 20000) b');
+        # cross join: 50000 x 100000 = 5B rows to count
+        ds.exec('select count(*) from (select level from dual connect by level <= 50000) a, (select level from dual connect by level <= 100000) b');
         int elapsed_ms = (now_us() - start).durationMilliseconds();
         q.push({'cancelled': False, 'elapsed_ms': elapsed_ms});
     } catch (hash<ExceptionInfo> ex) {
@@ -136,8 +135,8 @@ sub runBlockingQuery(Queue q, string connstr) {
         auto connected = resultQueue.get(30s);
         assertEq("connected", connected, "Connected to Oracle");
 
-        # wait long enough for the query to be actively running
-        usleep(3s);
+        # send interrupt quickly - the query should take many seconds
+        usleep(1s);
         sm.requestInterrupt();
 
         # wait for the result - cancel should complete within a few seconds
