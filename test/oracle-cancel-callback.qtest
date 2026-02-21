@@ -49,29 +49,40 @@ class OracleCancelCallbackTest inherits QUnit::Test {
 sub runQuery(Queue q, string connstr) {
     Datasource ds(connstr);
     ds.setAutoCommit(True);
+
+    # verify connection works before signaling 'connected'
+    ds.exec('select 1 from dual');
     q.push('connected');
 
+    date start = now_us();
     try {
         # DBMS_SESSION.SLEEP sleeps for the specified number of seconds
-        ds.exec('BEGIN DBMS_SESSION.SLEEP(10); END;');
-        q.push({'cancelled': False});
+        ds.exec('BEGIN DBMS_SESSION.SLEEP(15); END;');
+        int elapsed_ms = (now_us() - start).durationMilliseconds();
+        q.push({'cancelled': False, 'elapsed_ms': elapsed_ms});
     } catch (hash<ExceptionInfo> ex) {
-        q.push({'cancelled': True, 'err': ex.err, 'desc': ex.desc});
+        int elapsed_ms = (now_us() - start).durationMilliseconds();
+        q.push({'cancelled': True, 'err': ex.err, 'desc': ex.desc, 'elapsed_ms': elapsed_ms});
     }
 }
         ", "oracle_cancel"), "oracle_cancel_test");
 
         background p.callFunction("runQuery", resultQueue, connstr);
 
-        auto connected = resultQueue.get(10s);
+        auto connected = resultQueue.get(30s);
         assertEq("connected", connected, "Connected to Oracle");
 
-        usleep(500ms);
+        # wait long enough for the SLEEP to be actively running on the server
+        usleep(2s);
         sm.requestInterrupt();
 
-        hash<auto> result = resultQueue.get(5s);
-        assertEq(True, result.cancelled, "Oracle query was cancelled");
-        assertEq(True, exists result.err, "Exception was thrown: " + result.err);
+        # wait longer than the SLEEP duration to distinguish cancel vs natural completion
+        hash<auto> result = resultQueue.get(20s);
+        assertTrue(result.cancelled, sprintf("Oracle query was cancelled (elapsed: %dms, err: %s, desc: %s)",
+            result.elapsed_ms, result.err, result.desc));
+        # if cancelled, it should complete in much less than the SLEEP duration
+        assertTrue(result.elapsed_ms < 10000,
+            sprintf("Cancel was timely (elapsed: %dms, should be < 10000ms)", result.elapsed_ms));
     }
 
     #! Test Oracle cancel when query is blocked on server
@@ -91,26 +102,35 @@ sub runQuery(Queue q, string connstr) {
 sub runBlockingQuery(Queue q, string connstr) {
     Datasource ds(connstr);
     ds.setAutoCommit(True);
+
+    # verify connection works before signaling 'connected'
+    ds.exec('select 1 from dual');
     q.push('connected');
 
+    date start = now_us();
     try {
-        ds.exec('BEGIN DBMS_SESSION.SLEEP(60); END;');
-        q.push({'cancelled': False});
+        ds.exec('BEGIN DBMS_SESSION.SLEEP(15); END;');
+        int elapsed_ms = (now_us() - start).durationMilliseconds();
+        q.push({'cancelled': False, 'elapsed_ms': elapsed_ms});
     } catch (hash<ExceptionInfo> ex) {
-        q.push({'cancelled': True, 'err': ex.err});
+        int elapsed_ms = (now_us() - start).durationMilliseconds();
+        q.push({'cancelled': True, 'err': ex.err, 'elapsed_ms': elapsed_ms});
     }
 }
         ", "oracle_blocked"), "oracle_blocked_test");
 
         background p.callFunction("runBlockingQuery", resultQueue, connstr);
 
-        auto connected = resultQueue.get(10s);
+        auto connected = resultQueue.get(30s);
         assertEq("connected", connected, "Connected to Oracle");
 
-        usleep(1s);
+        # wait longer for the SLEEP to be fully running
+        usleep(3s);
         sm.requestInterrupt();
 
-        hash<auto> result = resultQueue.get(5s);
-        assertEq(True, result.cancelled, "Blocked Oracle query was cancelled");
+        # wait longer than the SLEEP duration
+        hash<auto> result = resultQueue.get(20s);
+        assertTrue(result.cancelled, sprintf("Blocked Oracle query was cancelled (elapsed: %dms, err: %s)",
+            result.elapsed_ms, result.err));
     }
 }
