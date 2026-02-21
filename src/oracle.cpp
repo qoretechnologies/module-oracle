@@ -90,11 +90,18 @@ static int oracle_rollback(Datasource* ds, ExceptionSink* xsink) {
 }
 
 static QoreValue oracle_exec(Datasource* ds, const QoreString* qstr, const QoreListNode* args, ExceptionSink* xsink) {
+    fprintf(stderr, "oracle_exec() sql: %.60s\n", qstr->c_str());
+    fflush(stderr);
     QorePreparedStatementHelper bg(ds, xsink);
 
-    if (bg.prepare(qstr, args, true, xsink))
+    if (bg.prepare(qstr, args, true, xsink)) {
+        fprintf(stderr, "oracle_exec() prepare failed\n");
+        fflush(stderr);
         return 0;
+    }
 
+    fprintf(stderr, "oracle_exec() calling execWithPrologue\n");
+    fflush(stderr);
     return bg.execWithPrologue(xsink, false);
 }
 
