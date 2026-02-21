@@ -41,9 +41,10 @@ class OracleCancelCallbackTest inherits QUnit::Test {
         p.setSandboxManager(sm);
         p.loadModule("oracle");
 
-        # Use a PL/SQL loop with short sleeps instead of a single long sleep.
-        # DBMS_SESSION.SLEEP is not immediately interruptible by OCIBreak - the
-        # break signal is only checked between PL/SQL statements, not during a sleep.
+        # Use a heavy SQL query that actively processes data - Cartesian joins keep
+        # the Oracle query executor busy, which checks for OCIBreak signals during
+        # active processing. DBMS_SESSION.SLEEP and PL/SQL loops are not reliably
+        # interruptible by OCIBreak in Docker environments (TCP OOB data limitations).
         p.parse(sprintf("
 %%new-style
 %%require-types
@@ -59,8 +60,9 @@ sub runQuery(Queue q, string connstr) {
 
     date start = now_us();
     try {
-        # loop with short sleeps so OCIBreak can interrupt between iterations
-        ds.exec('BEGIN FOR i IN 1..60 LOOP DBMS_SESSION.SLEEP(1); END LOOP; END;');
+        # Cartesian join on all_objects creates a very large result set that
+        # keeps the server actively processing; OCIBreak can interrupt this
+        ds.exec('select count(*) from all_objects a cross join all_objects b');
         int elapsed_ms = (now_us() - start).durationMilliseconds();
         q.push({'cancelled': False, 'elapsed_ms': elapsed_ms});
     } catch (hash<ExceptionInfo> ex) {
@@ -75,7 +77,7 @@ sub runQuery(Queue q, string connstr) {
         auto connected = resultQueue.get(30s);
         assertEq("connected", connected, "Connected to Oracle");
 
-        # wait long enough for the SLEEP loop to be actively running on the server
+        # wait long enough for the query to be actively running on the server
         usleep(2s);
         sm.requestInterrupt();
 
@@ -83,12 +85,12 @@ sub runQuery(Queue q, string connstr) {
         hash<auto> result = resultQueue.get(30s);
         assertTrue(result.cancelled, sprintf("Oracle query was cancelled (elapsed: %dms, err: %s, desc: %s)",
             result.elapsed_ms, result.err, result.desc));
-        # if cancelled via OCIBreak, it should complete well before the 60s loop duration
+        # if cancelled via OCIBreak, it should complete well before the query duration
         assertTrue(result.elapsed_ms < 15000,
             sprintf("Cancel was timely (elapsed: %dms, should be < 15000ms)", result.elapsed_ms));
     }
 
-    #! Test Oracle cancel when query is blocked on server
+    #! Test Oracle cancel when query is blocked on server with PL/SQL
     testOracleBlockedCancel() {
         SandboxManager sm();
         Queue resultQueue();
@@ -97,6 +99,7 @@ sub runQuery(Queue q, string connstr) {
         p.setSandboxManager(sm);
         p.loadModule("oracle");
 
+        # Use a recursive query that generates a huge number of rows
         p.parse(sprintf("
 %%new-style
 %%require-types
@@ -112,8 +115,9 @@ sub runBlockingQuery(Queue q, string connstr) {
 
     date start = now_us();
     try {
-        # loop with short sleeps so OCIBreak can interrupt between iterations
-        ds.exec('BEGIN FOR i IN 1..120 LOOP DBMS_SESSION.SLEEP(1); END LOOP; END;');
+        # CONNECT BY generates a massive recursive result set, keeping the
+        # server actively processing; OCIBreak can interrupt this
+        ds.exec('select count(*) from (select level from dual connect by level <= 100000000)');
         int elapsed_ms = (now_us() - start).durationMilliseconds();
         q.push({'cancelled': False, 'elapsed_ms': elapsed_ms});
     } catch (hash<ExceptionInfo> ex) {
@@ -128,7 +132,7 @@ sub runBlockingQuery(Queue q, string connstr) {
         auto connected = resultQueue.get(30s);
         assertEq("connected", connected, "Connected to Oracle");
 
-        # wait longer for the SLEEP loop to be fully running
+        # wait long enough for the query to be actively running
         usleep(3s);
         sm.requestInterrupt();
 
@@ -136,7 +140,7 @@ sub runBlockingQuery(Queue q, string connstr) {
         hash<auto> result = resultQueue.get(30s);
         assertTrue(result.cancelled, sprintf("Blocked Oracle query was cancelled (elapsed: %dms, err: %s)",
             result.elapsed_ms, result.err));
-        # if cancelled via OCIBreak, it should complete well before the 120s loop duration
+        # if cancelled via OCIBreak, it should complete well before the query duration
         assertTrue(result.elapsed_ms < 15000,
             sprintf("Blocked cancel was timely (elapsed: %dms, should be < 15000ms)", result.elapsed_ms));
     }
