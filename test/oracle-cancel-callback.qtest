@@ -41,10 +41,10 @@ class OracleCancelCallbackTest inherits QUnit::Test {
         p.setSandboxManager(sm);
         p.loadModule("oracle");
 
-        # Use a heavy SQL query that actively processes data - Cartesian joins keep
-        # the Oracle query executor busy, which checks for OCIBreak signals during
-        # active processing. DBMS_SESSION.SLEEP and PL/SQL loops are not reliably
-        # interruptible by OCIBreak in Docker environments (TCP OOB data limitations).
+        # Use a recursive query that generates a massive result set - this keeps
+        # the Oracle query executor actively processing, which checks for OCIBreak
+        # signals during execution. DBMS_SESSION.SLEEP is not reliably interruptible
+        # by OCIBreak in Docker environments (TCP OOB data limitations).
         p.parse(sprintf("
 %%new-style
 %%require-types
@@ -60,9 +60,9 @@ sub runQuery(Queue q, string connstr) {
 
     date start = now_us();
     try {
-        # Cartesian join on all_objects creates a very large result set that
-        # keeps the server actively processing; OCIBreak can interrupt this
-        ds.exec('select count(*) from all_objects a cross join all_objects b');
+        # CONNECT BY generates a massive recursive result set, keeping the
+        # server actively processing; OCIBreak can interrupt this
+        ds.exec('select count(*) from (select level from dual connect by level <= 999999999)');
         int elapsed_ms = (now_us() - start).durationMilliseconds();
         q.push({'cancelled': False, 'elapsed_ms': elapsed_ms});
     } catch (hash<ExceptionInfo> ex) {
