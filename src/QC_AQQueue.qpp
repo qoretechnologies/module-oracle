@@ -388,9 +388,6 @@ int AQQueuePriv::checkValidUnlocked(const char* m, ExceptionSink* xsink) {
 }
 
 bool AQQueuePriv::post(AQMessagePriv *message, ExceptionSink *xsink) {
-   // we have to dereference the message object when we return
-   ReferenceHolder<AQMessagePriv> mholder(message, xsink);
-
    AutoLocker al(l);
    if (checkValidUnlocked("post", xsink))
       return false;
@@ -840,7 +837,7 @@ AQQueue::copy() {
 /** @param msg a AQMessage instance
  */
 nothing AQQueue::post(AQMessage[AQMessagePriv] msg) {
-    priv->post(msg, xsink);
+    priv->post(*msg, xsink);
 }
 
 //! Post the plain Oracle object hash into the queue.
