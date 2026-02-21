@@ -32,19 +32,27 @@
 
 QoreOracleCancelHelper::QoreOracleCancelHelper(OCISvcCtx* svchp, OCIError* errhp)
     : svchp(svchp), errhp(errhp) {
+    fprintf(stderr, "QoreOracleCancelHelper::ctor smh: %d svchp: %p errhp: %p\n",
+        (bool)smh, (void*)svchp, (void*)errhp);
     if (smh && svchp && errhp) {
         // Register cancel callback
         smh->registerCancelCallback(this, [this]() -> bool {
+            fprintf(stderr, "QoreOracleCancelHelper: cancel callback invoked\n");
             // Load pointers atomically - they may be set to nullptr by destructor
             OCISvcCtx* svc = this->svchp.load(std::memory_order_acquire);
             OCIError* err = this->errhp.load(std::memory_order_acquire);
             if (svc && err) {
                 // OCIBreak cancels the current OCI operation
                 sword status = OCIBreak(svc, err);
+                fprintf(stderr, "QoreOracleCancelHelper: OCIBreak returned %d (OCI_SUCCESS=%d)\n",
+                    (int)status, (int)OCI_SUCCESS);
                 return status == OCI_SUCCESS;
             }
+            fprintf(stderr, "QoreOracleCancelHelper: cancel callback - null pointers svc: %p err: %p\n",
+                (void*)svc, (void*)err);
             return false;
         });
+        fprintf(stderr, "QoreOracleCancelHelper: cancel callback registered\n");
     }
 }
 
