@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -397,7 +397,7 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
    if (e) return -1;
 
    // Check for interrupt before server attach
-   if (qore_check_io_interrupt(xsink)) {
+   if (qore_check_cancel(xsink)) {
       return -1;
    }
 
@@ -410,7 +410,7 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
    if (e) return -1;
 
    // Check for interrupt before session begin
-   if (qore_check_io_interrupt(xsink)) {
+   if (qore_check_cancel(xsink)) {
       return -1;
    }
 
@@ -440,7 +440,7 @@ int QoreOracleConnection::handleAlloc(void** hndlpp, unsigned type, const char* 
 }
 
 int QoreOracleConnection::commit(ExceptionSink* xsink) {
-   if (qore_check_io_interrupt(xsink)) {
+   if (qore_check_cancel(xsink)) {
       return -1;
    }
    sword rc;
@@ -452,7 +452,7 @@ int QoreOracleConnection::commit(ExceptionSink* xsink) {
 }
 
 int QoreOracleConnection::rollback(ExceptionSink* xsink) {
-   if (qore_check_io_interrupt(xsink)) {
+   if (qore_check_cancel(xsink)) {
       return -1;
    }
    sword rc;
@@ -509,7 +509,7 @@ DateTimeNode* QoreOracleConnection::getTimestamp(bool get_tz, OCIDateTime *odt, 
 
 BinaryNode *QoreOracleConnection::readBlob(OCILobLocator *lobp, ExceptionSink *xsink) {
     // check for interrupt before LOB read
-    if (qore_check_io_interrupt(xsink)) {
+    if (qore_check_cancel(xsink)) {
         return nullptr;
     }
     // retrieve *LOB data
@@ -531,7 +531,7 @@ BinaryNode *QoreOracleConnection::readBlob(OCILobLocator *lobp, ExceptionSink *x
 
 QoreStringNode *QoreOracleConnection::readClob(OCILobLocator *lobp, const QoreEncoding *enc, ExceptionSink *xsink) {
     // check for interrupt before LOB read
-    if (qore_check_io_interrupt(xsink)) {
+    if (qore_check_cancel(xsink)) {
         return nullptr;
     }
     void *dbuf = malloc(LOB_BLOCK_SIZE);
@@ -552,7 +552,7 @@ QoreStringNode *QoreOracleConnection::readClob(OCILobLocator *lobp, const QoreEn
 
 int QoreOracleConnection::writeLob(OCILobLocator* lobp, void* bufp, oraub8 buflen, bool clob, const char* desc, ExceptionSink* xsink) {
     // check for interrupt before LOB write
-    if (qore_check_io_interrupt(xsink)) {
+    if (qore_check_cancel(xsink)) {
         return -1;
     }
 #ifdef HAVE_OCILOBWRITE2
@@ -573,7 +573,7 @@ int QoreOracleConnection::writeLob(OCILobLocator* lobp, void* bufp, oraub8 bufle
     oraub8 offset = 0;
     while (true) {
         // check for interrupt periodically during chunked LOB write
-        if (offset && qore_check_io_interrupt(xsink)) {
+        if (offset && qore_check_cancel(xsink)) {
             return -1;
         }
         ub1 piece;
@@ -629,7 +629,7 @@ int QoreOracleConnection::writeLob(OCILobLocator* lobp, void* bufp, oraub8 bufle
     ub4 offset = 0;
     while (true) {
         // check for interrupt periodically during chunked LOB write
-        if (offset && qore_check_io_interrupt(xsink)) {
+        if (offset && qore_check_cancel(xsink)) {
             return -1;
         }
         ub1 piece;

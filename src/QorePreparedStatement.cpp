@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2006 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2006 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -2049,7 +2049,7 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
     assert(conn.svchp);
 
     // Check for interrupt before query execution
-    if (qore_check_io_interrupt(xsink)) {
+    if (qore_check_cancel(xsink)) {
         return -1;
     }
 
@@ -2077,7 +2077,7 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
         assert(!*xsink);
 
         // Check for interrupt before re-executing query after reconnection
-        if (qore_check_io_interrupt(xsink)) {
+        if (qore_check_cancel(xsink)) {
             return -1;
         }
 
