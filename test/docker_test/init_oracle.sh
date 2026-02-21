@@ -1,6 +1,11 @@
 #!/bin/bash
 
 if [ -n "$DOCKER_ORACLE" ]; then
+    # default PDB for gvenzl/oracle-free image
+    if [ -z "$ORACLE_PDB" ]; then
+        ORACLE_PDB=FREEPDB1
+    fi
+
     echo "LISTENER = (ADDRESS = (PROTOCOL = TCP)(HOST = oracle)(PORT = 1521))" >> /usr/lib/oracle/tnsnames.ora
     echo "oracle =
 (DESCRIPTION =
@@ -14,10 +19,11 @@ if [ -n "$DOCKER_ORACLE" ]; then
 )" >> /usr/lib/oracle/tnsnames.ora
 
     # setup environment
-    echo export ORACLE_SID=omqsid >> /tmp/env.sh
-    echo export ORACLE_PDB=OMQPDB >> /tmp/env.sh
+    echo export ORACLE_SID=FREE >> /tmp/env.sh
+    echo export ORACLE_PDB=${ORACLE_PDB} >> /tmp/env.sh
     echo export ORACLE_PWD=omq >> /tmp/env.sh
-    echo export SYS_OMQ_DB_STRING=oracle:pdbadmin/omq@oracle >> /tmp/env.sh
+    echo export DOCKER_ORACLE=1 >> /tmp/env.sh
+    echo export SYS_OMQ_DB_STRING=oracle:system/omq@oracle >> /tmp/env.sh
     echo export QORE_DB_CONNSTR_ORACLE=oracle:omq/omq@oracle >> /tmp/env.sh
 
     . /tmp/env.sh
@@ -29,8 +35,17 @@ if [ -n "$DOCKER_ORACLE" ]; then
         status=$?
         if [ "$status" = "0" ]; then
             echo && echo "Oracle DB started."
-            echo "Waiting 10 seconds to let startup scripts prepare OMQ user and tablespaces."
-            sleep 10 && break
+            echo "Creating tablespaces and omq user..."
+            qore -ne "
+Datasource ds(\"${SYS_OMQ_DB_STRING}\");
+ds.exec(\"create tablespace omq_data datafile 'omq_data01.dbf' size 128M autoextend on next 64M\");
+ds.exec(\"create tablespace omq_index datafile 'omq_index01.dbf' size 64M autoextend on next 32M\");
+ds.exec(\"create user omq identified by omq default tablespace omq_data temporary tablespace temp\");
+ds.exec(\"grant create session, create procedure, create sequence, create table, create trigger, create type, create view, unlimited tablespace to omq\");
+ds.commit();
+"
+            echo "Oracle tablespaces and omq user created."
+            break
         elif [ $waited -eq 60 ]; then
             echo && echo "Waited too long for Oracle DB to start. Aborting build."
             exit 1

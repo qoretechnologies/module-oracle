@@ -18,6 +18,13 @@ variables:
 test-ubuntu:
   stage: test
   image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop
+  services:
+    - name: gvenzl/oracle-free:slim
+      alias: oracle
+      pull_policy: always
+  variables:
+    ORACLE_PASSWORD: omq
+    DOCKER_ORACLE: "1"
   script:
     - test/docker_test/init_oracle.sh
     - |
@@ -36,6 +43,13 @@ test-ubuntu:
 test-alpine:
   stage: test
   image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop-alpine
+  services:
+    - name: gvenzl/oracle-free:slim
+      alias: oracle
+      pull_policy: always
+  variables:
+    ORACLE_PASSWORD: omq
+    DOCKER_ORACLE: "1"
   script:
     - test/docker_test/init_oracle.sh
     - |

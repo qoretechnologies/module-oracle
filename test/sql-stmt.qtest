@@ -14,7 +14,7 @@ const OracleTableName = "oracle_sqlstmt_test_table";
 public class SqlStmtTest inherits QUnit::Test {
     private {
         *string connStr;
-        DatasourcePool ds;
+        *DatasourcePool ds;
     }
 
     constructor() : Test("SqlStmtTest", "1.1", \ARGV) {
@@ -31,16 +31,20 @@ public class SqlStmtTest inherits QUnit::Test {
     globalSetUp() {
         try {
             initDatasource();
+            if (!ds) {
+                return;
+            }
         } catch (hash<ExceptionInfo> ex) {
             printf("Exception happened during datasource pool initialization:\n%s: %s\n", ex.err, ex.desc);
-            exit(1);
+            delete ds;
+            return;
         }
 
         try {
             createTable();
         } catch (hash<ExceptionInfo> ex) {
             printf("Exception happened when creating test table:\n%s: %s\n", ex.err, ex.desc);
-            exit(1);
+            delete ds;
         }
     }
 
@@ -51,7 +55,7 @@ public class SqlStmtTest inherits QUnit::Test {
         connStr = ENV.QORE_DB_CONNSTR_ORACLE ? ENV.QORE_DB_CONNSTR_ORACLE : ENV.QORE_DB_CONNSTR;
         if (!connStr) {
             printf("No connection string set (QORE_DB_CONNSTR_ORACLE or QORE_DB_CONNSTR). Cannot run the tests.\n");
-            exit(1);
+            return;
         }
 
         ds = new DatasourcePool(connStr);
@@ -75,6 +79,9 @@ public class SqlStmtTest inherits QUnit::Test {
     }
 
     test1() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         SQLStatement insertStmt(ds);
         insertStmt.prepare("insert into " + OracleTableName + " values (%v, %v, %v, %v, %v)");
 
@@ -140,6 +147,9 @@ public class SqlStmtTest inherits QUnit::Test {
     }
 
     test2() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         SQLStatement stmt(ds);
         stmt.prepare("begin select sysdate into :dt from dual; end;");
 
@@ -157,6 +167,9 @@ public class SqlStmtTest inherits QUnit::Test {
     }
 
     test3() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         SQLStatement stmt(ds);
         stmt.prepare("select * from blahdf24g1df54g1df51sf5dg1dfsg5fd");
         try {
@@ -178,6 +191,9 @@ public class SqlStmtTest inherits QUnit::Test {
     }
 
     test4() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         SQLStatement deleteStmt(ds);
         deleteStmt.prepare("delete from " + OracleTableName);
 
@@ -199,6 +215,9 @@ public class SqlStmtTest inherits QUnit::Test {
     }
 
     test5() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         SQLStatement plsql(ds);
         plsql.prepare("
 declare

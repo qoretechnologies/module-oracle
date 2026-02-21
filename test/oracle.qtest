@@ -171,7 +171,7 @@ class OracleTest inherits QUnit::Test {
             initDatasource();
         } catch (hash<ExceptionInfo> ex) {
             printf("Exception happened during datasource initialization:\n%s: %s\n", ex.err, ex.desc);
-            exit(1);
+            delete ds;
         }
     }
 
@@ -192,7 +192,7 @@ class OracleTest inherits QUnit::Test {
         connStr = ENV.QORE_DB_CONNSTR_ORACLE ?? ENV.QORE_DB_CONNSTR;
         if (!connStr) {
             printf("No connection string set. Cannot run the tests.\n");
-            exit(1);
+            return;
         }
 
         ds = new Datasource(connStr);
@@ -204,6 +204,9 @@ class OracleTest inherits QUnit::Test {
     }
 
     bulkTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         try {
             ds.exec("DROP TABLE " + BulkTableName);
         } catch (hash<ExceptionInfo> ex) {
@@ -245,6 +248,9 @@ class OracleTest inherits QUnit::Test {
     }
 
     basicTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         try {
             ds.exec("DROP TABLE " + TableName);
         } catch (hash<ExceptionInfo> ex) {
@@ -310,6 +316,9 @@ class OracleTest inherits QUnit::Test {
     }
 
     typesTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         prepareTypesTest();
         if (m_options.verbose > 2) {
             printf("\n**************************\n");
@@ -379,6 +388,9 @@ class OracleTest inherits QUnit::Test {
     }
 
     timezoneTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         Datasource tzDs = new Datasource(connStr);
         tzDs.setOption("timezone", "Asia/Tokyo");
         tzDs.open();
@@ -406,6 +418,9 @@ class OracleTest inherits QUnit::Test {
     }
 
     arrayBindTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         try {
             ds.exec("DROP TABLE " + TableName);
         } catch (hash<ExceptionInfo> ex) {
@@ -435,6 +450,9 @@ class OracleTest inherits QUnit::Test {
     }
 
     dateTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         try {
             ds.exec("DROP TABLE " + TableName);
         } catch (hash<ExceptionInfo> ex) {
@@ -455,6 +473,9 @@ class OracleTest inherits QUnit::Test {
     }
 
     selectRowTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         on_exit
             ds.rollback();
 
@@ -463,6 +484,9 @@ class OracleTest inherits QUnit::Test {
     }
 
     longTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         *hash h = ds.selectRow("select * from all_views where view_name = %v", "ALL_CUBE_DEPENDENCIES");
         if (!h.text)
             testSkip("view not accessible");

@@ -85,7 +85,7 @@ const OracleTableName = "oracle_sqlstmt_test_table";
 public class DbTest inherits QUnit::Test {
     private {
         *string connStr;
-        Datasource ds;
+        *Datasource ds;
     }
 
     constructor() : Test("DbTest", "1.1", \ARGV) {
@@ -99,10 +99,14 @@ public class DbTest inherits QUnit::Test {
     globalSetUp() {
         try {
             ds = getNewDatasource();
+            if (!ds) {
+                return;
+            }
             ds.open();
         } catch (hash<ExceptionInfo> ex) {
             printf("Exception happened during datasource pool initialization:\n%s: %s\n", ex.err, ex.desc);
-            exit(1);
+            delete ds;
+            return;
         }
 
         printf("serverVersion: %y\nclientVersion: %y\n", ds.getServerVersion(), ds.getClientVersion());
@@ -111,21 +115,24 @@ public class DbTest inherits QUnit::Test {
             createDatamodel();
         } catch (hash<ExceptionInfo> ex) {
             printf("Exception happened when creating datamodel:\n%s: %s\n", ex.err, ex.desc);
-            exit(1);
+            delete ds;
         }
     }
 
     globalTearDown() {
+        if (!ds) {
+            return;
+        }
         try {
             dropTestDatamodel();
         } catch (hash<ExceptionInfo> ex) {} # ignore
     }
 
-    Datasource getNewDatasource() {
+    *Datasource getNewDatasource() {
         connStr = ENV.QORE_DB_CONNSTR_ORACLE ? ENV.QORE_DB_CONNSTR_ORACLE : ENV.QORE_DB_CONNSTR;
         if (!connStr) {
             printf("No connection string set (QORE_DB_CONNSTR_ORACLE or QORE_DB_CONNSTR). Cannot run the tests.\n");
-            exit(1);
+            return;
         }
         return new Datasource(connStr);
     }
@@ -222,6 +229,9 @@ public class DbTest inherits QUnit::Test {
     }
 
     contextTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         # first we select all the data from the tables and then use
         # context statements to order the output hierarchically
 
@@ -281,6 +291,9 @@ public class DbTest inherits QUnit::Test {
     }
 
     transactionTest() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
         Datasource ndb = getNewDatasource();
         any r;
 
