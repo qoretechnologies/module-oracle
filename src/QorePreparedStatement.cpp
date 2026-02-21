@@ -32,32 +32,19 @@
 
 QoreOracleCancelHelper::QoreOracleCancelHelper(OCISvcCtx* svchp, OCIError* errhp)
     : svchp(svchp), errhp(errhp) {
-    fprintf(stderr, "QoreOracleCancelHelper::ctor smh: %d svchp: %p errhp: %p\n",
-        (bool)smh, (void*)svchp, (void*)errhp);
-    fflush(stderr);
     if (smh && svchp && errhp) {
         // Register cancel callback
         smh->registerCancelCallback(this, [this]() -> bool {
-            fprintf(stderr, "QoreOracleCancelHelper: cancel callback invoked\n");
-            fflush(stderr);
             // Load pointers atomically - they may be set to nullptr by destructor
             OCISvcCtx* svc = this->svchp.load(std::memory_order_acquire);
             OCIError* err = this->errhp.load(std::memory_order_acquire);
             if (svc && err) {
                 // OCIBreak cancels the current OCI operation
                 sword status = OCIBreak(svc, err);
-                fprintf(stderr, "QoreOracleCancelHelper: OCIBreak returned %d (OCI_SUCCESS=%d)\n",
-                    (int)status, (int)OCI_SUCCESS);
-                fflush(stderr);
                 return status == OCI_SUCCESS;
             }
-            fprintf(stderr, "QoreOracleCancelHelper: cancel callback - null pointers svc: %p err: %p\n",
-                (void*)svc, (void*)err);
-            fflush(stderr);
             return false;
         });
-        fprintf(stderr, "QoreOracleCancelHelper: cancel callback registered\n");
-        fflush(stderr);
     }
 }
 
@@ -2061,13 +2048,8 @@ QoreValue OraBindNode::getValue(bool horizontal, ExceptionSink* xsink) {
 int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oci_flags) {
     assert(conn.svchp);
 
-    fprintf(stderr, "QorePreparedStatement::execute() who: %s svchp: %p\n", who, (void*)conn.svchp);
-    fflush(stderr);
-
     // Check for interrupt before query execution
     if (qore_check_cancel(xsink)) {
-        fprintf(stderr, "QorePreparedStatement::execute() interrupted before exec who: %s\n", who);
-        fflush(stderr);
         return -1;
     }
 
@@ -2082,11 +2064,7 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
     {
         // Register cancel callback for interruptible execution
         QoreOracleCancelHelper cancel_helper(conn.svchp, conn.errhp);
-        fprintf(stderr, "QorePreparedStatement::execute() calling OCIStmtExecute who: %s\n", who);
-        fflush(stderr);
         status = OCIStmtExecute(conn.svchp, stmthp, conn.errhp, iters, 0, 0, 0, OCI_DEFAULT | oci_flags);
-        fprintf(stderr, "QorePreparedStatement::execute() OCIStmtExecute returned %d who: %s\n", status, who);
-        fflush(stderr);
     }
 
     //printd(5, "QoreOracleStatement::execute() stmthp: %p status: %d (OCI_ERROR: %d)\n", stmthp, status, OCI_ERROR);
