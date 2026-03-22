@@ -49,7 +49,7 @@ ds.commit();
         elif [ $waited -eq 60 ]; then
             echo && echo "Waited too long for Oracle DB to start. Aborting build."
             exit 1
-        elif ! echo "$out" | grep -E "QoreOracleConnection::logon.*ORA-(01033|12514)" > /dev/null 2>&1; then
+        elif ! echo "$out" | grep -E "QoreOracleConnection::logon.*ORA-(01033|12514|12541)" > /dev/null 2>&1; then
             echo "Error in Oracle initialization:"
             echo "$out"
             exit 1
