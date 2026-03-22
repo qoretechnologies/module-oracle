@@ -362,7 +362,7 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
 
 int QoreOracleConnection::doException(const char *query_name, text errbuf[], sb4 errcode, ExceptionSink *xsink) {
     // add ORA-xxxxx code to exception in arg hash in the "alterr" key
-    QoreHashNode* arg = new QoreHashNode;
+    QoreHashNode* arg = new QoreHashNode(autoTypeInfo);
     arg->setKeyValue("alterr", new QoreStringNodeMaker("OCI-%05d", (int)errcode), xsink);
     if (query_name)
        xsink->raiseExceptionArg("DBI:ORACLE:OCI-ERROR", arg, "%s@%s: %s: %s", ds.getUsername(), ds.getDBName(), query_name, remove_trailing_newlines((char *)errbuf));

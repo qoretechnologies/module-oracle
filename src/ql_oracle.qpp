@@ -53,7 +53,7 @@ my hash $res = $ds.exec("begin qore_test.do_simple_inout(:ostr, :oint, :odt); en
     @endcode
  */
 hash bindInOut(auto value, *string type) [flags=CONSTANT] {
-    QoreHashNode *h = new QoreHashNode;
+    QoreHashNode *h = new QoreHashNode(autoTypeInfo);
     if (type)
        h->setKeyValue("type", type->refSelf(), xsink);
     h->setKeyValue("value", value.refSelf(), xsink);
@@ -75,7 +75,7 @@ $db.exec("insert into object_table (obj) values (%v)", bindOracleObject("MY_OBJE
     @endcode
  */
 hash bindOracleObject(string tname, hash<auto> values) [flags=CONSTANT] {
-    QoreHashNode* h = new QoreHashNode;
+    QoreHashNode* h = new QoreHashNode(autoTypeInfo);
     h->setKeyValue("type", new QoreStringNode(ORACLE_OBJECT), xsink);
     h->setKeyValue("^oratype^", tname->refSelf(), xsink);
     h->setKeyValue("^values^", values->refSelf(), xsink);
@@ -95,7 +95,7 @@ my hash $h = $db.exec("begin my_pkg.get_obj(:retval); end;", placeholderOracleOb
     @endcode
  */
 hash placeholderOracleObject(string tname) [flags=CONSTANT] {
-    QoreHashNode* h = new QoreHashNode;
+    QoreHashNode* h = new QoreHashNode(autoTypeInfo);
     h->setKeyValue("type", new QoreStringNode(ORACLE_OBJECT), xsink);
     h->setKeyValue("value", tname->refSelf(), xsink);
     return h;
@@ -116,7 +116,7 @@ $db.exec("insert into object_table (obj) values (%v)", bindOracleObject("MY_OBJE
     @endcode
  */
 hash bindOracleCollection(string tname, list<auto> values) [flags=CONSTANT] {
-    QoreHashNode * h = new QoreHashNode;
+    QoreHashNode * h = new QoreHashNode(autoTypeInfo);
     h->setKeyValue("type", new QoreStringNode(ORACLE_COLLECTION), xsink);
     h->setKeyValue("^oratype^", tname->refSelf(), xsink);
     h->setKeyValue("^values^", values->refSelf(), xsink);
@@ -136,7 +136,7 @@ my hash $h = $db.exec("begin my_pkg.get_collection(:retval); end;", placeholderO
     @endcode
  */
 hash placeholderOracleCollection(string tname) [flags=CONSTANT] {
-    QoreHashNode * h = new QoreHashNode;
+    QoreHashNode * h = new QoreHashNode(autoTypeInfo);
     h->setKeyValue("type", new QoreStringNode(ORACLE_COLLECTION), xsink);
     h->setKeyValue("value", tname->refSelf(), xsink);
     return h;

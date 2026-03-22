@@ -81,7 +81,7 @@ QoreHashNode* QoreOracleStatement::fetchRow(OraResultSet& resultset, ExceptionSi
     }
 
     // set up hash for row
-    ReferenceHolder<QoreHashNode> h(new QoreHashNode, xsink);
+    ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
 
     // copy data or perform per-value processing if needed
     for (clist_t::iterator i = resultset.clist.begin(), e = resultset.clist.end(); i != e; ++i) {
@@ -133,7 +133,7 @@ QoreListNode* QoreOracleStatement::fetchRows(OraResultSet& resultset, int rows, 
         return nullptr;
     }
 
-    ReferenceHolder<QoreListNode> l(new QoreListNode, xsink);
+    ReferenceHolder<QoreListNode> l(new QoreListNode(autoTypeInfo), xsink);
 
     if (fetch_complete) {
         fetch_warned = true;
@@ -224,7 +224,7 @@ void QoreOracleStatement::doColumns(OraResultSet& resultset, QoreHashNode& h) {
     // create hash elements for each column, assign empty list
     for (clist_t::iterator i = resultset.clist.begin(), e = resultset.clist.end(); i != e; ++i) {
         //printd(5, "QoreOracleStatement::fetchColumns() allocating list for '%s' column\n", w->name);
-        h.setKeyValue((*i)->name.c_str(), new QoreListNode, 0);
+        h.setKeyValue((*i)->name.c_str(), new QoreListNode(autoTypeInfo), 0);
     }
 }
 
@@ -246,7 +246,7 @@ QoreHashNode* QoreOracleStatement::fetchColumns(OraResultSet& resultset, int row
     }
 
     // allocate result hash for result value
-    ReferenceHolder<QoreHashNode> h(new QoreHashNode, xsink);
+    ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
 
     if (fetch_complete) {
         assert(!cols);
@@ -294,7 +294,7 @@ QoreHashNode* QoreOracleStatement::fetchColumns(OraResultSet& resultset, int row
                         QoreStringMaker tmp("%s_%d", w->name.c_str(), num);
                         al = h->getKeyValue(tmp.c_str(), xsink).get<QoreListNode>();
                         if (!al) {
-                            al = new QoreListNode;
+                            al = new QoreListNode(autoTypeInfo);
                             h->setKeyValue(tmp.c_str(), al, xsink);
                             break;
                         }
@@ -335,7 +335,7 @@ QoreHashNode* QoreOracleStatement::fetchColumns(OraResultSet& resultset, int row
 
 QoreHashNode* QoreOracleStatement::describe(OraResultSet& resultset, ExceptionSink* xsink) {
     // set up hash for row
-    ReferenceHolder<QoreHashNode> h(new QoreHashNode, xsink);
+    ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
     QoreString namestr("name");
     QoreString maxsizestr("maxsize");
     QoreString typestr("type");
@@ -347,7 +347,7 @@ QoreHashNode* QoreOracleStatement::describe(OraResultSet& resultset, ExceptionSi
     // copy data or perform per-value processing if needed
     for (clist_t::iterator i = resultset.clist.begin(), e = resultset.clist.end(); i != e; ++i) {
         OraColumnBuffer *w = *i;
-        ReferenceHolder<QoreHashNode> col(new QoreHashNode, xsink);
+        ReferenceHolder<QoreHashNode> col(new QoreHashNode(autoTypeInfo), xsink);
         col->setKeyValue(namestr, new QoreStringNode(w->name), xsink);
         col->setKeyValue(internalstr, w->dtype, xsink);
         switch (w->dtype) {

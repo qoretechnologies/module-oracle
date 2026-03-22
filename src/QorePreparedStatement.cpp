@@ -440,7 +440,7 @@ public:
     }
 
     DLLLOCAL virtual AbstractQoreNode* getOutputValueImpl(ExceptionSink* xsink, OraBindNode& bn, bool destructive) {
-        ReferenceHolder<QoreListNode> l(new QoreListNode, xsink);
+        ReferenceHolder<QoreListNode> l(new QoreListNode(autoTypeInfo), xsink);
         assert(ind_list.size() == strvec.size());
         const QoreEncoding* enc = bn.stmt.getEncoding();
         for (unsigned i = 0; i < strvec.size(); ++i) {
@@ -2443,7 +2443,7 @@ void QorePreparedStatement::parseQuery(const QoreListNode* args, ExceptionSink* 
 }
 
 QoreHashNode* QorePreparedStatement::getOutputHash(bool rows, ExceptionSink* xsink) {
-    ReferenceHolder<QoreHashNode> h(new QoreHashNode, xsink);
+    ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
 
     for (node_list_t::iterator i = node_list.begin(), e = node_list.end(); i != e; ++i) {
         //printd(5, "QorePreparedStatement::getOutputHash() this: %p i: %p '%s' (%s) dtype: %d\n", this, *i,

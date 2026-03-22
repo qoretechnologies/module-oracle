@@ -627,7 +627,7 @@ const char* get_typinf_name(OCI_Object* obj) {
 }
 
 QoreHashNode* objToQore(QoreOracleConnection* conn, OCI_Object* obj, ExceptionSink* xsink) {
-    ReferenceHolder<QoreHashNode> rv(new QoreHashNode, xsink);
+    ReferenceHolder<QoreHashNode> rv(new QoreHashNode(autoTypeInfo), xsink);
 
     int n = OCI_TypeInfoGetColumnCount2(&conn->ocilib, obj->typinf);
     if (!n) {
@@ -1354,7 +1354,7 @@ const char* get_typinf_name(OCI_Coll* obj) {
 }
 
 QoreListNode* collToQore(QoreOracleConnection* conn, OCI_Coll* obj, ExceptionSink *xsink) {
-    ReferenceHolder<QoreListNode> rv(new QoreListNode, xsink);
+    ReferenceHolder<QoreListNode> rv(new QoreListNode(autoTypeInfo), xsink);
 
     int count = OCI_CollGetSize2(&conn->ocilib, obj, xsink);
     if (*xsink)
