@@ -1,5 +1,5 @@
 
-cmake_minimum_required(VERSION 3.0.0)
+cmake_minimum_required(VERSION 3.5.0)
 
 project(qore-oracle-module VERSION 3.3.3)
 
