@@ -4,6 +4,7 @@
 #include "config.h"
 #include <qore/Qore.h>
 #include <map>
+#include <string>
 #include "ocilib.h"
 #include "ocilib_types.h"
 
@@ -33,7 +34,7 @@ boolean OCI_CollGetStruct
 // return NTY object type - ORACLE_COLLECTION or ORACLE_OBJECT
 // should be called id it's sure it's a NTY (after ntyCheckType()
 // and/or in SQLT_NTY cases
-const char * ntyHashType(const QoreHashNode * n);
+std::string ntyHashType(const QoreHashNode * n);
 
 // check if is provided hash required NTY object
 bool ntyCheckType(const char * tname, const QoreHashNode * n, qore_type_t t);

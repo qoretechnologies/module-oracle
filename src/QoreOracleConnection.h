@@ -263,7 +263,7 @@ public:
         }
         if (!strcasecmp(opt, DBI_OPT_TIMEZONE)) {
             assert(val.getType() == NT_STRING);
-            const QoreStringNode* str = val.get<const QoreStringNode>();
+            QoreStringValueHelper str(val);
             const AbstractQoreZoneInfo* tz = find_create_timezone(str->c_str(), xsink);
             if (*xsink)
                 return -1;

@@ -27,6 +27,7 @@
 #include "AQQueuePriv.h"
 
 #include <memory>
+#include <string>
 
 // handle external (oracle) threads for qore/aq
 class AQCallbackThreadManager {
@@ -190,16 +191,19 @@ void on_async_message(OCI_Dequeue* deq) {
    reinterpret_cast<QoreObject*>(deq->user_ctx)->evalMethod("onAsyncMessage", 0, &xsink);
 }
 
-const char* check_hash_key(const QoreHashNode* h, const char* key, const char* err, ExceptionSink *xsink) {
+bool check_hash_key(const QoreHashNode* h, const char* key, const char* err, std::string& value,
+        ExceptionSink *xsink) {
     QoreValue p = h->getKeyValue(key);
     if (p.isNothing())
-        return nullptr;
+        return false;
 
     if (p.getType() != NT_STRING) {
         xsink->raiseException(err, "'%s' key is not type 'string' but is type '%s'", key, p.getTypeName());
-        return nullptr;
+        return false;
     }
-    return p.get<const QoreStringNode>()->c_str();
+    QoreStringValueHelper str(p);
+    value.assign(str->c_str(), str->size());
+    return true;
 }
 
 AQQueuePriv::AQQueuePriv(Datasource *ds, const QoreStringNode *tname, const QoreStringNode *qname, ExceptionSink *xsink)
@@ -706,11 +710,13 @@ static int ds_set_options(Datasource& ds, const QoreHashNode* opts, ExceptionSin
 static void aqqueue_constructor_hash(const QoreStringNode* queueName, const QoreStringNode* typeName, const QoreHashNode* opts, QoreObject* self, ExceptionSink* xsink) {
     static const char *DSC_ERR = "AQQUEUE-CONSTRUCTOR-ERROR";
 
-    const char* str = check_hash_key(opts, "type", DSC_ERR, xsink);
+    std::string str;
+    bool has_str = check_hash_key(opts, "type", DSC_ERR, str, xsink);
     if (*xsink) return;
 
-    if (str && strcmp(str, "oracle")) {
-        xsink->raiseException(DSC_ERR, "if the 'type' key is present, then it must be 'oracle'; value provided: '%s'", str);
+    if (has_str && str != "oracle") {
+        xsink->raiseException(DSC_ERR, "if the 'type' key is present, then it must be 'oracle'; value provided: '%s'",
+            str.c_str());
         return;
     }
 
@@ -720,25 +726,25 @@ static void aqqueue_constructor_hash(const QoreStringNode* queueName, const Qore
 
     std::unique_ptr<Datasource> ds(new Datasource(db_driver));
 
-    str = check_hash_key(opts, "user", DSC_ERR, xsink);
+    has_str = check_hash_key(opts, "user", DSC_ERR, str, xsink);
     if (*xsink) return;
-    if (str) ds->setPendingUsername(str);
+    if (has_str) ds->setPendingUsername(str.c_str());
 
-    str = check_hash_key(opts, "pass", DSC_ERR, xsink);
+    has_str = check_hash_key(opts, "pass", DSC_ERR, str, xsink);
     if (*xsink) return;
-    if (str) ds->setPendingPassword(str);
+    if (has_str) ds->setPendingPassword(str.c_str());
 
-    str = check_hash_key(opts, "db", DSC_ERR, xsink);
+    has_str = check_hash_key(opts, "db", DSC_ERR, str, xsink);
     if (*xsink) return;
-    if (str) ds->setPendingDBName(str);
+    if (has_str) ds->setPendingDBName(str.c_str());
 
-    str = check_hash_key(opts, "charset", DSC_ERR, xsink);
+    has_str = check_hash_key(opts, "charset", DSC_ERR, str, xsink);
     if (*xsink) return;
-    if (str) ds->setPendingDBEncoding(str);
+    if (has_str) ds->setPendingDBEncoding(str.c_str());
 
-    str = check_hash_key(opts, "host", DSC_ERR, xsink);
+    has_str = check_hash_key(opts, "host", DSC_ERR, str, xsink);
     if (*xsink) return;
-    if (str) ds->setPendingHostName(str);
+    if (has_str) ds->setPendingHostName(str.c_str());
 
     bool found;
     int port = (int)opts->getKeyAsBigInt("port", found);

@@ -128,14 +128,15 @@ int OraBindNode::setPlaceholder(QoreValue v, ExceptionSink* xsink) {
                 t.getTypeName());
             return -1;
         }
-        const QoreStringNode* str = t.get<const QoreStringNode>();
+        QoreStringValueHelper str(t);
 
         //QoreStringValueHelper strdebug(v);
         //printd(5, "OraBindNode::setPlaceholder() adding placeholder name=%s, size=%d, type=%s, value=%s\n",
         //  tstr.c_str(), size, str->c_str(), strdebug->c_str());
         setPlaceholderIntern(size, str->c_str(), xsink);
     } else if (vtype == NT_STRING) {
-        setPlaceholderIntern(-1, (v.get<const QoreStringNode>())->c_str(), xsink);
+        QoreStringValueHelper str(v);
+        setPlaceholderIntern(-1, str->c_str(), xsink);
     } else if (vtype == NT_INT) {
         setPlaceholderIntern(v.getAsBigInt(), "string", xsink);
     } else {
@@ -371,15 +372,15 @@ public:
             assert(!ind_list[li.index()]);
 
             if (t == NT_STRING) {
-                const QoreStringNode* str = n.get<const QoreStringNode>();
-                if (in_only && (str->getEncoding() == enc)) {
+                QoreStringValueHelper str(n);
+                if (in_only && !str.is_temp() && (str->getEncoding() == enc)) {
                     if (str->size() + 1 > max)
                         max = str->size() + 1;
                     strvec.setStatic(str->c_str());
                     alen_list[li.index()] = str->size() + 1;
                 } else {
                     // convert to the db encoding
-                    TempEncodingHelper nstr(str, enc, xsink);
+                    TempEncodingHelper nstr(*str, enc, xsink);
                     if (*xsink)
                         return -1;
                     if (nstr->size() + 1 > max)
@@ -983,16 +984,16 @@ public:
 
     DLLLOCAL virtual int getBindData(void*& ptr, size_t& size, const QoreValue& n, const QoreEncoding* enc,
             ExceptionSink* xsink) {
-        const QoreStringNode* str = n.get<const QoreStringNode>();
+        QoreStringValueHelper str(n);
 
-        if (str->getEncoding() == enc) {
+        if (!str.is_temp() && str->getEncoding() == enc) {
             ptr = (void*)str->c_str();
             size = str->size();
             return 0;
         }
 
         // convert to the db encoding
-        TempEncodingHelper nstr(str, enc, xsink);
+        TempEncodingHelper nstr(*str, enc, xsink);
         if (*xsink) {
             return -1;
         }
@@ -1293,15 +1294,18 @@ void OraBindNode::bindListValue(ExceptionSink* xsink, int pos, QoreValue v, bool
             }
 
             case NT_STRING: {
-                const QoreStringNode* bstr = v.get<const QoreStringNode>();
+                QoreStringNodeValueHelper bstr(v);
                 if (bstr->getEncoding() != stmt.getEncoding()) {
                     QoreStringNode* tmp = bstr->convertEncoding(stmt.getEncoding(), xsink);
                     if (*xsink)
                         return;
                     buf.arraybind = new DynamicSingleValueString(tmp, true);
                 }
-                else
-                    buf.arraybind = new DynamicSingleValueString(const_cast<QoreStringNode*>(bstr), false);
+                else if (bstr.is_temp()) {
+                    buf.arraybind = new DynamicSingleValueString(bstr.getReferencedValue(), true);
+                } else {
+                    buf.arraybind = new DynamicSingleValueString(const_cast<QoreStringNode*>(*bstr), false);
+                }
                 break;
             }
 
@@ -1352,7 +1356,8 @@ void OraBindNode::bindListValue(ExceptionSink* xsink, int pos, QoreValue v, bool
                             if (n.getType() != NT_STRING) {
                                 continue;
                             }
-                            if (n.get<const QoreStringNode>()->size() >= 32768) {
+                            QoreStringValueHelper str(n);
+                            if (str->size() >= 32768) {
                                 clob = true;
                                 break;
                             }
@@ -1445,12 +1450,12 @@ void OraBindNode::bindValue(ExceptionSink* xsink, int pos, QoreValue v, bool in_
     }
 
     if (ntype == NT_STRING) {
-        const QoreStringNode* bstr = v.get<const QoreStringNode>();
+        QoreStringValueHelper bstr(v);
 
         qore_size_t len;
 
         // convert to target encoding if necessary
-        TempEncodingHelper nstr(bstr, stmt.getEncoding(), xsink);
+        TempEncodingHelper nstr(*bstr, stmt.getEncoding(), xsink);
         if (*xsink)
             return;
 
@@ -1637,7 +1642,7 @@ void OraBindNode::bindValue(ExceptionSink* xsink, int pos, QoreValue v, bool in_
             return;
         }
 
-        const QoreStringNode* t = qv.get<const QoreStringNode>();
+        QoreStringValueHelper t(qv);
         if (t->compare(ORACLE_OBJECT) == 0) {
             //printd(5, "binding hash as an oracle object\n");
             subdtype = SQLT_NTY_OBJECT;
@@ -1923,9 +1928,11 @@ void OraBindNode::bindPlaceholder(int pos, ExceptionSink* xsink) {
         // Qorus #802 Oracle NTY binding by placeholder ends with BIND-ERROR: type 'OracleCollection' is not
         // supported for SQL binding by value and placeholder (eg IN OUT)
         switch (value.getType()) {
-            case NT_STRING:
-                buf.oraObj = objPlaceholderQore(conn, value.get<QoreStringNode>()->c_str(), xsink); // IN
+            case NT_STRING: {
+                QoreStringValueHelper str(value);
+                buf.oraObj = objPlaceholderQore(conn, str->c_str(), xsink); // IN
                 break;
+            }
             case NT_HASH: {
                 const QoreHashNode* h = value.get<QoreHashNode>();
                 if (h->existsKey("^values^"))
@@ -1958,9 +1965,11 @@ void OraBindNode::bindPlaceholder(int pos, ExceptionSink* xsink) {
         // Qorus #802 Oracle NTY binding by placeholder ends with BIND-ERROR: type 'OracleCollection' is not
         // supported for SQL binding by value and placeholder (eg IN OUT)
         switch (value.getType()) {
-            case NT_STRING:
-                buf.oraColl = collPlaceholderQore(conn, value.get<QoreStringNode>()->c_str(), xsink); // IN
+            case NT_STRING: {
+                QoreStringValueHelper str(value);
+                buf.oraColl = collPlaceholderQore(conn, str->c_str(), xsink); // IN
                 break;
+            }
             case NT_HASH: {
                 const QoreHashNode* h = value.get<QoreHashNode>();
                 if (h->existsKey("^values^"))

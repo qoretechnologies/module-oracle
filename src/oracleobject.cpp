@@ -79,17 +79,18 @@ boolean OCI_API OCI_CollGetStruct(OCI_Library* pOCILib, OCI_Coll* obj, void** pp
 // return NTY object type - ORACLE_COLLECTION or ORACLE_OBJECT
 // should be called id it's sure it's a NTY (after ntyCheckType()
 // and/or in SQLT_NTY cases
-const char* ntyHashType(const QoreHashNode* n) {
+std::string ntyHashType(const QoreHashNode* n) {
     if (!n) {
-        return nullptr;
+        return {};
     }
 
     QoreValue qv = n->getKeyValue("type");
     if (qv.getType() != NT_STRING) {
-        return nullptr;
+        return {};
     }
 
-    return qv.get<const QoreStringNode>()->c_str();
+    QoreStringValueHelper str(qv);
+    return std::string(str->c_str(), str->size());
 }
 
 // check if is the hash really oracle NTY object
@@ -105,9 +106,9 @@ bool ntyCheckType(const char * tname, const QoreHashNode * n, qore_type_t t) {
     }
 
 //     printf("ntyCheckType() ^oratype^ %s\n", s->getBuffer());
-    const char* givenName = ntyHashType(n);
+    std::string givenName = ntyHashType(n);
 //     printf("ntyCheckType(%s, %s) strcmp(givenName, tname) != 0 => %d\n", givenName, tname, strcmp(givenName, tname) != 0);
-    return givenName && (strcmp(givenName, tname) == 0);
+    return !givenName.empty() && !strcmp(givenName.c_str(), tname);
 }
 
 OCI_Object* objPlaceholderQore(QoreOracleConnection * conn, const char * tname, ExceptionSink *xsink) {
@@ -192,7 +193,8 @@ OCI_Object* objBindQore(QoreOracleConnection * d, const QoreHashNode * h, Except
     }
 
     const QoreHashNode* th = h->getKeyValue("^values^").get<const QoreHashNode>();
-    const char* tname = h->getKeyValue("^oratype^").get<const QoreStringNode>()->c_str();
+    QoreStringValueHelper tname_holder(h->getKeyValue("^oratype^"));
+    const char* tname = tname_holder->c_str();
 
     OCI_TypeInfo * info = OCI_TypeInfoGet2(&d->ocilib, d->ocilib_cn, tname, OCI_TIF_TYPE, xsink);
     if (!info) {
@@ -282,7 +284,7 @@ OCI_Object* objBindQore(QoreOracleConnection * d, const QoreHashNode * h, Except
             case SQLT_NUM: {
                 switch (val.getType()) {
                    case NT_STRING: {
-                        const QoreStringNode* str = val.get<const QoreStringNode>();
+                        QoreStringValueHelper str(val);
                         if (!OCI_ObjectSetNumberFromString(&d->ocilib, *obj, cname, str->getBuffer(), (int)str->size(), xsink)) {
                             if (!*xsink)
                                 xsink->raiseException("BIND-NTY-ERROR", "NUMBER: unable to assign a string value to object attribute %s.%s", tname, cname);
@@ -557,8 +559,8 @@ OCI_Object* objBindQore(QoreOracleConnection * d, const QoreHashNode * h, Except
 #endif
             case SQLT_NTY: {
                 const QoreHashNode* n = val.getType() == NT_HASH ? val.get<const QoreHashNode>() : nullptr;
-                const char *t = ntyHashType(n);
-                if (t && !strcmp(t, ORACLE_OBJECT)) {
+                std::string t = ntyHashType(n);
+                if (t == ORACLE_OBJECT) {
                     ObjectHolder o(&d->ocilib, objBindQore(d, n, xsink), xsink);
                     if (!o) {
                         assert(*xsink);
@@ -566,11 +568,12 @@ OCI_Object* objBindQore(QoreOracleConnection * d, const QoreHashNode * h, Except
                     }
                     if (!OCI_ObjectSetObject2(&d->ocilib, *obj, cname, *o, xsink)) {
                         if (!*xsink)
-                            xsink->raiseException("BIND-NTY-ERROR", "unable to bind object of type '%s' to attribute %s.%s", t, tname, cname);
+                            xsink->raiseException("BIND-NTY-ERROR", "unable to bind object of type '%s' to attribute %s.%s",
+                                t.c_str(), tname, cname);
                         return nullptr;
                     }
                 }
-                else if (t && !strcmp(t, ORACLE_COLLECTION)) {
+                else if (t == ORACLE_COLLECTION) {
                     CollHolder o(&d->ocilib, collBindQore(d, n, xsink), xsink);
                     if (!o) {
                         assert(*xsink);
@@ -937,13 +940,15 @@ OCI_Coll* collBindQore(QoreOracleConnection * d, const QoreHashNode * h, Excepti
    }
 
    const QoreListNode* th = h->getKeyValue("^values^").get<const QoreListNode>();
-   const char* tname = h->getKeyValue("^oratype^").get<const QoreStringNode>()->c_str();
+   QoreStringValueHelper tname_holder(h->getKeyValue("^oratype^"));
+   const char* tname = tname_holder->c_str();
 
    OCI_TypeInfo * info = OCI_TypeInfoGet2(&d->ocilib, d->ocilib_cn, tname, OCI_TIF_TYPE, xsink);
    if (!info) {
       if (!*xsink)
          xsink->raiseException("BIND-NTY-ERROR",
-                               "No type '%s' defined in the DB while attempting to bind a collection", tname);
+                               "No type '%s' defined in the DB while attempting to bind a collection",
+                               tname);
       return 0;
    }
 
@@ -1018,7 +1023,7 @@ OCI_Coll* collBindQore(QoreOracleConnection * d, const QoreHashNode * h, Excepti
          case SQLT_NUM:
             switch (val.getType()) {
                case NT_STRING: {
-                  const QoreStringNode* str = val.get<const QoreStringNode>();
+                  QoreStringValueHelper str(val);
                   if (!OCI_ElemSetNumberFromString(&d->ocilib, e, str->getBuffer(), (int)str->size(), xsink)) {
                      if (!*xsink)
                         xsink->raiseException("BIND-NTY-ERROR", "NUMBER: unable to assign a string value to element for collection '%s'", tname);
@@ -1283,20 +1288,21 @@ OCI_Coll* collBindQore(QoreOracleConnection * d, const QoreHashNode * h, Excepti
 #endif
          case SQLT_NTY: {
             const QoreHashNode * n = val.getType() == NT_HASH ? val.get<const QoreHashNode>() : nullptr;
-            const char * t = ntyHashType(n);
-            if (t && !strcmp(t, ORACLE_OBJECT)) {
+            std::string t = ntyHashType(n);
+            if (t == ORACLE_OBJECT) {
                ObjectHolder o(&d->ocilib, objBindQore(d, n, xsink), xsink);
                if (!o) {
                   assert(*xsink);
                   return 0;
                }
-               if (!OCI_ElemSetObject2(&d->ocilib, e, *o, xsink)) {
-                  if (!*xsink)
-                     xsink->raiseException("BIND-NTY-ERROR", "unable to bind object of type '%s' to element", t);
-                  return 0;
-               }
-            }
-            else if (t && !strcmp(t, ORACLE_COLLECTION)) {
+	               if (!OCI_ElemSetObject2(&d->ocilib, e, *o, xsink)) {
+	                  if (!*xsink)
+	                     xsink->raiseException("BIND-NTY-ERROR", "unable to bind object of type '%s' to element",
+	                        t.c_str());
+	                  return 0;
+	               }
+	            }
+	            else if (t == ORACLE_COLLECTION) {
                CollHolder o(&d->ocilib, collBindQore(d, n, xsink), xsink);
                if (!o) {
                   assert(*xsink);
