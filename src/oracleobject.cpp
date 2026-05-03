@@ -581,7 +581,7 @@ OCI_Object* objBindQore(QoreOracleConnection * d, const QoreHashNode * h, Except
                     }
                     if (!OCI_ObjectSetColl2(&d->ocilib, *obj, cname, *o, xsink)) {
                         if (!*xsink)
-                            xsink->raiseException("BIND-NTY-ERROR", "unable to bind collection of type '%s' to attribute %s.%s", t, tname, cname);
+                            xsink->raiseException("BIND-NTY-ERROR", "unable to bind collection of type '%s' to attribute %s.%s", t.c_str(), tname, cname);
                         return nullptr;
                     }
                 }
@@ -1310,7 +1310,7 @@ OCI_Coll* collBindQore(QoreOracleConnection * d, const QoreHashNode * h, Excepti
                }
                if (!OCI_ElemSetColl2(&d->ocilib, e, *o, xsink)) {
                   if (!*xsink)
-                     xsink->raiseException("BIND-NTY-ERROR", "unable to bind collection of type '%s' to element", t);
+                     xsink->raiseException("BIND-NTY-ERROR", "unable to bind collection of type '%s' to element", t.c_str());
                   return 0;
                }
             }
