@@ -386,7 +386,6 @@ public:
                     if (nstr->size() + 1 > max)
                         max = nstr->size() + 1;
                     alen_list[li.index()] = nstr->size() + 1;
-                    assert(!in_only || nstr.is_temp());
                     strvec.setDynamic(nstr.giveBuffer());
                 }
             } else {
@@ -997,9 +996,10 @@ public:
         if (*xsink) {
             return -1;
         }
-        ptr = (void*)nstr->c_str();
         size = nstr->size();
-        strvec.setDynamic(nstr.giveBuffer());
+        char* buf = nstr.giveBuffer();
+        ptr = (void*)buf;
+        strvec.setDynamic(buf);
         return 0;
     }
 
@@ -1462,8 +1462,15 @@ void OraBindNode::bindValue(ExceptionSink* xsink, int pos, QoreValue v, bool in_
         if (in_only) {
             len = nstr->size();
             buf.ptr = (void*)nstr->c_str();
-            if (nstr.is_temp())
-                data.save(new QoreString(nstr.giveBuffer(), len, len + 1, bstr->getEncoding()));
+            if (nstr.is_temp()) {
+                QoreString* saved = new QoreString(nstr.giveBuffer(), len, len + 1, nstr->getEncoding());
+                buf.ptr = (void*)saved->c_str();
+                data.save(saved);
+            } else if (bstr.is_temp()) {
+                QoreString* saved = new QoreString(bstr.giveBuffer(), len, len + 1, bstr->getEncoding());
+                buf.ptr = (void*)saved->c_str();
+                data.save(saved);
+            }
         } else {
             qore_size_t mx = data.ph_maxsize > 0 ? data.ph_maxsize : 0;
             nstr.makeTemp();
