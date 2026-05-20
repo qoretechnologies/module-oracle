@@ -2519,6 +2519,56 @@ QoreValue QorePreparedStatement::execWithPrologue(ExceptionSink* xsink, bool row
     return *xsink ? QoreValue() : rv.release();
 }
 
+#ifdef QDBI_METHOD_SELECT_TYPED
+QoreValue QorePreparedStatement::execWithPrologueTyped(ExceptionSink* xsink, bool rows) {
+    if (exec(xsink)) {
+        return QoreValue();
+    }
+
+    ValueHolder rv(xsink);
+
+    if (is_select) {
+        ReferenceHolder<QoreHashNode> desc(describe(xsink), xsink);
+        if (*xsink) {
+            return QoreValue();
+        }
+
+        if (rows) {
+            ReferenceHolder<QoreListNode> data(QoreOracleStatement::fetchRows(xsink), xsink);
+            if (*xsink) {
+                return QoreValue();
+            }
+
+            QoreListNode* typed = qore_dbi_make_typed_select_rows_result(ds, *data, *desc, xsink);
+            rv = typed ? QoreValue(typed) : QoreValue();
+        } else {
+            ReferenceHolder<QoreHashNode> data(QoreOracleStatement::fetchColumns(true, xsink), xsink);
+            if (*xsink) {
+                return QoreValue();
+            }
+
+            QoreHashNode* typed = qore_dbi_make_typed_select_result(ds, *data, *desc, xsink);
+            rv = typed ? QoreValue(typed) : QoreValue();
+        }
+
+        if (*xsink) {
+            return QoreValue();
+        }
+    } else if (hasOutput) {
+        rv = getOutputHash(rows, xsink);
+    } else {
+        int rc = affectedRows(xsink);
+        rv = *xsink ? QoreValue() : QoreValue(rc);
+    }
+
+    if (ds->getAutoCommit()) {
+        getData()->commit(xsink);
+    }
+
+    return *xsink ? QoreValue() : rv.release();
+}
+#endif
+
 int QorePreparedStatement::affectedRows(ExceptionSink* xsink) {
     int rc = 0;
     getData()->checkerr(OCIAttrGet(stmthp, OCI_HTYPE_STMT, &rc, 0, OCI_ATTR_ROW_COUNT, getData()->errhp),

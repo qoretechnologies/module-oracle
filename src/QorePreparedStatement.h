@@ -365,6 +365,9 @@ public:
     DLLLOCAL QoreHashNode* describe(ExceptionSink* xsink);
 
     DLLLOCAL QoreValue execWithPrologue(ExceptionSink* xsink, bool rows, bool cols = false);
+#ifdef QDBI_METHOD_SELECT_TYPED
+    DLLLOCAL QoreValue execWithPrologueTyped(ExceptionSink* xsink, bool rows);
+#endif
 
     DLLLOCAL QoreHashNode* selectRow(ExceptionSink* xsink);
 

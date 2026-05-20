@@ -77,6 +77,9 @@ static int dbi_oracle_caps = (
    |DBI_CAP_EVENTS
    |DBI_CAP_HAS_ARRAY_BIND
    |DBI_CAP_HAS_RESULTSET_OUTPUT
+#ifdef QDBI_METHOD_SELECT_TYPED
+   |DBI_CAP_HAS_TYPED_SELECT
+#endif
 );
 
 static int oracle_commit(Datasource* ds, ExceptionSink* xsink) {
@@ -107,6 +110,19 @@ static QoreValue oracle_select(Datasource* ds, const QoreString* qstr, const Qor
     return bg.execWithPrologue(xsink, false, true);
 }
 
+#ifdef QDBI_METHOD_SELECT_TYPED
+static QoreValue oracle_select_typed(Datasource* ds, const QoreString* qstr, const QoreListNode* args,
+        ExceptionSink* xsink) {
+    QorePreparedStatementHelper bg(ds, xsink);
+
+    if (bg.prepare(qstr, args, true, xsink)) {
+        return QoreValue();
+    }
+
+    return bg.execWithPrologueTyped(xsink, false);
+}
+#endif
+
 static QoreValue oracle_exec_raw(Datasource* ds, const QoreString* qstr, ExceptionSink* xsink) {
     QorePreparedStatementHelper bg(ds, xsink);
 
@@ -133,6 +149,19 @@ static QoreValue oracle_exec_rows(Datasource* ds, const QoreString* qstr, const 
 
     return bg.execWithPrologue(xsink, true);
 }
+
+#ifdef QDBI_METHOD_SELECT_TYPED
+static QoreValue oracle_exec_rows_typed(Datasource* ds, const QoreString* qstr, const QoreListNode* args,
+        ExceptionSink* xsink) {
+    QorePreparedStatementHelper bg(ds, xsink);
+
+    if (bg.prepare(qstr, args, true, xsink)) {
+        return QoreValue();
+    }
+
+    return bg.execWithPrologueTyped(xsink, true);
+}
+#endif
 
 static int oracle_open(Datasource* ds, ExceptionSink* xsink) {
     //printd(5, "oracle_open() datasource %p for DB=%s open\n", ds, ds->getDBName());
@@ -365,6 +394,10 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
    methods.add(QDBI_METHOD_CLOSE, oracle_close);
    methods.add(QDBI_METHOD_SELECT, oracle_select);
    methods.add(QDBI_METHOD_SELECT_ROWS, oracle_exec_rows);
+#ifdef QDBI_METHOD_SELECT_TYPED
+   methods.add(QDBI_METHOD_SELECT_TYPED, oracle_select_typed);
+   methods.add(QDBI_METHOD_SELECT_ROWS_TYPED, oracle_exec_rows_typed);
+#endif
    methods.add(QDBI_METHOD_SELECT_ROW, oracle_select_row);
    methods.add(QDBI_METHOD_EXEC, oracle_exec);
    methods.add(QDBI_METHOD_EXECRAW, oracle_exec_raw);
