@@ -23,6 +23,10 @@
 
 #include "oracle.h"
 
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+#include <qore/QoreColumnarResult.h>
+#endif
+
 #include <stdlib.h>
 #include <memory>
 
@@ -2566,6 +2570,41 @@ QoreValue QorePreparedStatement::execWithPrologueTyped(ExceptionSink* xsink, boo
     }
 
     return *xsink ? QoreValue() : rv.release();
+}
+#endif
+
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+QoreColumnarResult* QorePreparedStatement::execWithPrologueColumnar(ExceptionSink* xsink) {
+    if (!is_select) {
+        xsink->raiseException("COLUMNAR-RESULT-ERROR",
+            "Datasource::selectColumnar() requires an SQL statement returning result columns");
+        return nullptr;
+    }
+
+    if (exec(xsink)) {
+        return nullptr;
+    }
+
+    ReferenceHolder<QoreHashNode> desc(describe(xsink), xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+
+    ReferenceHolder<QoreHashNode> data(QoreOracleStatement::fetchColumns(true, xsink), xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+
+    ReferenceHolder<QoreColumnarResult> rv(QoreColumnarResult::fromColumnHash(*data, *desc, xsink), xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+
+    if (ds->getAutoCommit()) {
+        getData()->commit(xsink);
+    }
+
+    return *xsink ? nullptr : rv.release();
 }
 #endif
 

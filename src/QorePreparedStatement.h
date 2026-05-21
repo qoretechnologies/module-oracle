@@ -24,6 +24,8 @@
 #ifndef _QOREPREPAREDSTATEMENT_H
 #define _QOREPREPAREDSTATEMENT_H
 
+class QoreColumnarResult;
+
 union ora_tmp_u {
    QoreString* tstr;    // temporary string to be deleted
    BinaryNode* bin;
@@ -367,6 +369,9 @@ public:
     DLLLOCAL QoreValue execWithPrologue(ExceptionSink* xsink, bool rows, bool cols = false);
 #ifdef QDBI_METHOD_SELECT_TYPED
     DLLLOCAL QoreValue execWithPrologueTyped(ExceptionSink* xsink, bool rows);
+#endif
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+    DLLLOCAL QoreColumnarResult* execWithPrologueColumnar(ExceptionSink* xsink);
 #endif
 
     DLLLOCAL QoreHashNode* selectRow(ExceptionSink* xsink);
