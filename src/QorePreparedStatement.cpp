@@ -2532,13 +2532,18 @@ QoreValue QorePreparedStatement::execWithPrologueTyped(ExceptionSink* xsink, boo
     ValueHolder rv(xsink);
 
     if (is_select) {
-        ReferenceHolder<QoreHashNode> desc(describe(xsink), xsink);
+        OraResultSetHelper resultset(*this, "QorePreparedStatement::execWithPrologueTyped():params", xsink);
+        if (*xsink) {
+            return QoreValue();
+        }
+
+        ReferenceHolder<QoreHashNode> desc(QoreOracleStatement::describe(**resultset, xsink), xsink);
         if (*xsink) {
             return QoreValue();
         }
 
         if (rows) {
-            ReferenceHolder<QoreListNode> data(QoreOracleStatement::fetchRows(xsink), xsink);
+            ReferenceHolder<QoreListNode> data(QoreOracleStatement::fetchRows(**resultset, -1, xsink), xsink);
             if (*xsink) {
                 return QoreValue();
             }
@@ -2546,7 +2551,8 @@ QoreValue QorePreparedStatement::execWithPrologueTyped(ExceptionSink* xsink, boo
             QoreListNode* typed = qore_dbi_make_typed_select_rows_result(ds, *data, *desc, xsink);
             rv = typed ? QoreValue(typed) : QoreValue();
         } else {
-            ReferenceHolder<QoreHashNode> data(QoreOracleStatement::fetchColumns(true, xsink), xsink);
+            ReferenceHolder<QoreHashNode> data(QoreOracleStatement::fetchColumns(**resultset, -1, true, xsink),
+                xsink);
             if (*xsink) {
                 return QoreValue();
             }
@@ -2585,12 +2591,17 @@ QoreColumnarResult* QorePreparedStatement::execWithPrologueColumnar(ExceptionSin
         return nullptr;
     }
 
-    ReferenceHolder<QoreHashNode> desc(describe(xsink), xsink);
+    OraResultSetHelper resultset(*this, "QorePreparedStatement::execWithPrologueColumnar():params", xsink);
     if (*xsink) {
         return nullptr;
     }
 
-    ReferenceHolder<QoreHashNode> data(QoreOracleStatement::fetchColumns(true, xsink), xsink);
+    ReferenceHolder<QoreHashNode> desc(QoreOracleStatement::describe(**resultset, xsink), xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+
+    ReferenceHolder<QoreHashNode> data(QoreOracleStatement::fetchColumns(**resultset, -1, true, xsink), xsink);
     if (*xsink) {
         return nullptr;
     }
