@@ -359,17 +359,7 @@ static QoreColumnarResult* oracle_stmt_fetch_columnar(SQLStatement* stmt, int ro
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
-   ReferenceHolder<QoreHashNode> columns(bg->fetchColumns(rows, xsink), xsink);
-   if (*xsink || !columns) {
-      return nullptr;
-   }
-
-   ReferenceHolder<QoreHashNode> desc(bg->describe(xsink), xsink);
-   if (*xsink) {
-      return nullptr;
-   }
-
-   return QoreColumnarResult::fromColumnHash(*columns, *desc, xsink);
+   return bg->fetchColumnar(rows, xsink);
 }
 #endif
 

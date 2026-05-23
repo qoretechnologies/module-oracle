@@ -363,6 +363,9 @@ public:
     DLLLOCAL QoreHashNode* fetchRow(ExceptionSink* xsink);
     DLLLOCAL QoreListNode* fetchRows(int rows, ExceptionSink* xsink);
     DLLLOCAL QoreHashNode* fetchColumns(int rows, ExceptionSink* xsink);
+#ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
+    DLLLOCAL QoreColumnarResult* fetchColumnar(int rows, ExceptionSink* xsink);
+#endif
 
     DLLLOCAL QoreHashNode* describe(ExceptionSink* xsink);
 

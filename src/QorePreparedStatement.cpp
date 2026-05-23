@@ -2596,17 +2596,7 @@ QoreColumnarResult* QorePreparedStatement::execWithPrologueColumnar(ExceptionSin
         return nullptr;
     }
 
-    ReferenceHolder<QoreHashNode> desc(QoreOracleStatement::describe(**resultset, xsink), xsink);
-    if (*xsink) {
-        return nullptr;
-    }
-
-    ReferenceHolder<QoreHashNode> data(QoreOracleStatement::fetchColumns(**resultset, -1, true, xsink), xsink);
-    if (*xsink) {
-        return nullptr;
-    }
-
-    ReferenceHolder<QoreColumnarResult> rv(QoreColumnarResult::fromColumnHash(*data, *desc, xsink), xsink);
+    ReferenceHolder<QoreColumnarResult> rv(QoreOracleStatement::fetchColumnar(**resultset, -1, true, xsink), xsink);
     if (*xsink) {
         return nullptr;
     }
@@ -2640,6 +2630,13 @@ QoreHashNode* QorePreparedStatement::fetchColumns(int rows, ExceptionSink* xsink
     assert(columns);
     return QoreOracleStatement::fetchColumns(*columns, rows, false, xsink);
 }
+
+#ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
+QoreColumnarResult* QorePreparedStatement::fetchColumnar(int rows, ExceptionSink* xsink) {
+    assert(columns);
+    return QoreOracleStatement::fetchColumnar(*columns, rows, false, xsink);
+}
+#endif
 
 QoreHashNode* QorePreparedStatement::describe(ExceptionSink* xsink) {
     assert(columns);

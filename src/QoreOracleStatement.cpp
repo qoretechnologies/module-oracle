@@ -24,6 +24,276 @@
 #include "oracle.h"
 #include "ocilib/ocilib_internal.h"
 
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+#include <qore/QoreBufferNode.h>
+#include <qore/QoreColumnarResult.h>
+
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <memory>
+#include <unordered_map>
+#endif
+
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+namespace {
+struct OracleColumnarStorage {
+    std::vector<int64> int_values;
+    std::vector<double> float_values;
+    std::vector<uint8_t> validity;
+};
+
+static size_t oracle_columnar_bitmap_size(size_t size) {
+    return (size + 7) / 8;
+}
+
+static void oracle_columnar_set_validity_bit(std::vector<uint8_t>& validity, size_t index, bool valid) {
+    size_t byte = index / 8;
+    if (byte >= validity.size()) {
+        validity.resize(byte + 1, 0);
+    }
+
+    uint8_t mask = uint8_t(1) << (index % 8);
+    if (valid) {
+        validity[byte] |= mask;
+    } else {
+        validity[byte] &= ~mask;
+    }
+}
+
+static bool oracle_columnar_is_valid(const std::vector<uint8_t>& validity, size_t index) {
+    if (validity.empty()) {
+        return true;
+    }
+    size_t byte = index / 8;
+    return byte < validity.size() && (validity[byte] & (uint8_t(1) << (index % 8)));
+}
+
+static bool oracle_columnar_parse_int64(const char* str, int64& value) {
+    if (!str || !*str || strchr(str, '.') || strchr(str, 'e') || strchr(str, 'E')) {
+        return false;
+    }
+
+    errno = 0;
+    char* end = nullptr;
+    long long rv = strtoll(str, &end, 10);
+    if (errno == ERANGE || !end || *end) {
+        return false;
+    }
+
+    value = static_cast<int64>(rv);
+    return true;
+}
+
+enum class OracleColumnarKind {
+    Int64,
+    Float64,
+    NumberOptimal,
+    List,
+};
+
+class OracleColumnarBuilder {
+public:
+    OracleColumnarBuilder(OraColumnBuffer* n_column, std::string n_name, int number_option, ExceptionSink* xsink)
+        : column(n_column), name(std::move(n_name)), list(xsink) {
+        switch (column->dtype) {
+            case SQLT_INT:
+            case SQLT_UIN:
+                kind = OracleColumnarKind::Int64;
+                storage.reset(new OracleColumnarStorage);
+                break;
+
+            case SQLT_FLT:
+#ifdef SQLT_BFLOAT
+            case SQLT_BFLOAT:
+#endif
+#ifdef SQLT_BDOUBLE
+            case SQLT_BDOUBLE:
+#endif
+#ifdef SQLT_IBFLOAT
+            case SQLT_IBFLOAT:
+#endif
+#ifdef SQLT_IBDOUBLE
+            case SQLT_IBDOUBLE:
+#endif
+                kind = OracleColumnarKind::Float64;
+                storage.reset(new OracleColumnarStorage);
+                break;
+
+            case SQLT_NUM:
+                if (number_option == OPT_NUM_OPTIMAL) {
+                    kind = OracleColumnarKind::NumberOptimal;
+                    storage.reset(new OracleColumnarStorage);
+                    break;
+                }
+                // fall through
+
+            default:
+                kind = OracleColumnarKind::List;
+                list = new QoreListNode(autoTypeInfo);
+                break;
+        }
+    }
+
+    const char* getName() const {
+        return name.c_str();
+    }
+
+    int append(ExceptionSink* xsink) {
+        if (kind == OracleColumnarKind::List) {
+            return appendList(xsink);
+        }
+
+        if (column->ind == -1) {
+            appendNull();
+            return 0;
+        }
+
+        switch (kind) {
+            case OracleColumnarKind::Int64:
+                storage->int_values.push_back(column->buf.i8);
+                appendValid();
+                return 0;
+
+            case OracleColumnarKind::Float64:
+                storage->float_values.push_back(column->buf.f8);
+                appendValid();
+                return 0;
+
+            case OracleColumnarKind::NumberOptimal: {
+                int64 value;
+                if (oracle_columnar_parse_int64((const char*)column->buf.ptr, value)) {
+                    storage->int_values.push_back(value);
+                    appendValid();
+                    return 0;
+                }
+
+                if (fallbackToList(xsink)) {
+                    return -1;
+                }
+                return appendList(xsink);
+            }
+
+            case OracleColumnarKind::List:
+                break;
+        }
+
+        assert(false);
+        return -1;
+    }
+
+    QoreValue finish(ExceptionSink* xsink) {
+        if (kind == OracleColumnarKind::List) {
+            return list.release();
+        }
+
+        assert(storage);
+        QoreBufferElementType element_type = kind == OracleColumnarKind::Float64
+            ? QoreBufferElementType::Float64
+            : QoreBufferElementType::Int64;
+        bool nullable = null_count > 0;
+        const void* data = element_type == QoreBufferElementType::Float64
+            ? static_cast<const void*>(storage->float_values.empty() ? nullptr : storage->float_values.data())
+            : static_cast<const void*>(storage->int_values.empty() ? nullptr : storage->int_values.data());
+        const uint8_t* validity = nullable && !storage->validity.empty() ? storage->validity.data() : nullptr;
+        return QoreBufferNode::wrapExternalStorage(element_type, nullable, row_count, data, validity, storage,
+            null_count, xsink);
+    }
+
+private:
+    void ensureValidity() {
+        if (!storage->validity.empty()) {
+            storage->validity.resize(oracle_columnar_bitmap_size(row_count + 1), 0);
+            return;
+        }
+
+        storage->validity.resize(oracle_columnar_bitmap_size(row_count + 1), 0xff);
+    }
+
+    void appendNull() {
+        ensureValidity();
+        oracle_columnar_set_validity_bit(storage->validity, row_count, false);
+        switch (kind) {
+            case OracleColumnarKind::Float64:
+                storage->float_values.push_back(0.0);
+                break;
+            default:
+                storage->int_values.push_back(0);
+                break;
+        }
+        ++null_count;
+        ++row_count;
+    }
+
+    void appendValid() {
+        if (!storage->validity.empty()) {
+            oracle_columnar_set_validity_bit(storage->validity, row_count, true);
+        }
+        ++row_count;
+    }
+
+    int fallbackToList(ExceptionSink* xsink) {
+        assert(kind == OracleColumnarKind::NumberOptimal);
+        assert(storage);
+
+        list = new QoreListNode(autoTypeInfo);
+        for (size_t i = 0; i < row_count; ++i) {
+            if (i && !(i % 100) && qore_check_cancel(xsink)) {
+                return -1;
+            }
+
+            if (oracle_columnar_is_valid(storage->validity, i)) {
+                list->push(storage->int_values[i], xsink);
+            } else {
+                list->push(null(), xsink);
+            }
+            if (*xsink) {
+                return -1;
+            }
+        }
+
+        kind = OracleColumnarKind::List;
+        storage.reset();
+        null_count = 0;
+        return 0;
+    }
+
+    int appendList(ExceptionSink* xsink) {
+        ValueHolder value(column->getValue(false, xsink), xsink);
+        if (*xsink) {
+            return -1;
+        }
+
+        list->push(value.release(), xsink);
+        if (*xsink) {
+            return -1;
+        }
+        ++row_count;
+        return 0;
+    }
+
+    OraColumnBuffer* column;
+    std::string name;
+    OracleColumnarKind kind = OracleColumnarKind::List;
+    std::shared_ptr<OracleColumnarStorage> storage;
+    ReferenceHolder<QoreListNode> list;
+    size_t row_count = 0;
+    int64_t null_count = 0;
+};
+
+static std::string oracle_columnar_unique_name(const QoreString& name, std::unordered_map<std::string, unsigned>& seen) {
+    std::string key(name.c_str());
+    unsigned index = seen[key]++;
+    if (!index) {
+        return key;
+    }
+
+    QoreStringMaker tmp("%s_%u", key.c_str(), index);
+    return tmp.c_str();
+}
+}
+#endif
+
 int QoreOracleStatement::setupDateDescriptor(OCIDateTime*& odt, ExceptionSink* xsink) {
     if (conn.descriptorAlloc((dvoid**)&odt, QORE_DTYPE_TIMESTAMP, "QoreOracleStatement::setupDateDecriptor()", xsink))
         return -1;
@@ -333,6 +603,105 @@ QoreHashNode* QoreOracleStatement::fetchColumns(OraResultSet& resultset, int row
     return nullptr;
 }
 
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+QoreColumnarResult* QoreOracleStatement::fetchColumnar(OraResultSet& resultset, int rows, bool cols,
+        ExceptionSink* xsink) {
+    if (fetch_warned) {
+        xsink->raiseException("ORACLE-SELECT-COLUMNAR-ERROR", "SQLStatement::fetchColumnar() called after the end of "
+            "data already received");
+        return nullptr;
+    }
+
+    if (fetch_complete) {
+        assert(!cols);
+        fetch_warned = true;
+        return new QoreColumnarResult;
+    }
+
+    if (setPrefetch(xsink, rows)) {
+        return nullptr;
+    }
+
+    if (resultset.define("QoreOracleStatement::fetchColumnar():define", xsink)) {
+        return nullptr;
+    }
+
+    std::unordered_map<std::string, unsigned> seen;
+    std::vector<std::unique_ptr<OracleColumnarBuilder>> builders;
+    builders.reserve(resultset.clist.size());
+    size_t column_index = 0;
+    for (clist_t::iterator i = resultset.clist.begin(), e = resultset.clist.end(); i != e; ++i) {
+        if (column_index && !(column_index % 100) && qore_check_cancel(xsink)) {
+            return nullptr;
+        }
+        builders.emplace_back(new OracleColumnarBuilder(*i, oracle_columnar_unique_name((*i)->name, seen),
+            getData()->getNumberOption(), xsink));
+        ++column_index;
+    }
+
+    int num_rows = 0;
+    while (next(xsink)) {
+        if ((num_rows % 100) == 0 && qore_check_cancel(xsink)) {
+            return nullptr;
+        }
+
+        column_index = 0;
+        for (std::vector<std::unique_ptr<OracleColumnarBuilder>>::iterator i = builders.begin(), e = builders.end();
+                i != e; ++i) {
+            if (column_index && !(column_index % 100) && qore_check_cancel(xsink)) {
+                return nullptr;
+            }
+            if ((*i)->append(xsink)) {
+                return nullptr;
+            }
+            ++column_index;
+        }
+
+        ++num_rows;
+        if (rows > 0 && num_rows == rows) {
+            break;
+        }
+    }
+
+    if (*xsink) {
+        return nullptr;
+    }
+
+    if (!fetch_done) {
+        fetch_done = true;
+    }
+    if (num_rows < rows) {
+        fetch_complete = true;
+    }
+
+    ReferenceHolder<QoreHashNode> desc(describe(resultset, xsink), xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+
+    ReferenceHolder<QoreHashNode> columns(new QoreHashNode(autoTypeInfo), xsink);
+    column_index = 0;
+    for (std::vector<std::unique_ptr<OracleColumnarBuilder>>::iterator i = builders.begin(), e = builders.end();
+            i != e; ++i) {
+        if (column_index && !(column_index % 100) && qore_check_cancel(xsink)) {
+            return nullptr;
+        }
+        ValueHolder value((*i)->finish(xsink), xsink);
+        if (*xsink) {
+            return nullptr;
+        }
+
+        columns->setKeyValue((*i)->getName(), value.release(), xsink);
+        if (*xsink) {
+            return nullptr;
+        }
+        ++column_index;
+    }
+
+    return QoreColumnarResult::fromColumnHash(*columns, *desc, xsink);
+}
+#endif
+
 QoreHashNode* QoreOracleStatement::describe(OraResultSet& resultset, ExceptionSink* xsink) {
     // set up hash for row
     ReferenceHolder<QoreHashNode> h(new QoreHashNode(autoTypeInfo), xsink);
@@ -362,11 +731,24 @@ QoreHashNode* QoreOracleStatement::describe(OraResultSet& resultset, ExceptionSi
             col->setKeyValue(maxsizestr, w->maxsize, xsink);
             break;
         case SQLT_INT:
+        case SQLT_UIN:
             col->setKeyValue(typestr, NT_INT, xsink);
             col->setKeyValue(dbtypestr, new QoreStringNode("INTEGER"), xsink);
             col->setKeyValue(maxsizestr, w->maxsize, xsink);
             break;
         case SQLT_FLT:
+#ifdef SQLT_BFLOAT
+        case SQLT_BFLOAT:
+#endif
+#ifdef SQLT_BDOUBLE
+        case SQLT_BDOUBLE:
+#endif
+#ifdef SQLT_IBFLOAT
+        case SQLT_IBFLOAT:
+#endif
+#ifdef SQLT_IBDOUBLE
+        case SQLT_IBDOUBLE:
+#endif
             col->setKeyValue(typestr, NT_FLOAT, xsink);
             col->setKeyValue(dbtypestr, new QoreStringNode("FLOAT"), xsink);
             col->setKeyValue(maxsizestr, w->maxsize, xsink);

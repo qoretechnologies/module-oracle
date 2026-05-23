@@ -63,6 +63,9 @@
     When built against a %Qore library with columnar DBI support, the driver implements
     \c Datasource::selectColumnar() and \c SQLStatement::fetchColumnar() to return
     \c Qore::SQL::ColumnarResult objects suitable for DataFrame and analytical workloads.
+    Integer, floating-point, and integer-like \c NUMBER values returned with the default optimal
+    number mode are delivered as packed dense buffers; other Oracle data types use the standard
+    columnar conversion path.
 
     The \c Datasource::getServerVersion() and \c Datasource::getClientVersion()
     methods are implemented for this driver. \c Datasource::getServerVersion()
@@ -565,6 +568,8 @@ kpcest_err_handler: Max errors exceeded..Closing connection
       (<a href="https://github.com/qorelanguage/qore/issues/4899">issue 4899</a>)
     - added columnar DBI result support with \c Datasource::selectColumnar() and
       \c SQLStatement::fetchColumnar() when built against %Qore with columnar DBI APIs
+    - optimized columnar DBI results to return packed dense buffers for integer, floating-point, and integer-like
+      \c NUMBER result columns when possible
 
     @subsection oracle3_3_2 oracle Driver Version 3.3.2
     - fixed building with \c qpp from %Qore 1.12.4+

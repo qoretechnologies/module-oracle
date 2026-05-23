@@ -257,12 +257,30 @@ end;");
             "select 1 as id, 'Alice' as name from dual union all select 2 as id, 'Bob' as name from dual order by id");
         assertEq(2, direct.numRows());
         assertEq(2, direct.numCols());
+        assertEq("buffer<int64>", getColumn(direct, "id").fullType());
         assertEq((1, 2), map int($1), asList(getColumn(direct, "id")));
         assertEq(("Alice", "Bob"), map trim($1), asList(getColumn(direct, "name")));
 
         ColumnarResult empty = ds.selectColumnar("select 1 as id, 'Alice' as name from dual where 1 = 0");
         assertEq(0, empty.numRows());
         assertEq(2, empty.numCols());
+        assertEq("buffer<int64>", getColumn(empty, "id").fullType());
+
+        ColumnarResult nullable = ds.selectColumnar(
+            "select cast(null as number) as id from dual union all select 42 as id from dual order by id nulls first");
+        assertEq("buffer<*int64>", getColumn(nullable, "id").fullType());
+        assertEq((NOTHING, 42), asList(getColumn(nullable, "id")));
+
+        ColumnarResult floats = ds.selectColumnar("
+            select cast(1.5 as binary_double) as score from dual
+            union all select cast(2.25 as binary_double) as score from dual order by score");
+        assertEq("buffer<float64>", getColumn(floats, "score").fullType());
+        assertEq((1.5, 2.25), asList(getColumn(floats, "score")));
+
+        ColumnarResult decimalNumbers = ds.selectColumnar(
+            "select 1.5 as amount from dual union all select 2.25 as amount from dual order by amount");
+        assertEq("list<number>", getColumn(decimalNumbers, "amount").fullType());
+        assertEq((1.5n, 2.25n), asList(getColumn(decimalNumbers, "amount")));
 
         SQLStatement stmt(ds);
         stmt.prepare("
@@ -277,6 +295,8 @@ end;");
         ColumnarResult rest = stmt.fetchColumnar(rows: -1);
         assertEq(2, first.numRows());
         assertEq(1, rest.numRows());
+        assertEq("buffer<int64>", getColumn(first, "id").fullType());
+        assertEq("buffer<int64>", getColumn(rest, "id").fullType());
         assertEq((1, 2), map int($1), asList(getColumn(first, "id")));
         assertEq((3,), map int($1), asList(getColumn(rest, "id")));
         assertEq(("Alice", "Bob"), map trim($1), asList(getColumn(first, "name")));
