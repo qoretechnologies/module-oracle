@@ -24,6 +24,12 @@
 #include "oracle.h"
 #include "ocilib/ocilib_internal.h"
 
+namespace {
+static bool oracle_columnar_decimal_metadata_supported(sb2 precision, sb1 scale) {
+    return precision > 0 && precision <= 38 && scale >= 0 && scale <= precision;
+}
+}
+
 #if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
 #include <qore/QoreBufferNode.h>
 #include <qore/QoreColumnarResult.h>
@@ -85,10 +91,6 @@ static bool oracle_columnar_parse_int64(const char* str, int64& value) {
 
     value = static_cast<int64>(rv);
     return true;
-}
-
-static bool oracle_columnar_decimal_metadata_supported(sb2 precision, sb1 scale) {
-    return precision > 0 && precision <= 38 && scale >= 0 && scale <= precision;
 }
 
 static __int128 oracle_columnar_decimal_abs(__int128 value) {
