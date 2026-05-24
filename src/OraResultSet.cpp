@@ -105,6 +105,15 @@ OraResultSet::OraResultSet(QoreOracleStatement &n_stmt, const char *str, Excepti
       if (stmt.attrGet(parmp, &col_max_size, OCI_ATTR_DATA_SIZE, xsink))
          return;
 
+      sb2 col_precision = 0;
+      sb1 col_scale = 0;
+      if (dtype == SQLT_NUM) {
+         if (stmt.attrGet(parmp, &col_scale, OCI_ATTR_SCALE, xsink))
+            return;
+         if (stmt.attrGet(parmp, &col_precision, OCI_ATTR_PRECISION, xsink))
+            return;
+      }
+
       //printd(0, "OraResultSet::OraResultSet() column %s: type=%d char_len=%d size=%d (SQLT_STR=%d)\n", col_name, dtype, col_char_len, col_max_size, SQLT_STR);
       if (dtype == SQLT_NTY) {
           char *tname; // type name
@@ -132,7 +141,8 @@ OraResultSet::OraResultSet(QoreOracleStatement &n_stmt, const char *str, Excepti
           // This is some kind of black magic - I'm not sure if it's sufficient
           // object/collection resolution method.
           int dsubtype = info->ccode ? SQLT_NTY_COLLECTION : SQLT_NTY_OBJECT;
-          add((char *)col_name, col_name_len, col_max_size, dtype, col_char_len, dsubtype, s);
+          add((char *)col_name, col_name_len, col_max_size, dtype, col_char_len, col_precision, col_scale,
+              dsubtype, s);
           continue;
       }
       if (dtype == SQLT_NCO) {
@@ -141,7 +151,7 @@ OraResultSet::OraResultSet(QoreOracleStatement &n_stmt, const char *str, Excepti
           assert(0);
       }
 
-      add((char *)col_name, col_name_len, col_max_size, dtype, col_char_len);
+      add((char *)col_name, col_name_len, col_max_size, dtype, col_char_len, col_precision, col_scale);
    }
 }
 

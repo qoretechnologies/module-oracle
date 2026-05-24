@@ -282,6 +282,18 @@ end;");
         assertEq("list<number>", getColumn(decimalNumbers, "amount").fullType());
         assertEq((1.5n, 2.25n), asList(getColumn(decimalNumbers, "amount")));
 
+        ColumnarResult denseDecimals = ds.selectColumnar("
+            select cast(null as number(18,2)) as amount from dual
+            union all select cast(1.50 as number(18,2)) as amount from dual
+            union all select cast(2.25 as number(18,2)) as amount from dual
+            order by amount nulls first");
+        assertEq("buffer<*decimal128>", getColumn(denseDecimals, "amount").fullType());
+        assertEq((NOTHING, 1.5n, 2.25n), asList(getColumn(denseDecimals, "amount")));
+        list<hash<auto>> decimalSchema = denseDecimals.schemaV2();
+        assertEq("decimal128", decimalSchema[0].kind);
+        assertEq(18, decimalSchema[0].precision);
+        assertEq(2, decimalSchema[0].scale);
+
         SQLStatement stmt(ds);
         stmt.prepare("
             select 1 as id, 'Alice' as name from dual

@@ -31,10 +31,14 @@ public:
     int maxsize;
     OCIDefine *defp;     // define handle
     ub2 charlen;
+    sb2 precision;
+    sb1 scale;
     QoreString subdtypename;
 
-    DLLLOCAL OraColumnBuffer(QoreOracleStatement &stmt, const char *n, int len, int ms, ub2 dt, ub2 n_charlen, int subdt = SQLT_NTY_NONE, QoreString subdttn = "")
-        : OraColumnValue(stmt, dt, subdt), name(n, len, stmt.getEncoding()), maxsize(ms), defp(0), charlen(n_charlen), subdtypename(subdttn) {
+    DLLLOCAL OraColumnBuffer(QoreOracleStatement &stmt, const char *n, int len, int ms, ub2 dt, ub2 n_charlen,
+            sb2 n_precision = 0, sb1 n_scale = 0, int subdt = SQLT_NTY_NONE, QoreString subdttn = "")
+        : OraColumnValue(stmt, dt, subdt), name(n, len, stmt.getEncoding()), maxsize(ms), defp(0),
+            charlen(n_charlen), precision(n_precision), scale(n_scale), subdtypename(subdttn) {
         name.tolwr();
     }
 
@@ -81,8 +85,10 @@ public:
         defined = false;
     }
 
-    DLLLOCAL void add(const char *name, int nlen, int maxsize, ub2 dtype, ub2 char_len, int subtype=SQLT_NTY_NONE, QoreString subdtn = "") {
-        OraColumnBuffer *c = new OraColumnBuffer(stmt, name, nlen, maxsize, dtype, char_len, subtype, subdtn);
+    DLLLOCAL void add(const char *name, int nlen, int maxsize, ub2 dtype, ub2 char_len, sb2 precision = 0,
+            sb1 scale = 0, int subtype=SQLT_NTY_NONE, QoreString subdtn = "") {
+        OraColumnBuffer *c = new OraColumnBuffer(stmt, name, nlen, maxsize, dtype, char_len, precision, scale,
+            subtype, subdtn);
 
         clist.push_back(c);
         // printd(5, "column: '%s'\n", c->name);
