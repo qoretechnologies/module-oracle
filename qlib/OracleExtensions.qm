@@ -1325,7 +1325,7 @@ public class OracleSQLStatement inherits Qore::SQL::SQLStatement, OracleExtensio
 our string connstr = "oracle:pvanek_omq/omq@xbox";
 
 
-any sub stmtTest(object o) {
+auto sub stmtTest(object o) {
     OracleExtensions::OracleSQLStatement stmt(o);
 
     stmt.prepare("select workflow_instanceid from workflow_instance where workflowid = %v and rownum < 4 order by rowid");
@@ -1342,16 +1342,16 @@ any sub stmtTest(object o) {
     sleep(5);
 }
 
-any sub test(object o, string m) {
-    any ret = call_object_method_args(o, m, argv);
+auto sub test(object o, string m) {
+    auto ret = call_object_method_args(o, m, argv);
     printf("%s::%s(%n) - %N\n", o.className(), m, argv, ret);
     return ret;
 }
 
 sub testData(object o1, object o2, string m) {
     #printf("test: %s\n", m);
-    any d1 = call_object_method_args(o1, m, argv);
-    any d2 = call_object_method_args(o2, m, argv);
+    auto d1 = call_object_method_args(o1, m, argv);
+    auto d2 = call_object_method_args(o2, m, argv);
 
     if (d1 != d2)
         throw "TEST-DATA-ERROR", sprintf("call: %s; data mismatch: %N \n\n%N", m, d1, d2);

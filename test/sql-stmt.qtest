@@ -134,7 +134,7 @@ public class SqlStmtTest inherits QUnit::Test {
         selectStmt.close();
 
         selectStmt.exec();
-        any v = selectStmt.fetchRows(-1);
+        auto v = selectStmt.fetchRows(-1);
         assertEq(4, elements v);
         selectStmt.close();
 
@@ -166,7 +166,7 @@ public class SqlStmtTest inherits QUnit::Test {
         on_exit stmt.commit();
 
         stmt.bindPlaceholders(Type::Date);
-        any v = stmt.getOutput();
+        auto v = stmt.getOutput();
         assertEq(1, elements v);
 
         stmt.close();
@@ -193,7 +193,7 @@ public class SqlStmtTest inherits QUnit::Test {
         try {
             on_success stmt.commit();
             on_error stmt.rollback();
-            any rv = stmt.fetchColumns(-1);
+            auto rv = stmt.fetchColumns(-1);
             fail();
         } catch (hash<ExceptionInfo> ex) {
             assertTrue(ex.err.val());
@@ -220,7 +220,7 @@ public class SqlStmtTest inherits QUnit::Test {
 
         selectStmt.exec();
         on_exit selectStmt.commit();
-        any rv = selectStmt.fetchRows();
+        auto rv = selectStmt.fetchRows();
         assertEq((), rv);
     }
 

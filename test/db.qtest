@@ -295,7 +295,7 @@ public class DbTest inherits QUnit::Test {
             testSkip("no DB connection");
         }
         Datasource ndb = getNewDatasource();
-        any r;
+        auto r;
 
         # first, we insert a new row into "family" but do not commit it
         int rows = ds.exec("insert into family values (3, 'Test')\n");
@@ -332,4 +332,3 @@ public class DbTest inherits QUnit::Test {
         ndb.commit();
     }
 }
-
