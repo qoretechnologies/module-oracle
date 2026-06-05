@@ -17,7 +17,7 @@ variables:
 
 test-ubuntu:
   stage: test
-  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop
+  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:jit
   services:
     - name: gvenzl/oracle-free:slim
       alias: oracle
@@ -42,7 +42,7 @@ test-ubuntu:
 
 test-alpine:
   stage: test
-  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop-alpine
+  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:jit-alpine
   services:
     - name: gvenzl/oracle-free:slim
       alias: oracle
