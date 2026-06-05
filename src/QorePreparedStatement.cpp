@@ -23,6 +23,10 @@
 
 #include "oracle.h"
 
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+#include <qore/QoreColumnarResult.h>
+#endif
+
 #include <stdlib.h>
 #include <memory>
 
@@ -2519,6 +2523,92 @@ QoreValue QorePreparedStatement::execWithPrologue(ExceptionSink* xsink, bool row
     return *xsink ? QoreValue() : rv.release();
 }
 
+#ifdef QDBI_METHOD_SELECT_TYPED
+QoreValue QorePreparedStatement::execWithPrologueTyped(ExceptionSink* xsink, bool rows) {
+    if (exec(xsink)) {
+        return QoreValue();
+    }
+
+    ValueHolder rv(xsink);
+
+    if (is_select) {
+        OraResultSetHelper resultset(*this, "QorePreparedStatement::execWithPrologueTyped():params", xsink);
+        if (*xsink) {
+            return QoreValue();
+        }
+
+        ReferenceHolder<QoreHashNode> desc(QoreOracleStatement::describe(**resultset, xsink), xsink);
+        if (*xsink) {
+            return QoreValue();
+        }
+
+        if (rows) {
+            ReferenceHolder<QoreListNode> data(QoreOracleStatement::fetchRows(**resultset, -1, xsink), xsink);
+            if (*xsink) {
+                return QoreValue();
+            }
+
+            QoreListNode* typed = qore_dbi_make_typed_select_rows_result(ds, *data, *desc, xsink);
+            rv = typed ? QoreValue(typed) : QoreValue();
+        } else {
+            ReferenceHolder<QoreHashNode> data(QoreOracleStatement::fetchColumns(**resultset, -1, true, xsink),
+                xsink);
+            if (*xsink) {
+                return QoreValue();
+            }
+
+            QoreHashNode* typed = qore_dbi_make_typed_select_result(ds, *data, *desc, xsink);
+            rv = typed ? QoreValue(typed) : QoreValue();
+        }
+
+        if (*xsink) {
+            return QoreValue();
+        }
+    } else if (hasOutput) {
+        rv = getOutputHash(rows, xsink);
+    } else {
+        int rc = affectedRows(xsink);
+        rv = *xsink ? QoreValue() : QoreValue(rc);
+    }
+
+    if (ds->getAutoCommit()) {
+        getData()->commit(xsink);
+    }
+
+    return *xsink ? QoreValue() : rv.release();
+}
+#endif
+
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+QoreColumnarResult* QorePreparedStatement::execWithPrologueColumnar(ExceptionSink* xsink) {
+    if (!is_select) {
+        xsink->raiseException("COLUMNAR-RESULT-ERROR",
+            "Datasource::selectColumnar() requires an SQL statement returning result columns");
+        return nullptr;
+    }
+
+    if (exec(xsink)) {
+        return nullptr;
+    }
+
+    OraResultSetHelper resultset(*this, "QorePreparedStatement::execWithPrologueColumnar():params", xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+
+    ReferenceHolder<QoreColumnarResult> rv(QoreOracleStatement::fetchColumnar(**resultset, -1, true, xsink), xsink);
+    if (*xsink) {
+        return nullptr;
+    }
+
+    if (ds->getAutoCommit()) {
+        getData()->commit(xsink);
+    }
+
+    return *xsink ? nullptr : rv.release();
+}
+#endif
+
 int QorePreparedStatement::affectedRows(ExceptionSink* xsink) {
     int rc = 0;
     getData()->checkerr(OCIAttrGet(stmthp, OCI_HTYPE_STMT, &rc, 0, OCI_ATTR_ROW_COUNT, getData()->errhp),
@@ -2540,6 +2630,13 @@ QoreHashNode* QorePreparedStatement::fetchColumns(int rows, ExceptionSink* xsink
     assert(columns);
     return QoreOracleStatement::fetchColumns(*columns, rows, false, xsink);
 }
+
+#ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
+QoreColumnarResult* QorePreparedStatement::fetchColumnar(int rows, ExceptionSink* xsink) {
+    assert(columns);
+    return QoreOracleStatement::fetchColumnar(*columns, rows, false, xsink);
+}
+#endif
 
 QoreHashNode* QorePreparedStatement::describe(ExceptionSink* xsink) {
     assert(columns);

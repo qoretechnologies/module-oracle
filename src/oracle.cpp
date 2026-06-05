@@ -24,6 +24,10 @@
 */
 
 #include "oracle.h"
+
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+#include <qore/QoreColumnarResult.h>
+#endif
 #include "oracle-module.h"
 #include "oracleobject.h"
 
@@ -77,6 +81,12 @@ static int dbi_oracle_caps = (
    |DBI_CAP_EVENTS
    |DBI_CAP_HAS_ARRAY_BIND
    |DBI_CAP_HAS_RESULTSET_OUTPUT
+#ifdef QDBI_METHOD_SELECT_TYPED
+   |DBI_CAP_HAS_TYPED_SELECT
+#endif
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+   |DBI_CAP_HAS_COLUMNAR_SELECT
+#endif
 );
 
 static int oracle_commit(Datasource* ds, ExceptionSink* xsink) {
@@ -107,6 +117,32 @@ static QoreValue oracle_select(Datasource* ds, const QoreString* qstr, const Qor
     return bg.execWithPrologue(xsink, false, true);
 }
 
+#ifdef QDBI_METHOD_SELECT_TYPED
+static QoreValue oracle_select_typed(Datasource* ds, const QoreString* qstr, const QoreListNode* args,
+        ExceptionSink* xsink) {
+    QorePreparedStatementHelper bg(ds, xsink);
+
+    if (bg.prepare(qstr, args, true, xsink)) {
+        return QoreValue();
+    }
+
+    return bg.execWithPrologueTyped(xsink, false);
+}
+#endif
+
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+static QoreColumnarResult* oracle_select_columnar(Datasource* ds, const QoreString* qstr, const QoreListNode* args,
+        ExceptionSink* xsink) {
+    QorePreparedStatementHelper bg(ds, xsink);
+
+    if (bg.prepare(qstr, args, true, xsink)) {
+        return nullptr;
+    }
+
+    return bg.execWithPrologueColumnar(xsink);
+}
+#endif
+
 static QoreValue oracle_exec_raw(Datasource* ds, const QoreString* qstr, ExceptionSink* xsink) {
     QorePreparedStatementHelper bg(ds, xsink);
 
@@ -133,6 +169,19 @@ static QoreValue oracle_exec_rows(Datasource* ds, const QoreString* qstr, const 
 
     return bg.execWithPrologue(xsink, true);
 }
+
+#ifdef QDBI_METHOD_SELECT_TYPED
+static QoreValue oracle_exec_rows_typed(Datasource* ds, const QoreString* qstr, const QoreListNode* args,
+        ExceptionSink* xsink) {
+    QorePreparedStatementHelper bg(ds, xsink);
+
+    if (bg.prepare(qstr, args, true, xsink)) {
+        return QoreValue();
+    }
+
+    return bg.execWithPrologueTyped(xsink, true);
+}
+#endif
 
 static int oracle_open(Datasource* ds, ExceptionSink* xsink) {
     //printd(5, "oracle_open() datasource %p for DB=%s open\n", ds, ds->getDBName());
@@ -305,6 +354,15 @@ static QoreHashNode* oracle_stmt_fetch_columns(SQLStatement* stmt, int rows, Exc
    return bg->fetchColumns(rows, xsink);
 }
 
+#ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
+static QoreColumnarResult* oracle_stmt_fetch_columnar(SQLStatement* stmt, int rows, ExceptionSink* xsink) {
+   QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
+   assert(bg);
+
+   return bg->fetchColumnar(rows, xsink);
+}
+#endif
+
 static QoreHashNode* oracle_stmt_describe(SQLStatement* stmt, ExceptionSink* xsink) {
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
@@ -365,6 +423,13 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
    methods.add(QDBI_METHOD_CLOSE, oracle_close);
    methods.add(QDBI_METHOD_SELECT, oracle_select);
    methods.add(QDBI_METHOD_SELECT_ROWS, oracle_exec_rows);
+#ifdef QDBI_METHOD_SELECT_TYPED
+   methods.add(QDBI_METHOD_SELECT_TYPED, oracle_select_typed);
+   methods.add(QDBI_METHOD_SELECT_ROWS_TYPED, oracle_exec_rows_typed);
+#endif
+#ifdef QDBI_METHOD_SELECT_COLUMNAR
+   methods.add(QDBI_METHOD_SELECT_COLUMNAR, oracle_select_columnar);
+#endif
    methods.add(QDBI_METHOD_SELECT_ROW, oracle_select_row);
    methods.add(QDBI_METHOD_EXEC, oracle_exec);
    methods.add(QDBI_METHOD_EXECRAW, oracle_exec_raw);
@@ -386,6 +451,9 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
    methods.add(QDBI_METHOD_STMT_FETCH_ROW, oracle_stmt_fetch_row);
    methods.add(QDBI_METHOD_STMT_FETCH_ROWS, oracle_stmt_fetch_rows);
    methods.add(QDBI_METHOD_STMT_FETCH_COLUMNS, oracle_stmt_fetch_columns);
+#ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
+   methods.add(QDBI_METHOD_STMT_FETCH_COLUMNAR, oracle_stmt_fetch_columnar);
+#endif
    methods.add(QDBI_METHOD_STMT_DESCRIBE, oracle_stmt_describe);
    methods.add(QDBI_METHOD_STMT_NEXT, oracle_stmt_next);
    methods.add(QDBI_METHOD_STMT_CLOSE, oracle_stmt_close);

@@ -32,6 +32,9 @@
 #include <oci.h>
 
 class OraResultSet;
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+class QoreColumnarResult;
+#endif
 
 // default prefetch row count
 #define PREFETCH_DEFAULT 1
@@ -230,6 +233,9 @@ public:
 
     DLLLOCAL QoreHashNode* fetchColumns(OraResultSet& columns, int rows, bool cols, ExceptionSink* xsink);
     DLLLOCAL QoreHashNode* fetchColumns(bool cols, ExceptionSink* xsink);
+#if defined(QDBI_METHOD_SELECT_COLUMNAR) || defined(QDBI_METHOD_STMT_FETCH_COLUMNAR)
+    DLLLOCAL QoreColumnarResult* fetchColumnar(OraResultSet& columns, int rows, bool cols, ExceptionSink* xsink);
+#endif
 
     DLLLOCAL QoreHashNode* describe(OraResultSet& columns, ExceptionSink* xsink);
 

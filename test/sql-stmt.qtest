@@ -23,6 +23,7 @@ public class SqlStmtTest inherits QUnit::Test {
         addTestCase("Test 3", \test3(), NOTHING);
         addTestCase("Test 4", \test4(), NOTHING);
         addTestCase("Test 5", \test5(), NOTHING);
+        addTestCase("Columnar result test", \testColumnarResult(), NOTHING);
 
         # Return for compatibility with test harness that checks return value.
         set_return_value(main());
@@ -59,6 +60,15 @@ public class SqlStmtTest inherits QUnit::Test {
         }
 
         ds = new DatasourcePool(connStr);
+    }
+
+    auto getColumn(ColumnarResult result, string name) {
+        string cname = result.columnNames().contains(name) ? name : name.upr();
+        return result.getColumn(cname);
+    }
+
+    list asList(auto value) {
+        return value.type() == Type::List ? value : value.toList();
     }
 
     createTable() {
@@ -124,7 +134,7 @@ public class SqlStmtTest inherits QUnit::Test {
         selectStmt.close();
 
         selectStmt.exec();
-        any v = selectStmt.fetchRows(-1);
+        auto v = selectStmt.fetchRows(-1);
         assertEq(4, elements v);
         selectStmt.close();
 
@@ -156,7 +166,7 @@ public class SqlStmtTest inherits QUnit::Test {
         on_exit stmt.commit();
 
         stmt.bindPlaceholders(Type::Date);
-        any v = stmt.getOutput();
+        auto v = stmt.getOutput();
         assertEq(1, elements v);
 
         stmt.close();
@@ -183,7 +193,7 @@ public class SqlStmtTest inherits QUnit::Test {
         try {
             on_success stmt.commit();
             on_error stmt.rollback();
-            any rv = stmt.fetchColumns(-1);
+            auto rv = stmt.fetchColumns(-1);
             fail();
         } catch (hash<ExceptionInfo> ex) {
             assertTrue(ex.err.val());
@@ -210,7 +220,7 @@ public class SqlStmtTest inherits QUnit::Test {
 
         selectStmt.exec();
         on_exit selectStmt.commit();
-        any rv = selectStmt.fetchRows();
+        auto rv = selectStmt.fetchRows();
         assertEq((), rv);
     }
 
@@ -235,5 +245,73 @@ end;");
             plsql.close();
         }
     }
-}
 
+    testColumnarResult() {
+        if (!ds) {
+            testSkip("no DB connection");
+        }
+
+        on_exit ds.commit();
+
+        ColumnarResult direct = ds.selectColumnar(
+            "select 1 as id, 'Alice' as name from dual union all select 2 as id, 'Bob' as name from dual order by id");
+        assertEq(2, direct.numRows());
+        assertEq(2, direct.numCols());
+        assertEq("buffer<int64>", getColumn(direct, "id").fullType());
+        assertEq((1, 2), map int($1), asList(getColumn(direct, "id")));
+        assertEq(("Alice", "Bob"), map trim($1), asList(getColumn(direct, "name")));
+
+        ColumnarResult empty = ds.selectColumnar("select 1 as id, 'Alice' as name from dual where 1 = 0");
+        assertEq(0, empty.numRows());
+        assertEq(2, empty.numCols());
+        assertEq("buffer<int64>", getColumn(empty, "id").fullType());
+
+        ColumnarResult nullable = ds.selectColumnar(
+            "select cast(null as number) as id from dual union all select 42 as id from dual order by id nulls first");
+        assertEq("buffer<*int64>", getColumn(nullable, "id").fullType());
+        assertEq((NOTHING, 42), asList(getColumn(nullable, "id")));
+
+        ColumnarResult floats = ds.selectColumnar("
+            select cast(1.5 as binary_double) as score from dual
+            union all select cast(2.25 as binary_double) as score from dual order by score");
+        assertEq("buffer<float64>", getColumn(floats, "score").fullType());
+        assertEq((1.5, 2.25), asList(getColumn(floats, "score")));
+
+        ColumnarResult decimalNumbers = ds.selectColumnar(
+            "select 1.5 as amount from dual union all select 2.25 as amount from dual order by amount");
+        assertEq("list<number>", getColumn(decimalNumbers, "amount").fullType());
+        assertEq((1.5n, 2.25n), asList(getColumn(decimalNumbers, "amount")));
+
+        ColumnarResult denseDecimals = ds.selectColumnar("
+            select cast(null as number(18,2)) as amount from dual
+            union all select cast(1.50 as number(18,2)) as amount from dual
+            union all select cast(2.25 as number(18,2)) as amount from dual
+            order by amount nulls first");
+        assertEq("buffer<*decimal128>", getColumn(denseDecimals, "amount").fullType());
+        assertEq((NOTHING, 1.5n, 2.25n), asList(getColumn(denseDecimals, "amount")));
+        list<hash<auto>> decimalSchema = denseDecimals.schemaV2();
+        assertEq("decimal128", decimalSchema[0].kind);
+        assertEq(18, decimalSchema[0].precision);
+        assertEq(2, decimalSchema[0].scale);
+
+        SQLStatement stmt(ds);
+        stmt.prepare("
+            select 1 as id, 'Alice' as name from dual
+            union all select 2 as id, 'Bob' as name from dual
+            union all select 3 as id, 'Charlie' as name from dual
+            order by id");
+        stmt.exec();
+        on_exit stmt.commit();
+
+        ColumnarResult first = stmt.fetchColumnar(rows: 2);
+        ColumnarResult rest = stmt.fetchColumnar(rows: -1);
+        assertEq(2, first.numRows());
+        assertEq(1, rest.numRows());
+        assertEq("buffer<int64>", getColumn(first, "id").fullType());
+        assertEq("buffer<int64>", getColumn(rest, "id").fullType());
+        assertEq((1, 2), map int($1), asList(getColumn(first, "id")));
+        assertEq((3,), map int($1), asList(getColumn(rest, "id")));
+        assertEq(("Alice", "Bob"), map trim($1), asList(getColumn(first, "name")));
+        assertEq(("Charlie",), map trim($1), asList(getColumn(rest, "name")));
+    }
+}
