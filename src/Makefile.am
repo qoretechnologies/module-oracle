@@ -21,6 +21,7 @@ else
 ORACLE_SOURCES = oracle.cpp \
 	oracleobject.cpp \
 	QoreOracleConnection.cpp \
+	QoreOracleBulkLoad.cpp \
 	QoreOracleStatement.cpp \
 	QorePreparedStatement.cpp \
 	OraColumnValue.cpp \

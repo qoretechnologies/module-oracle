@@ -6,7 +6,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -151,6 +151,24 @@ static QoreValue oracle_exec_raw(Datasource* ds, const QoreString* qstr, Excepti
 
     return bg.execWithPrologue(xsink, false);
 }
+
+#ifdef QDBI_METHOD_BULK_LOAD_BEGIN
+static int oracle_bulk_load_begin(Datasource* ds, const QoreString* table, const QoreListNode* columns,
+        const QoreHashNode* options, ExceptionSink* xsink) {
+    QoreOracleConnection& conn = ds->getPrivateDataRef<QoreOracleConnection>();
+    return conn.bulkLoadBegin(table, columns, options, xsink);
+}
+
+static int oracle_bulk_load_rows(Datasource* ds, const QoreHashNode* rows, ExceptionSink* xsink) {
+    QoreOracleConnection& conn = ds->getPrivateDataRef<QoreOracleConnection>();
+    return conn.bulkLoadRows(rows, xsink);
+}
+
+static int oracle_bulk_load_end(Datasource* ds, bool success, ExceptionSink* xsink) {
+    QoreOracleConnection& conn = ds->getPrivateDataRef<QoreOracleConnection>();
+    return conn.bulkLoadEnd(success, xsink);
+}
+#endif
 
 static QoreHashNode* oracle_select_row(Datasource* ds, const QoreString* qstr, const QoreListNode* args, ExceptionSink* xsink) {
     QorePreparedStatementHelper bg(ds, xsink);
@@ -433,6 +451,11 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
    methods.add(QDBI_METHOD_SELECT_ROW, oracle_select_row);
    methods.add(QDBI_METHOD_EXEC, oracle_exec);
    methods.add(QDBI_METHOD_EXECRAW, oracle_exec_raw);
+#ifdef QDBI_METHOD_BULK_LOAD_BEGIN
+   methods.add(QDBI_METHOD_BULK_LOAD_BEGIN, oracle_bulk_load_begin);
+   methods.add(QDBI_METHOD_BULK_LOAD_ROWS, oracle_bulk_load_rows);
+   methods.add(QDBI_METHOD_BULK_LOAD_END, oracle_bulk_load_end);
+#endif
    methods.add(QDBI_METHOD_COMMIT, oracle_commit);
    methods.add(QDBI_METHOD_ROLLBACK, oracle_rollback);
    methods.add(QDBI_METHOD_GET_SERVER_VERSION, oracle_get_server_version);

@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -103,6 +103,9 @@ public:
 
 // forward reference
 class QorePreparedStatement;
+#ifdef QDBI_METHOD_BULK_LOAD_BEGIN
+class QoreOracleBulkLoadState;
+#endif
 
 class QoreOracleConnection {
 public:
@@ -122,6 +125,11 @@ public:
 
     OCI_Library ocilib;
 
+#ifdef QDBI_METHOD_BULK_LOAD_BEGIN
+    //! active OCI direct path load state
+    QoreOracleBulkLoadState* bulk_load;
+#endif
+
     QoreString cstr; // connection string
     int number_support;
 
@@ -139,6 +147,35 @@ public:
     DLLLOCAL int handleAlloc(void **descpp, unsigned type, const char *who, ExceptionSink* xsink);
 
     DLLLOCAL int logon(ExceptionSink* xsink);
+
+#ifdef QDBI_METHOD_BULK_LOAD_BEGIN
+    /** Starts a driver-native OCI direct path load operation.
+        @param table target table name
+        @param columns ordered target column names
+        @param options native direct-path options, or `nullptr`
+        @param xsink exception sink
+        @return 0 when native loading started, 1 when dynamically unavailable, -1 on error
+        @throw DBI:ORACLE:DIRECT-PATH-ERROR for invalid options, identifiers, or OCI setup failures
+    */
+    DLLLOCAL int bulkLoadBegin(const QoreString* table, const QoreListNode* columns,
+        const QoreHashNode* options, ExceptionSink* xsink);
+
+    /** Loads one hash-of-columns block through the active OCI direct path operation.
+        @param rows hash of column names to equally-sized lists or broadcast scalar values
+        @param xsink exception sink
+        @return 0 on success, -1 on error
+        @throw DBI:ORACLE:DIRECT-PATH-ERROR for invalid row shapes, values, or OCI load failures
+    */
+    DLLLOCAL int bulkLoadRows(const QoreHashNode* rows, ExceptionSink* xsink);
+
+    /** Finishes and commits or aborts the active OCI direct path operation.
+        @param success `true` to finish and commit, `false` to abort
+        @param xsink exception sink
+        @return 0 on success, -1 on error
+        @throw DBI:ORACLE:DIRECT-PATH-ERROR when OCI cannot finish or abort the operation
+    */
+    DLLLOCAL int bulkLoadEnd(bool success, ExceptionSink* xsink);
+#endif
 
     DLLLOCAL void clearWarnings() {
         ub4 ix = 1;

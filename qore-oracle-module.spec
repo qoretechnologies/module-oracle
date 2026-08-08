@@ -1,4 +1,4 @@
-%define mod_ver 3.3.3
+%define mod_ver 3.4.0
 
 %{?_datarootdir: %global mydatarootdir %_datarootdir}
 %{!?_datarootdir: %global mydatarootdir /usr/share}
@@ -106,6 +106,9 @@ This RPM provides API documentation, test and example programs
 %doc docs/oracle test/*.q*
 
 %changelog
+* Sat Aug 8 2026 David Nichols <david@qore.org> - 3.4.0
+- added native OCI direct path bulk loading
+
 * Wed Jun 19 2024 David Nichols <david@qore.org> - 3.3.3
 - updated to version 3.3.3
 

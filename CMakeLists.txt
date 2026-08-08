@@ -1,7 +1,7 @@
 
 cmake_minimum_required(VERSION 3.5.0)
 
-project(qore-oracle-module VERSION 3.3.3)
+project(qore-oracle-module VERSION 3.4.0)
 
 option(enable-scu "build as a single compilation unit" ON)
 
@@ -59,6 +59,7 @@ set(CPP_SRC
     src/OraColumnValue.cpp
     src/OraResultSet.cpp
     src/QoreOracleConnection.cpp
+    src/QoreOracleBulkLoad.cpp
     src/QoreOracleStatement.cpp
     src/QorePreparedStatement.cpp
 

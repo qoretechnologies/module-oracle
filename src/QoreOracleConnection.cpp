@@ -32,6 +32,9 @@ static char session_sql[] = "alter session set nls_numeric_characters = \". \"";
 QoreOracleConnection::QoreOracleConnection(Datasource &n_ds, ExceptionSink *xsink)
   : errhp(0), svchp(0), srvhp(0), usrhp(0), ocilib_cn(0), ds(n_ds), ocilib_init(false),
     server_tz(currentTZ()),
+#ifdef QDBI_METHOD_BULK_LOAD_BEGIN
+    bulk_load(nullptr),
+#endif
     number_support(OPT_NUM_DEFAULT) {
    // locking is done on the level above with the Datasource class
 
@@ -178,6 +181,13 @@ QoreOracleConnection::~QoreOracleConnection() {
    //printd(5, "QoreOracleConnection::~QoreOracleConnection() this=%p ds=%p envhp=%p svchp=%p ocilib envhp=%p\n", this, &ds, *env, svchp, ocilib.env);
    //printd(5, "QoreOracleConnection::~QoreOracleConnection(): connection to %s closed.\n", ds.getDBName());
    //printd(5, "QoreOracleConnection::~QoreOracleConnection(): svchp, errhp: %p, %p\n", svchp, errhp);
+#ifdef QDBI_METHOD_BULK_LOAD_BEGIN
+   if (bulk_load) {
+      ExceptionSink xsink;
+      bulkLoadEnd(false, &xsink);
+   }
+#endif
+
    if (svchp)
       logoff();
 
@@ -452,6 +462,14 @@ int QoreOracleConnection::commit(ExceptionSink* xsink) {
 }
 
 int QoreOracleConnection::rollback(ExceptionSink* xsink) {
+#ifdef QDBI_METHOD_BULK_LOAD_BEGIN
+   // ManagedDatasource rolls back before it invokes the low-level close callback.  OCI rejects an
+   // ordinary transaction rollback while a direct path transaction is active, so terminate that
+   // protocol first.  The core's later close backstop is harmless because bulk_load is already null.
+   if (bulk_load && bulkLoadEnd(false, xsink)) {
+      return -1;
+   }
+#endif
    if (qore_check_cancel(xsink)) {
       return -1;
    }

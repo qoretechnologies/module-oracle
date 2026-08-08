@@ -1,0 +1,387 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+%modern
+
+%requires qore >= 3.0
+
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires oracle
+%requires SqlUtil
+%requires BulkSqlUtil
+
+%exec-class OracleNativeBulkLoadTest
+
+#! collects native bulk-load stream events and optionally rejects an oversized stream
+class OracleNativeBulkStreamCollector {
+    public {
+        list<hash<SqlMutationEventInfo>> events();
+        int abort_after = 0;
+    }
+
+    *hash<SqlMutationDecisionInfo> event(hash<SqlMutationEventInfo> ev) {
+        events += ev;
+        if (abort_after && ev.event == SQL_MUTATION_EVENT_STREAM_PROGRESS
+            && ev.consumed_bytes > abort_after) {
+            return <SqlMutationDecisionInfo>{
+                "admit": False,
+                "err": "ORACLE-NATIVE-DIRECT-PATH-OVER-BUDGET",
+                "desc": sprintf("Oracle direct path load consumed %d bytes", ev.consumed_bytes),
+            };
+        }
+        return NOTHING;
+    }
+
+    list<hash<SqlMutationEventInfo>> streamEvents() {
+        return map $1, events, $1.event >= SQL_MUTATION_EVENT_STREAM_BEGIN
+            && $1.event <= SQL_MUTATION_EVENT_STREAM_END;
+    }
+}
+
+#! verifies BulkSqlUtil's native Oracle OCI direct path against a live server
+public class OracleNativeBulkLoadTest inherits QUnit::Test {
+    public {
+        const TableName = "qore_oracle_native_bulk_test";
+        const Rows = 4000;
+        const BlockSize = 1000;
+        # With a 64 KiB OCI stream, the long-short-long pattern makes a later
+        # continuation convert more rows than an earlier one.  This verifies
+        # that OCI's per-call row count is added to the previous row offset.
+        const TextWidth = 400;
+        const ShortRowsPerBlock = 400;
+
+        const LoadInfo = <SqlMutationInfo>{
+            "op_id": "oracle-native-direct-path-1",
+            "path_id": TableName + ".insert",
+            "op_code": 9,
+            "effect": SQL_MUTATION_EFFECT_MAY_GROW,
+            "max_growth_bytes": 1048576,
+        };
+    }
+
+    private {
+        *string connstr;
+        OracleNativeBulkStreamCollector obs();
+    }
+
+    constructor() : Test("OracleNativeBulkLoadTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE ?? shift ARGV;
+
+        addTestCase("native capability and scalar rows", \capabilityAndScalarTest());
+        addTestCase("native supported Oracle scalar types", \supportedTypesTest());
+        addTestCase("unsupported Oracle type automatic fallback", \unsupportedTypeFallbackTest());
+        addTestCase("OCI direct path option and identifier validation", \optionValidationTest());
+        addTestCase("BulkSqlUtil OCI direct path", \nativeDirectPathTest());
+        addTestCase("OCI direct path stream overrun", \nativeOverrunTest());
+        addTestCase("OCI direct path stream reporting disabled", \streamBoundsDisabledTest());
+        addTestCase("OCI direct path row validation", \rowValidationTest());
+        addTestCase("OCI direct path conversion error cleanup", \conversionErrorTest());
+        addTestCase("OCI direct path finish commit semantics", \finishCommitTest());
+        addTestCase("close aborts OCI direct path", \closeAbortTest());
+
+        set_return_value(main());
+    }
+
+    private Datasource setupTable() {
+        if (!connstr.val()) {
+            testSkip("no Oracle connection; set QORE_DB_CONNSTR_ORACLE");
+        }
+        Datasource ds;
+        try {
+            ds = new Datasource(connstr);
+            if (ds.getDriverName() != "oracle") {
+                testSkip(sprintf("connection is for the %y driver, not oracle", ds.getDriverName()));
+            }
+            ds.setAutoCommit(False);
+            ds.open();
+        } catch (hash<ExceptionInfo> ex) {
+            testSkip("no Oracle connection: " + ex.err + ": " + ex.desc);
+        }
+        try {
+            ds.execRaw(sprintf("drop table %s purge", TableName));
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            ds.rollback();
+        }
+        ds.execRaw(sprintf("create table %s (int_col number(10), text_col varchar2(%d) not null, "
+            "raw_col raw(16), date_col date, ts_col timestamp(6), tz_col timestamp(6) with time zone, "
+            "ltz_col timestamp(6) with local time zone, clob_col clob)",
+            TableName, TextWidth));
+        ds.commit();
+        obs.events = ();
+        obs.abort_after = 0;
+        return ds;
+    }
+
+    private dropTable(Datasource ds) {
+        ds.clearMutationObserver();
+        try {
+            ds.rollback();
+            ds.execRaw(sprintf("drop table %s purge", TableName));
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            ds.rollback();
+        }
+    }
+
+    private SqlUtil::AbstractTable getTable(Datasource ds) {
+        return (new SqlUtil::Table(ds, TableName)).getTable();
+    }
+
+    private queueRows(BulkSqlUtil::BulkInsertOperation op) {
+        for (int i = 0; i < Rows; ++i) {
+            int block_pos = i % BlockSize;
+            int width = block_pos >= 200 && block_pos < 200 + ShortRowsPerBlock ? 1 : TextWidth;
+            op.queueData({"int_col": 1000 + i, "text_col": strmul("x", width)});
+        }
+    }
+
+    private int payloadBytes() {
+        # the Oracle driver counts the serialized field payload, without OCI framing
+        return Rows * 4 + (Rows / BlockSize)
+            * (ShortRowsPerBlock + (BlockSize - ShortRowsPerBlock) * TextWidth);
+    }
+
+    capabilityAndScalarTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertTrue((ds.getCapabilities() & DBI_CAP_HAS_BULK_LOAD) != 0);
+        assertTrue(ds.bulkLoadBegin(TableName, ("int_col", "text_col"), NOTHING));
+        ds.bulkLoadRows({"int_col": (), "text_col": ()});
+        ds.bulkLoadRows({"int_col": (1, 2, 3), "text_col": "constant"});
+        ds.bulkLoadEnd(True);
+
+        hash<auto> result = ds.select(sprintf("select int_col, text_col from %s order by int_col", TableName));
+        assertEq((1, 2, 3), result.int_col);
+        assertEq(("constant", "constant", "constant"), result.text_col);
+        ds.commit();
+    }
+
+    nativeDirectPathTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        ds.setMutationObserver(\obs.event(), SQL_MUTATION_MASK_ALL);
+
+        {
+            SqlMutationDeclaration decl(ds, LoadInfo);
+            BulkSqlUtil::BulkInsertOperation op(getTable(ds), {
+                "bulk_load": True,
+                "block_size": BlockSize,
+                "bulk_load_options": {
+                    "oracle_direct_path_buffer_size": 65536,
+                    "oracle_direct_path_parallel": False,
+                    "oracle_direct_path_nolog": False,
+                },
+            });
+            on_error op.discard();
+            queueRows(op);
+            op.flush();
+            op.endStream();
+        }
+
+        list<hash<SqlMutationEventInfo>> stream = obs.streamEvents();
+        assertEq(1, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_BEGIN).size());
+        assertEq(4, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_PROGRESS).size());
+        assertEq(1, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_END).size());
+        assertEq(payloadBytes(), stream.last().consumed_bytes);
+        assertEq(SQL_MUTATION_OUTCOME_OK, stream.last().outcome);
+        assertEq(Rows, ds.selectRow(sprintf("select count(1) as c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    supportedTypesTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertTrue(ds.bulkLoadBegin(TableName,
+            ("int_col", "text_col", "date_col", "ts_col"), NOTHING));
+        ds.bulkLoadRows({
+            "int_col": (10, 11),
+            "text_col": ("typed", "nulls"),
+            "date_col": (2026-08-08T12:34:56, NOTHING),
+            "ts_col": (2026-08-08T12:34:56.123456, NOTHING),
+        });
+        ds.bulkLoadEnd(True);
+
+        hash<auto> result = ds.select(sprintf(
+            "select int_col, to_char(date_col, 'YYYY-MM-DD HH24:MI:SS') date_value, "
+            "to_char(ts_col, 'YYYY-MM-DD HH24:MI:SS.FF6') ts_value "
+            "from %s order by int_col", TableName));
+        assertEq((10, 11), result.int_col);
+        assertEq(("2026-08-08 12:34:56", NULL), result.date_value);
+        assertEq(("2026-08-08 12:34:56.123456", NULL), result.ts_value);
+        ds.commit();
+    }
+
+    unsupportedTypeFallbackTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertFalse(ds.bulkLoadBegin(TableName, ("raw_col",), NOTHING));
+        assertFalse(ds.bulkLoadBegin(TableName, ("tz_col",), NOTHING));
+        assertFalse(ds.bulkLoadBegin(TableName, ("ltz_col",), NOTHING));
+        assertFalse(ds.bulkLoadBegin(TableName, ("clob_col",), NOTHING));
+        ds.rollback();
+
+        BulkSqlUtil::BulkInsertOperation op(getTable(ds), {
+            "bulk_load": "auto",
+            "block_size": 1,
+        });
+        on_error op.discard();
+        op.queueData({
+            "int_col": 20,
+            "text_col": "fallback",
+            "raw_col": <0102aaff>,
+            "clob_col": "ordinary array bind",
+        });
+        op.endStream();
+        ds.commit();
+
+        assertEq("ordinary array bind", ds.selectRow(sprintf(
+            "select clob_col from %s where int_col = 20", TableName)).clob_col);
+        assertEq("0102AAFF", ds.selectRow(sprintf(
+            "select rawtohex(raw_col) raw_value from %s where int_col = 20", TableName)).raw_value);
+        ds.commit();
+    }
+
+    optionValidationTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertThrows("DBI:ORACLE:DIRECT-PATH-ERROR", sub () {
+            ds.bulkLoadBegin(TableName, ("int_col",), {"oracle_direct_path_buffer_size": 65535});
+        });
+        assertThrows("DBI:ORACLE:DIRECT-PATH-ERROR", sub () {
+            ds.bulkLoadBegin(TableName, ("int_col",), {"oracle_direct_path_parallel": "yes"});
+        });
+        assertThrows("DBI:ORACLE:DIRECT-PATH-ERROR", sub () {
+            ds.bulkLoadBegin(TableName, ("int_col", "int_col"), NOTHING);
+        });
+        assertFalse(ds.bulkLoadBegin(sprintf("\"%s\"", TableName), ("int_col",), NOTHING));
+        ds.rollback();
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("int_col", "text_col"), {
+            "oracle_direct_path_buffer_size": 65536,
+            "oracle_direct_path_parallel": False,
+            "oracle_direct_path_nolog": False,
+            "stream_bounds": False,
+        }));
+        ds.bulkLoadRows({"int_col": (30, 31), "text_col": "discarded"});
+        ds.bulkLoadEnd(False);
+        ds.rollback();
+        assertEq(0, ds.selectRow(sprintf("select count(1) as c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    nativeOverrunTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        obs.abort_after = 65536;
+        ds.setMutationObserver(\obs.event(), SQL_MUTATION_MASK_ALL);
+
+        {
+            SqlMutationDeclaration decl(ds, LoadInfo);
+            BulkSqlUtil::BulkInsertOperation op(getTable(ds), {
+                "bulk_load": True,
+                "block_size": BlockSize,
+            });
+            on_error op.discard();
+            assertThrows("ORACLE-NATIVE-DIRECT-PATH-OVER-BUDGET", sub () { queueRows(op); });
+            op.discard();
+        }
+
+        list<hash<SqlMutationEventInfo>> stream = obs.streamEvents();
+        assertEq(1, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_BEGIN).size());
+        assertEq(1, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_PROGRESS).size());
+        assertEq(1, (map $1, stream, $1.event == SQL_MUTATION_EVENT_STREAM_END).size());
+        assertEq(SQL_MUTATION_OUTCOME_NOT_EXECUTED, stream.last().outcome);
+
+        ds.rollback();
+        ds.clearMutationObserver();
+        assertEq(0, ds.selectRow(sprintf("select count(1) as c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    streamBoundsDisabledTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        ds.setMutationObserver(\obs.event(), SQL_MUTATION_MASK_ALL);
+
+        BulkSqlUtil::BulkInsertOperation op(getTable(ds), {
+            "bulk_load": True,
+            "block_size": BlockSize,
+            "stream_bounds": False,
+        });
+        on_error op.discard();
+        queueRows(op);
+        op.flush();
+        op.endStream();
+
+        assertEq((), obs.streamEvents());
+        assertEq(Rows, ds.selectRow(sprintf("select count(1) as c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    rowValidationTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("int_col", "text_col"), NOTHING));
+        assertThrows("DBI:ORACLE:DIRECT-PATH-ERROR", sub () {
+            ds.bulkLoadRows({"int_col": (1, 2), "text_col": ("one",)});
+        });
+        ds.bulkLoadEnd(False);
+        ds.rollback();
+        assertEq(0, ds.selectRow(sprintf("select count(1) as c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    conversionErrorTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("int_col", "text_col"), NOTHING));
+        assertThrows("DBI:ORACLE:OCI-ERROR", sub () {
+            ds.bulkLoadRows({"int_col": (1, "not-a-number"), "text_col": ("one", "bad")});
+        });
+        ds.bulkLoadEnd(False);
+        ds.rollback();
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("int_col", "text_col"), NOTHING));
+        ds.bulkLoadRows({"int_col": (3,), "text_col": ("three",)});
+        ds.bulkLoadEnd(True);
+        assertEq(1, ds.selectRow(sprintf("select count(1) as c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    finishCommitTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("int_col", "text_col"), NOTHING));
+        ds.bulkLoadRows({"int_col": (1,), "text_col": ("committed",)});
+        ds.bulkLoadEnd(True);
+        ds.rollback();
+
+        # OCIDirPathFinish() commits the direct path load independently of Datasource::commit().
+        assertEq(1, ds.selectRow(sprintf("select count(1) as c from %s", TableName)).c);
+        ds.commit();
+    }
+
+    closeAbortTest() {
+        Datasource ds = setupTable();
+        on_exit dropTable(ds);
+        ds.setAutoCommit(True);
+
+        assertTrue(ds.bulkLoadBegin(TableName, ("int_col", "text_col"), NOTHING));
+        ds.bulkLoadRows({"int_col": (1, 2), "text_col": ("one", "two")});
+        # Datasource close invokes the driver's abort callback before closing the OCI session.
+        ds.close();
+        ds.open();
+        ds.setAutoCommit(False);
+        assertEq(0, ds.selectRow(sprintf("select count(1) as c from %s", TableName)).c);
+        ds.commit();
+    }
+}

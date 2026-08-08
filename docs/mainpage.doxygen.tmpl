@@ -5,6 +5,7 @@
     Contents of this documentation:
     - @ref oracleintro
     - @ref ora_options
+    - @ref ora_native_bulk_load
     - @ref bindings_and_types
     - @ref binding_by_value
     - @ref binding_by_placeholder
@@ -59,6 +60,7 @@
     - \c DBI_CAP_HAS_ARRAY_BIND
     - \c DBI_CAP_HAS_RESULTSET_OUTPUT
     - \c DBI_CAP_HAS_COLUMNAR_SELECT
+    - \c DBI_CAP_HAS_BULK_LOAD
 
     When built against a %Qore library with columnar DBI support, the driver implements
     \c Datasource::selectColumnar() and \c SQLStatement::fetchColumnar() to return
@@ -66,6 +68,58 @@
     Integer, floating-point, and safe \c NUMBER(precision,scale) values are delivered as packed
     dense buffers, including \c decimal128 buffers when the precision and scale fit the fixed-width
     decimal representation; other Oracle data types use the standard columnar conversion path.
+
+    @section ora_native_bulk_load Native OCI Direct Path Bulk Loading
+
+    When built against a %Qore library with the native bulk-load DBI API, this driver implements
+    \c DBI_CAP_HAS_BULK_LOAD with OCI Direct Path Load.  The path is insert-only and explicitly
+    opt-in through BulkSqlUtil; ordinary inserts and array binds remain the default.
+
+    @code
+%requires BulkSqlUtil
+%requires SqlUtil
+
+Datasource ds("oracle:user/password@db%host:1521");
+SqlUtil::AbstractTable table = (new SqlUtil::Table(ds, "my_table")).getTable();
+BulkSqlUtil::BulkInsertOperation op(table, {
+    "bulk_load": True,       # require direct path; "auto" falls back when ineligible
+    "block_size": 1000,
+    "bulk_load_options": {
+        "oracle_direct_path_buffer_size": 1048576,
+    },
+});
+on_error {
+    op.discard();
+    ds.rollback();
+}
+map op.queueData($1), rows.iterator();
+op.endStream();
+    @endcode
+
+    One direct-path context remains active across all buffered blocks.  Numeric, character, \c DATE,
+    and non-time-zone \c TIMESTAMP columns are eligible when the table and column names are simple
+    unquoted Oracle identifiers.  Quoted identifiers, \c RAW, LOB, \c LONG, interval, object,
+    collection, \c REF, cursor, and time-zone timestamp columns are dynamically ineligible;
+    \c "bulk_load": \c "auto" uses the ordinary insert path for these cases, while \c True reports
+    that the required native path is unavailable.
+
+    The following optional values can be passed in \c "bulk_load_options":
+    - \c "oracle_direct_path_buffer_size": OCI stream buffer size in bytes; the minimum is 65536 and
+      the default is 1048576
+    - \c "oracle_direct_path_parallel": enables OCI parallel direct-path loading; defaults to \c False
+    - \c "oracle_direct_path_nolog": requests OCI no-logging mode; defaults to \c False
+
+    @warning OCI Direct Path Load has materially different transaction, trigger, constraint, and
+    logging behavior from ordinary SQL.  In particular, successful \c OCIDirPathFinish() commits the
+    direct-path load independently of \c Datasource::commit(), while abort leaves its rows invisible.
+    Use this opt-in only where those Oracle semantics are acceptable.  Enabling parallel or no-logging
+    mode can impose additional Oracle restrictions and operational requirements.
+
+    The driver validates every hash-of-columns block, broadcasts scalar values, cooperatively checks
+    cancellation during large conversions, and aborts the OCI context on errors, observer refusal,
+    rollback, or connection close.  Native loads own mutation-observer stream reporting so events are
+    emitted exactly once.  Consumed bytes are the encoded field payload supplied to OCI, excluding OCI
+    framing; NULL fields contribute zero bytes.
 
     The \c Datasource::getServerVersion() and \c Datasource::getClientVersion()
     methods are implemented for this driver. \c Datasource::getServerVersion()
@@ -561,6 +615,15 @@ kpcest_err_handler: Max errors exceeded..Closing connection
     as the rpath used when linking is set automatically when the module is installed.
 
     @section ora_releasenotes Release Notes
+
+    @subsection oracle3_4_0 oracle Driver Version 3.4.0
+    - added opt-in \c DBI_CAP_HAS_BULK_LOAD support with a persistent OCI Direct Path Load context
+      spanning all BulkSqlUtil blocks
+    - added exact field-payload stream accounting, cooperative cancellation, row-shape validation,
+      observer refusal handling, and abort backstops for rollback and connection close
+    - added automatic fallback for identifiers and Oracle data types that are not safely eligible for
+      direct-path loading
+    - documented Oracle direct-path transaction, trigger, constraint, logging, and type restrictions
 
     @subsection oracle3_3_3 oracle Driver Version 3.3.3
     - fixed array binds of strings with values 32K bytes or longer; in this case the values are all bound as CLOB

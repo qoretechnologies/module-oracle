@@ -38,6 +38,7 @@ EXTRA_DIST = COPYING.MIT COPYING.LGPL AUTHORS README \
 	test/aq-test.q \
 	test/sql-stmt-describe.q \
     test/oracle.qtest \
+	test/oracle-native-bulk-load.qtest \
 	$(USER_MODULES) \
 	qore-oracle-module.spec
 

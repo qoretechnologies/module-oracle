@@ -4,6 +4,7 @@
 #include "oracle.cpp"
 #include "oracleobject.cpp"
 #include "QoreOracleConnection.cpp"
+#include "QoreOracleBulkLoad.cpp"
 #include "QoreOracleStatement.cpp"
 #include "QorePreparedStatement.cpp"
 #include "OraColumnValue.cpp"
@@ -30,4 +31,3 @@
 #include "ocilib/dequeue.cpp"
 #include "ocilib/agent.cpp"
 #include "ocilib/callback.cpp"
-
