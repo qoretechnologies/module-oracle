@@ -6,18 +6,14 @@ default:
     - k8s
     - amd64
   before_script:
-    - |
-        curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-        -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-        -d "{\"state\": \"pending\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
+    - test/docker_test/github_status.sh pending
     - set +e
 
 variables:
   REPO_NAME: module-oracle
 
-test-ubuntu:
+.oracle_test:
   stage: test
-  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop
   services:
     - name: gvenzl/oracle-free:slim
       alias: oracle
@@ -26,41 +22,32 @@ test-ubuntu:
     ORACLE_PASSWORD: omq
     DOCKER_ORACLE: "1"
   script:
-    - test/docker_test/init_oracle.sh
+    # NOTE: "set +e" above means that a failure here would otherwise be ignored; the exit status must
+    # be checked explicitly, otherwise the test suite runs against a DB that never came up and the
+    # real cause is buried under misleading test failures
     - |
-        if test/docker_test/test-ubuntu.sh; then
-          curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-            -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-            -d "{\"state\": \"success\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
+        if ! test/docker_test/init_oracle.sh; then
+          echo "ERROR: the Oracle DB is not available; aborting the build without running any tests" >&2
+          test/docker_test/github_status.sh failure
+          exit 1
+        fi
+    - |
+        if ${TEST_SCRIPT}; then
+          test/docker_test/github_status.sh success
           exit 0
         else
-          curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-            -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-            -d "{\"state\": \"failure\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
+          test/docker_test/github_status.sh failure
           exit 1
         fi
 
-test-alpine:
-  stage: test
-  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop-alpine
-  services:
-    - name: gvenzl/oracle-free:slim
-      alias: oracle
-      pull_policy: always
+test-ubuntu:
+  extends: .oracle_test
+  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop
   variables:
-    ORACLE_PASSWORD: omq
-    DOCKER_ORACLE: "1"
-  script:
-    - test/docker_test/init_oracle.sh
-    - |
-        if test/docker_test/test-alpine.sh; then
-          curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-            -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-            -d "{\"state\": \"success\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
-          exit 0
-        else
-          curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-            -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-            -d "{\"state\": \"failure\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
-          exit 1
-        fi
+    TEST_SCRIPT: test/docker_test/test-ubuntu.sh
+
+test-alpine:
+  extends: .oracle_test
+  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop-alpine
+  variables:
+    TEST_SCRIPT: test/docker_test/test-alpine.sh

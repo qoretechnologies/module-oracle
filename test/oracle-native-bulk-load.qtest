@@ -87,17 +87,14 @@ public class OracleNativeBulkLoadTest inherits QUnit::Test {
         if (!connstr.val()) {
             testSkip("no Oracle connection; set QORE_DB_CONNSTR_ORACLE");
         }
-        Datasource ds;
-        try {
-            ds = new Datasource(connstr);
-            if (ds.getDriverName() != "oracle") {
-                testSkip(sprintf("connection is for the %y driver, not oracle", ds.getDriverName()));
-            }
-            ds.setAutoCommit(False);
-            ds.open();
-        } catch (hash<ExceptionInfo> ex) {
-            testSkip("no Oracle connection: " + ex.err + ": " + ex.desc);
+        # a connection string is configured, so connection errors are propagated as errors; skipping
+        # here would report the test run as successful without a single assertion being executed
+        Datasource ds(connstr);
+        if (ds.getDriverName() != "oracle") {
+            testSkip(sprintf("connection is for the %y driver, not oracle", ds.getDriverName()));
         }
+        ds.setAutoCommit(False);
+        ds.open();
         try {
             ds.execRaw(sprintf("drop table %s purge", TableName));
             ds.commit();

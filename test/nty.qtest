@@ -510,6 +510,10 @@ class OracleNtyTest inherits Test {
         if (!m_options.connstr) {
             m_options.connstr = ENV.QORE_DB_CONNSTR_ORACLE;
         }
+        if (!m_options.connstr) {
+            printf("No connection string set (QORE_DB_CONNSTR_ORACLE). Cannot run the tests.\n");
+            return;
+        }
         try {
             db = new Datasource(m_options.connstr);
             if (db.getDriverName() != "oracle")
@@ -517,9 +521,11 @@ class OracleNtyTest inherits Test {
                     db.getDriverName());
             db.open();
         } catch (hash<ExceptionInfo> ex) {
-            if (m_options.verbose) {
-                printf("%y: %s: %s\n", m_options.connstr, ex.err, ex.desc);
-            }
+            printf("%y: %s: %s\n", m_options.connstr, ex.err, ex.desc);
+            delete db;
+            # a connection string is configured, so an unreachable DB is an error and not a reason to
+            # skip; skipping here would report the test run as successful without a single assertion
+            rethrow;
         }
 
         dropAll();
@@ -533,6 +539,7 @@ class OracleNtyTest inherits Test {
         } catch (hash<ExceptionInfo> ex) {
             printf("error setting up Oracle objects: %s: %s\n", ex.err, ex.desc);
             delete db;
+            rethrow;
         }
     }
 

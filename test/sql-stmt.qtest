@@ -38,7 +38,9 @@ public class SqlStmtTest inherits QUnit::Test {
         } catch (hash<ExceptionInfo> ex) {
             printf("Exception happened during datasource pool initialization:\n%s: %s\n", ex.err, ex.desc);
             delete ds;
-            return;
+            # a connection string is configured, so an unreachable DB is an error and not a reason to
+            # skip; skipping here would report the test run as successful without a single assertion
+            rethrow;
         }
 
         try {
@@ -46,6 +48,7 @@ public class SqlStmtTest inherits QUnit::Test {
         } catch (hash<ExceptionInfo> ex) {
             printf("Exception happened when creating test table:\n%s: %s\n", ex.err, ex.desc);
             delete ds;
+            rethrow;
         }
     }
 

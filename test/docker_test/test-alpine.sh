@@ -47,6 +47,18 @@ chown -R qore:qore ${MODULE_SRC_DIR}
 # run the tests
 export QORE_MODULE_DIR=${MODULE_SRC_DIR}/qlib:${QORE_MODULE_DIR}
 cd ${MODULE_SRC_DIR}
+# run all tests before reporting failures; aborting on the first failure hides the results of the rest
+set +e
+rc=0
+failed=
 for test in test/*.qtest; do
     gosu qore:qore qore $test -vv
+    if [ $? != 0 ]; then
+        rc=1
+        failed="${failed} ${test}"
+    fi
 done
+if [ $rc != 0 ]; then
+    echo && echo "-- FAILED TESTS:${failed} --"
+fi
+exit $rc
