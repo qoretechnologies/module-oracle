@@ -21,6 +21,14 @@ variables:
   variables:
     ORACLE_PASSWORD: omq
     DOCKER_ORACLE: "1"
+    # the Oracle Free service container needs more than the runner's 4Gi default while it
+    # initializes its datafiles on first boot.  At 4Gi it is OOMKilled within seconds; job pods use
+    # restartPolicy "Never", so the sidecar never comes back and the listener never appears, which
+    # looks like a DB that is merely slow to start.  Peak usage depends on how quickly dirty pages
+    # are written back, so this only bites when the cluster is under load (verified on the CI
+    # cluster: 4Gi -> OOMKilled after 7s, 8Gi -> "DATABASE IS READY TO USE" after 41s)
+    KUBERNETES_SERVICE_MEMORY_REQUEST: 4Gi
+    KUBERNETES_SERVICE_MEMORY_LIMIT: 8Gi
   script:
     # NOTE: "set +e" above means that a failure here would otherwise be ignored; the exit status must
     # be checked explicitly, otherwise the test suite runs against a DB that never came up and the
