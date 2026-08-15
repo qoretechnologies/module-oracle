@@ -409,28 +409,30 @@ public:
                     value.getTypeName());
                 return -1;
             }
-            const QoreStringNode* input_name = value.get<const QoreStringNode>();
+            // note: column names are short enough to be held in inline short string storage (ex:
+            // "id"), which has no QoreStringNode; the helper must stay in scope while it is used
+            QoreStringDataHelper input_name(value);
             std::string normalized_name;
-            if (!qoreOracleParseSimpleIdentifier(input_name->c_str(), false, xsink, &normalized_name)) {
+            if (!qoreOracleParseSimpleIdentifier(input_name.c_str(), false, xsink, &normalized_name)) {
                 return *xsink ? -1 : 1;
             }
 
             auto metadata_iter = metadata_columns.find(normalized_name);
             if (metadata_iter == metadata_columns.end()) {
                 xsink->raiseException("DBI:ORACLE:DIRECT-PATH-ERROR",
-                    "column '%s' was not found in Oracle table '%s'", input_name->c_str(), table->c_str());
+                    "column '%s' was not found in Oracle table '%s'", input_name.c_str(), table->c_str());
                 return -1;
             }
             ub2 metadata_index = metadata_iter->second;
             if (!used_columns.insert(metadata_index).second) {
                 xsink->raiseException("DBI:ORACLE:DIRECT-PATH-ERROR",
-                    "column '%s' occurs more than once in the OCI direct path column list", input_name->c_str());
+                    "column '%s' occurs more than once in the OCI direct path column list", input_name.c_str());
                 return -1;
             }
 
             const OCI_Column& metadata = type_info->cols[metadata_index];
             QoreOracleBulkColumn column;
-            column.key.assign(input_name->c_str(), input_name->size());
+            column.key.assign(input_name.c_str(), input_name.size());
             column.name = metadata.name;
             column.precision = metadata.prec;
             column.scale = metadata.scale;
