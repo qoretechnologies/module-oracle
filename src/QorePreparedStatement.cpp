@@ -1432,7 +1432,12 @@ void OraBindNode::bindListValue(ExceptionSink* xsink, int pos, QoreValue v, bool
     //printd(5, "OraBindNode::bindListValue() OCIBindDynamic t: %d\n", t);
 }
 
-void OraBindNode::bindValue(ExceptionSink* xsink, int pos, QoreValue v, bool in_only) {
+void OraBindNode::bindValue(ExceptionSink* xsink, int pos, QoreValue v_arg, bool in_only) {
+    // A bind value comes out of the caller's argument list, and a member assigned with the
+    // weak reference operator ":=" or the opaque reference operator "@=" is stored as the
+    // reference rather than its target, so reading the list yields that.  Resolve it before
+    // dispatching on the type, or the value binds as the wrong type or is rejected.
+    QoreValue v = v_arg.resolveIndirect();
     QoreOracleConnection* conn = stmt.getData();
 
     ind = 0;
