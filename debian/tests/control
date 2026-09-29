@@ -1,0 +1,7 @@
+Tests: runtime
+Depends: qore-oracle-module
+Restrictions: allow-stderr
+
+Tests: compiler
+Depends: qore-oracle-module, libqore-dev
+Restrictions: allow-stderr

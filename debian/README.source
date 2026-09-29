@@ -1,0 +1,79 @@
+Debian/Ubuntu packaging for Qore Oracle
+======================================
+
+qore-oracle-module contains the native driver, OracleExtensions source/AOT
+module and compiler metadata. The optional documentation package includes both
+API references and upstream examples/SQL fixtures. Detached debug symbols are
+produced without losing Qore AOT dependency trailers.
+
+Build prerequisites and scope
+-----------------------------
+
+Use the packaged Qore 3.0 SDK and Build-Depends from debian/control in an isolated
+native environment. This snapshot targets Ubuntu 26.04 amd64. Oracle Instant
+Client Basic/SDK is a separate proprietary dependency. The recipe under
+packaging/instantclient verifies pinned vendor ZIP checksums and builds local
+Debian packages without modifying Oracle's binaries. Install those packages in
+the builder first. The Oracle client recipe and vendor ZIPs are excluded from
+the Qore module source package; the native driver itself is built from source.
+
+Do not upload the proprietary dependency to Launchpad without Canonical's
+hosting approval. The module cannot build in the PPA until that dependency is
+available in an approved build archive. Public deployment is a separate gate
+from local qualification. This package belongs in contrib because it requires
+non-free Oracle libraries; no database server is installed by it.
+
+Source and build
+----------------
+
+The +ds archive also excludes m4/acx_pthread.m4, an unused legacy Autoconf macro
+with no license grant, and cmake/FindOracle.cmake with unspecified BSD terms.
+CMake uses the explicitly MIT-licensed FindOracleClient.cmake instead. It accepts
+ORACLE_PATH_INCLUDES/ORACLE_PATH_LIB or ORACLE_INSTANT_CLIENT/ORACLE_HOME roots.
+CMake does not use Autoconf. From a clean checkout:
+
+    version=3.4.0~git20260928.1+ds
+    mkdir -p ../oracle-package-work
+    git archive --format=tar --prefix="qore-oracle-module-$version/" \
+        HEAD -- . ':!debian' ':!m4/acx_pthread.m4' ':!cmake/FindOracle.cmake' \
+        ':!packaging/instantclient' | xz > \
+        "../oracle-package-work/qore-oracle-module_$version.orig.tar.xz"
+    tar -xf "../oracle-package-work/qore-oracle-module_$version.orig.tar.xz" \
+        -C ../oracle-package-work
+    cp -a debian "../oracle-package-work/qore-oracle-module-$version/"
+    cd "../oracle-package-work/qore-oracle-module-$version"
+    dpkg-buildpackage -S -us -uc
+
+Extract the .dsc into a fresh directory. Build as an unprivileged user with
+networking disabled: dpkg-buildpackage -b -us -uc. -B builds architecture
+packages, -A documentation, and DEB_BUILD_PROFILES=nodoc omits documentation.
+DEB_BUILD_OPTIONS=nodoc suppresses HTML. Cross builds are rejected because Qore
+executes at build time. AOT optimization follows noopt when requested.
+
+Rules derive the minimum Qore runtime and libqore SONAME dependency from the
+SDK, while dh_shlibdeps supplies OCI/system-library dependencies. Oracle headers
+and libraries are selected explicitly from the packaged SDK, with host Oracle
+and Qore environment overrides cleared. No RPATH is added. The runtime package
+is not Multi-Arch: same because it requires the native Qore interpreter.
+
+Qualification
+-------------
+
+Offline build and installed tests cover driver capabilities and client version,
+bind/placeholder descriptors, AQMessage, and OracleExtensions state. The fresh
+compiler test exercises native functions/classes and the installed AOT module.
+The AOT footer helper has real ELF stripping and error-propagation tests.
+
+Live integration requires a disposable database and QORE_DB_CONNSTR_ORACLE.
+Tests create/drop tables, types, procedures and other objects: never use a
+production database. Copy tests and the nty SQL fixtures away from the checkout,
+explicitly load the freshly built/installed driver, and run suites sequentially.
+The named-type suite does not require ssh2 for ordinary tests; its explicit
+--reconnect-tests option needs ssh2 and a separately configured remote fixture.
+That option can restart a server and is not part of package qualification.
+
+Retain exact dependency versions, source/package hashes, native/live/installed
+logs, profiles, byte reproducibility, minimal runtime installation, docs/debug
+coinstallation, dpkg -V, purge/reinstall and Lintian evidence. Different Oracle
+server/client versions, Debian/Ubuntu releases and architectures need separate
+qualification. General release also awaits Qore's ABI freeze and approval.

@@ -1,0 +1,8 @@
+qore-oracle-instantclient (23.26.3.0.0-0qore1~ubuntu26.04) resolute; urgency=medium
+
+  * Package the unmodified Oracle Basic and SDK archives for local builds.
+  * Track the amd64 libaio SONAME compatibility alias in a separate package.
+  * Keep all vendor licenses, notices and archive signature metadata.
+  * Require Canonical approval before uploading this proprietary dependency.
+
+ -- David Nichols <david@qore.org>  Tue, 29 Sep 2026 07:19:27 +0000

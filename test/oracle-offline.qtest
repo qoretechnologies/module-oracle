@@ -1,0 +1,61 @@
+#!/usr/bin/env qore
+# Copyright (C) 2026 David Nichols
+# SPDX-License-Identifier: MIT
+
+%modern
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%prepend-module-path "${SCRIPT_DIR}/../qlib"
+%requires QUnit
+%requires oracle
+%requires OracleExtensions
+%exec-class OracleOfflineTest
+
+#! Exercise native and compiled extension APIs without a database connection.
+class OracleOfflineTest inherits QUnit::Test {
+    constructor() : Test("OracleOfflineTest", "1.0", \ARGV) {
+        addTestCase("driver and client capabilities", \capabilities());
+        addTestCase("Oracle bind descriptors", \bindings());
+        addTestCase("Advanced Queuing message", \message());
+        addTestCase("OracleExtensions instrumentation state", \extensions());
+        set_return_value(main());
+    }
+
+    capabilities() {
+        Datasource db("oracle:offline@unused");
+        assertEq("oracle", db.getDriverName());
+        assertTrue((db.getCapabilities() & DBI_CAP_HAS_BULK_LOAD) != 0);
+        assertTrue((db.getCapabilities() & DBI_CAP_HAS_COLUMNAR_SELECT) != 0);
+        assertTrue(exists db.getClientVersion());
+        db.close();
+    }
+
+    bindings() {
+        assertEq({"value": 42}, bindInOut(42));
+        assertEq({"value": "hello", "type": "string"}, bindInOut("hello", "string"));
+        assertEq("TEST_OBJECT", bindOracleObject("TEST_OBJECT", {"id": 1}){"^oratype^"});
+        assertEq({"id": 1}, bindOracleObject("TEST_OBJECT", {"id": 1}){"^values^"});
+        assertEq("TEST_OBJECT", placeholderOracleObject("TEST_OBJECT").value);
+        assertEq("TEST_COLLECTION", placeholderOracleCollection("TEST_COLLECTION").value);
+    }
+
+    message() {
+        AQMessage msg({"id": 42});
+        assertEq({"id": 42}, msg.getObject());
+        msg.setPriority(7);
+        assertEq(7, msg.getPriority());
+        msg.setCorrelation("qualification");
+        assertEq("qualification", msg.getCorrelation());
+        msg.setObject({"id": 43});
+        assertEq({"id": 43}, msg.getObject());
+    }
+
+    extensions() {
+        OracleApplicationInfo info("client", "module", "action");
+        assertFalse(info.isEmpty());
+        assertEq("client", info.client);
+        assertEq("module", info.module);
+        assertEq("action", info.action);
+        info.clear();
+        assertTrue(info.isEmpty());
+    }
+}

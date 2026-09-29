@@ -1,0 +1,39 @@
+Source: qore-oracle-instantclient
+Section: non-free/libs
+Priority: optional
+Maintainer: David Nichols <david@qore.org>
+Build-Depends: debhelper-compat (= 13), python3, libaio-dev
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+Homepage: https://www.oracle.com/database/technologies/instant-client.html
+Vcs-Git: https://github.com/qoretechnologies/module-oracle.git
+Vcs-Browser: https://github.com/qoretechnologies/module-oracle/tree/develop/packaging/instantclient
+
+Package: qore-oracle-instantclient23
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends},
+         qore-oracle-libaio-compat (= ${binary:Version})
+Description: Oracle Instant Client 23 libraries for Qore integrations
+ This package preserves Oracle's unmodified Basic distribution, including its
+ OCI libraries, supporting data and license notices. It allows applications
+ to connect to Oracle Database without a full database installation.
+ The vendor libraries are proprietary and cannot be rebuilt from source.
+
+Package: qore-oracle-instantclient23-dev
+Section: non-free/libdevel
+Architecture: amd64
+Depends: qore-oracle-instantclient23 (= ${binary:Version}), ${misc:Depends}
+Description: Oracle Instant Client 23 development kit for Qore integrations
+ This package preserves Oracle's unmodified SDK headers, tools and examples.
+ The SDK is needed to compile applications and Qore's Oracle database driver.
+ It is installed beside the corresponding Basic distribution.
+
+Package: qore-oracle-libaio-compat
+Section: non-free/libs
+Architecture: amd64
+Depends: libaio1t64 (>= 0.3.113-8), ${misc:Depends}
+Conflicts: libaio1
+Description: amd64 libaio SONAME compatibility link for Oracle Instant Client
+ Oracle Instant Client requires libaio.so.1. Debian and Ubuntu provide the
+ compatible ABI under libaio.so.1t64. This package owns the compatibility
+ symlink and depends on the system library; it contains no library copy.

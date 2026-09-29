@@ -1,0 +1,3 @@
+test/*.qtest
+test/*.q
+test/nty

@@ -59,8 +59,9 @@ extern "C" DLLEXPORT void oracle_qore_module_desc(QoreModuleInfo& mod_info) {
     mod_info.init = oracle_module_init;
     mod_info.ns_init = oracle_module_ns_init;
     mod_info.del = oracle_module_delete;
-    mod_info.license = QL_MIT;
-    mod_info.license_str = "MIT";
+    // The native module includes the LGPL OCILIB implementation.
+    mod_info.license = QL_LGPL;
+    mod_info.license_str = "LGPL-2.1-or-later";
 }
 
 DBIDriver* DBID_ORACLE = nullptr;

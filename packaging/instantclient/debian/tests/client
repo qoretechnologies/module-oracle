@@ -1,0 +1,19 @@
+#!/bin/sh
+# Copyright (C) 2026 David Nichols
+# SPDX-License-Identifier: MIT
+set -eu
+unset LD_LIBRARY_PATH LD_PRELOAD ORACLE_HOME ORACLE_INSTANT_CLIENT TNS_ADMIN
+cd "$AUTOPKGTEST_TMP"
+cat > client.c <<'EOF'
+#include <oci.h>
+#include <stdio.h>
+int main(void) {
+    sword major, minor, update, patch, port_update;
+    OCIClientVersion(&major, &minor, &update, &patch, &port_update);
+    printf("OCI %d.%d.%d.%d.%d\n", major, minor, update, patch, port_update);
+    return major == 23 && minor == 26 && update == 3 ? 0 : 1;
+}
+EOF
+cc -I/usr/lib/x86_64-linux-gnu/oracle/23/sdk/include client.c \
+    -L/usr/lib/x86_64-linux-gnu/oracle/23 -lclntsh -o client
+./client

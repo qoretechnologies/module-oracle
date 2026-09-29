@@ -1,0 +1,9 @@
+Document: qore-oracle-module
+Title: Qore Oracle Module Reference
+Author: Qore Technologies, s.r.o.
+Abstract: API reference for Oracle DBI and OracleExtensions.
+Section: Programming
+
+Format: HTML
+Index: /usr/share/doc/qore-oracle-module-doc/docs/oracle/html/index.html
+Files: /usr/share/doc/qore-oracle-module-doc/docs/oracle/html/*.html

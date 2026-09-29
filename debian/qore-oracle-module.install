@@ -1,0 +1,4 @@
+usr/lib/*/qore-modules/oracle-api-*.qmod
+usr/lib/*/qore-modules/OracleExtensions.qmod
+usr/share/qore-modules/OracleExtensions.qm
+usr/share/qore/metadata/oracle/*.meta.json

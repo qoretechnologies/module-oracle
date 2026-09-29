@@ -2,8 +2,11 @@
 
 %modern
 
+%prepend-module-path "${SCRIPT_DIR}/../build"
 %requires oracle
-%requires ssh2
+%try-module ssh2
+%define NoSsh2
+%endtry
 
 %requires QUnit
 %requires Util
@@ -521,7 +524,7 @@ class OracleNtyTest inherits Test {
                     db.getDriverName());
             db.open();
         } catch (hash<ExceptionInfo> ex) {
-            printf("%y: %s: %s\n", m_options.connstr, ex.err, ex.desc);
+            printf("Oracle connection failed: %s: %s\n", ex.err, ex.desc);
             delete db;
             # a connection string is configured, so an unreachable DB is an error and not a reason to
             # skip; skipping here would report the test run as successful without a single assertion
@@ -704,13 +707,22 @@ class TestHelper {
         int verbose;
         string test;
 
+%ifndef NoSsh2
         SSH2Client client("ol8");
         SSH2Channel channel;
+%endif
     }
 
     constructor(bool enabled, int verbose) {
         self.enabled = enabled;
         self.verbose = verbose;
+%ifdef NoSsh2
+        if (enabled) {
+            throw "TEST-DEPENDENCY-ERROR",
+                "--reconnect-tests requires the optional ssh2 module";
+        }
+%endif
+%ifndef NoSsh2
         if (enabled) {
             string sshdir = ENV.HOME + "/.ssh";
             if (is_file(sshdir + "/id_rsa.old")) {
@@ -727,6 +739,7 @@ class TestHelper {
             channel.shell();
             readUntilPrompt();
         }
+%endif
     }
 
     set(string test) {
@@ -737,6 +750,7 @@ class TestHelper {
         if (!enabled) {
             return;
         }
+%ifndef NoSsh2
         if (test) {
             # stop oracle
             printf("stopping Oracle\n");
@@ -744,18 +758,22 @@ class TestHelper {
         } else {
             printf("continuing\n");
         }
+%endif
     }
 
     err() {
         if (!enabled) {
             return;
         }
+%ifndef NoSsh2
         # start oracle
         printf("starting Oracle\n");
         doSshCmd("sudo systemctl start oracle");
         delete test;
+%endif
     }
 
+%ifndef NoSsh2
     private doSshCmd(string cmd) {
         channel.write(cmd + "\n");
         readUntilPrompt();
@@ -771,4 +789,5 @@ class TestHelper {
             }
         } while (str !~ /[\#\$\>] *$/);
     }
+%endif
 }

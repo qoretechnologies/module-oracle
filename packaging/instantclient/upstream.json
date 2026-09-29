@@ -1,0 +1,15 @@
+{
+  "basic": {
+    "file": "instantclient-basic-linux.x64-23.26.3.0.0.zip",
+    "url": "https://download.oracle.com/otn_software/linux/instantclient/2326300/instantclient-basic-linux.x64-23.26.3.0.0.zip",
+    "sha256": "fce485361332927f8328ea4b68d98968c6b0ea124e62470de8c9d0cef880130e"
+  },
+  "sdk": {
+    "file": "instantclient-sdk-linux.x64-23.26.3.0.0.zip",
+    "url": "https://download.oracle.com/otn_software/linux/instantclient/2326300/instantclient-sdk-linux.x64-23.26.3.0.0.zip",
+    "sha256": "7ac13587ba8a734ae7cc06cf42753bbfdbe69839daf87bd5935a49c83decccfd"
+  },
+  "version": "23.26.3.0.0",
+  "architecture": "amd64",
+  "root": "instantclient_23_26"
+}

@@ -1,0 +1,39 @@
+Source: qore-oracle-module
+Section: contrib/interpreters
+Priority: optional
+Maintainer: David Nichols <david@qore.org>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.5),
+               libqore-dev (>= 3.0.0~),
+               qore (>= 3.0.0~),
+               qore-oracle-instantclient23-dev (>= 23.26.3.0.0),
+               python3
+Build-Depends-Indep: doxygen <!nodoc>
+Standards-Version: 4.7.4
+Rules-Requires-Root: no
+Homepage: https://qore.org
+Vcs-Git: https://github.com/qoretechnologies/module-oracle.git
+Vcs-Browser: https://github.com/qoretechnologies/module-oracle
+
+Package: qore-oracle-module
+Architecture: amd64
+Depends: ${qore:Depends},
+         ${shlibs:Depends},
+         ${misc:Depends}
+Suggests: qore-oracle-module-doc
+Description: Oracle database driver and extensions for Qore
+ This package provides the native Oracle DBI driver, source and compiled
+ OracleExtensions module, and compiler metadata. It supports transactions,
+ prepared statements, named types, large objects, Advanced Queuing and native
+ bulk loading through Oracle Instant Client. No database server is installed.
+
+Package: qore-oracle-module-doc
+Section: contrib/doc
+Architecture: all
+Multi-Arch: foreign
+Build-Profiles: <!nodoc>
+Depends: ${misc:Depends}
+Suggests: qore-oracle-module
+Description: documentation and examples for Qore's Oracle driver
+ This package contains the HTML API reference and example tests for Qore's
+ Oracle database driver.

@@ -48,3 +48,15 @@ docs/qlib/*.dox.h
 .project
 .settings/
 build/
+
+# Debian package build products
+/obj-*/
+/debian/.debhelper/
+/debian/debhelper-build-stamp
+/debian/files
+/debian/*.substvars
+/debian/*.debhelper.log
+/debian/qore-oracle-module/
+/debian/qore-oracle-module-doc/
+/debian/qore-oracle-module-dbgsym/
+/debian/tmp/

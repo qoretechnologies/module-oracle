@@ -27,7 +27,7 @@ if (DEFINED ENV{ORACLE_INCLUDES})
     set(ORACLE_INCLUDES $ENV{ORACLE_INCLUDES})
 endif()
 
-find_package(Oracle REQUIRED CLNTSH)
+find_package(OracleClient REQUIRED)
 
 set(CMAKE_REQUIRED_INCLUDES ${ORACLE_INCLUDES})
 set(CMAKE_REQUIRED_LIBRARIES ${ORACLE_LIBRARY_CLNTSH})
@@ -122,7 +122,6 @@ if (DEFINED ENV{DOXYGEN_EXECUTABLE})
 endif()
 
 qore_external_binary_module(${module_name} ${PROJECT_VERSION} ${ORACLE_LIBRARY_CLNTSH} Threads::Threads)
-qore_user_modules("${QMOD}")
 
 qore_external_user_module("qlib/OracleExtensions.qm" "")
 

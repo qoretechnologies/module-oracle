@@ -1,0 +1,22 @@
+#!/bin/sh
+# Copyright (C) 2026 David Nichols
+# SPDX-License-Identifier: MIT
+set -eu
+unset QORE_MODULE_DIR QORE_MODULE_DIR_ONLY QORE_INCLUDE_DIR LD_LIBRARY_PATH LD_PRELOAD
+unset ORACLE_HOME ORACLE_INSTANT_CLIENT ORACLE_INCLUDES TNS_ADMIN
+cd "$AUTOPKGTEST_TMP"
+cat > oracle-smoke.q <<'EOF'
+%modern
+%requires oracle
+%requires OracleExtensions
+int sub main() {
+    hash<auto> value = bindInOut(42);
+    OracleApplicationInfo info("packaging", "compiler", "qualification");
+    AQMessage msg({"value": 42});
+    msg.setPriority(3);
+    return value.value == 42 && !info.isEmpty() && msg.getPriority() == 3 ? 0 : 1;
+}
+exit(main());
+EOF
+/usr/bin/qcc -o oracle-smoke oracle-smoke.q
+./oracle-smoke

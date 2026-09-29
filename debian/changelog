@@ -1,0 +1,11 @@
+qore-oracle-module (3.4.0~git20260928.1+ds-0qore1~ubuntu26.04) resolute; urgency=medium
+
+  * Package the Oracle driver, OracleExtensions, metadata, docs and examples.
+  * Preserve AOT metadata and produce matching native debug symbols.
+  * Add offline installed/runtime/compiler checks and native build profiles.
+  * Make SSH optional for ordinary named-type tests; redact connection errors.
+  * Report the native module's included OCILIB license accurately.
+  * Maintain a separate local Oracle Instant Client dependency recipe.
+  * Use an explicitly licensed OCI finder; exclude ambiguous legacy files.
+
+ -- David Nichols <david@qore.org>  Tue, 29 Sep 2026 07:24:23 +0000

@@ -1,0 +1,3 @@
+Tests: client
+Depends: qore-oracle-instantclient23-dev, gcc, libc6-dev
+Restrictions: allow-stderr
