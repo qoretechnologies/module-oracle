@@ -1,3 +1,11 @@
+qore-oracle-instantclient (23.26.3.0.0-0qore2~ubuntu26.04) resolute; urgency=medium
+
+  * Include pinned amd64 and arm64 Basic/SDK archives for offline native builds.
+  * Select multiarch paths and verify vendor ELF architecture before staging.
+  * Track the libaio compatibility link on both supported 64-bit architectures.
+
+ -- David Nichols <david@qore.org>  Thu, 01 Oct 2026 04:00:00 +0000
+
 qore-oracle-instantclient (23.26.3.0.0-0qore1~ubuntu26.04) resolute; urgency=medium
 
   * Package the unmodified Oracle Basic and SDK archives for local builds.

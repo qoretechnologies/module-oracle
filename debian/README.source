@@ -10,7 +10,7 @@ Build prerequisites and scope
 -----------------------------
 
 Use the packaged Qore 3.0 SDK and Build-Depends from debian/control in an isolated
-native environment. This snapshot targets Ubuntu 26.04 amd64. Oracle Instant
+native environment. This snapshot targets Ubuntu 26.04 amd64 and arm64. Oracle Instant
 Client Basic/SDK is a separate proprietary dependency. The recipe under
 packaging/instantclient verifies pinned vendor ZIP checksums and builds local
 Debian packages without modifying Oracle's binaries. Install those packages in

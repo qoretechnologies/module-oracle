@@ -7,11 +7,12 @@ export LC_ALL = C.UTF-8
 %:
 	dh $@
 override_dh_auto_configure:
-	test "$(DEB_HOST_ARCH)" = amd64
+	test "$(DEB_HOST_ARCH)" = amd64 -o "$(DEB_HOST_ARCH)" = arm64
 	test "$(DEB_BUILD_ARCH)" = "$(DEB_HOST_ARCH)"
 override_dh_auto_build:
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS) $(DEB_BUILD_PROFILES)))
+	python3 debian/tests/test_install_client.py
 	python3 debian/install-client.py --verify-only
 endif
 override_dh_auto_install:

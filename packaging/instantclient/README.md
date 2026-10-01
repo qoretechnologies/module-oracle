@@ -1,7 +1,7 @@
 # Oracle Instant Client dependency
 
 This recipe packages Oracle Instant Client 23.26.3 Basic and SDK for local
-Ubuntu 26.04 amd64 builds. Oracle binaries and SDK content remain unchanged.
+Ubuntu 26.04 amd64 and arm64 builds. Oracle binaries and SDK content remain unchanged.
 The archive checksums and download URLs are pinned in `upstream.json`.
 
 Oracle's supplied Free Distribution, Hosting, and Use Terms permit distribution
@@ -11,22 +11,29 @@ not a source rebuild or a Debian-main candidate. **Do not upload to the testing
 PPA until Canonical approves hosting this license.** See the
 [Launchpad eligibility policy](https://ubuntu.com/docs/launchpad/user/reference/launchpad-and-community/legal/launchpad-policies/#personal-package-archive-eligibility).
 
-Download both archives from the URLs in `upstream.json`, then run:
+Download all four Basic/SDK archives (for both architectures) from the URLs in `upstream.json`, then run:
 
     python3 prepare-source.py --archives /path/to/downloads --output /path/to/new-work
 
-The helper verifies both SHA-256 digests, writes an orig archive containing the
+Run `python3 test_prepare_source.py` to check shared-cache handling and source
+reproducibility. Native builds also run the installer validation tests.
+
+The helper verifies all four SHA-256 digests, writes an orig archive containing the
 unaltered ZIP files, and copies this Debian recipe. Build with `dpkg-buildpackage
 -S -us -uc`, extract the resulting `.dsc`, and run `dpkg-buildpackage -b -us -uc`
 as an unprivileged user in an offline native environment with Build-Depends.
 No download, license prompt or host installation occurs during the build.
 
-The Basic and SDK packages use `/usr/lib/x86_64-linux-gnu/oracle/23` with an
+The Basic and SDK packages use `/usr/lib/<DEB_HOST_MULTIARCH>/oracle/23` with an
 ldconfig configuration file. The Basic package requires the separate
 `qore-oracle-libaio-compat` package, which owns only the `libaio.so.1` symlink to
 the distribution `libaio.so.1t64`; it conflicts with the old `libaio1` package
 to avoid an unowned overwrite. Debian libaio 0.3.113-8 documents that this SONAME
-change is ABI-compatible. Only amd64 is qualified by this recipe.
+change is ABI-compatible. The installer selects the native architecture and verifies ELF class, byte order
+and machine type against the pinned manifest. Cross builds are rejected.
+The shared source archive contains both architectures; no vendor file is fetched
+during a package build. The earlier amd64-only orig archive was local and never
+uploaded; replace that local archive with the combined archive for this revision.
 
 The vendor ELF and JAR files are not stripped, patched, or normalized; no debug
 symbols are fabricated. The Qore Oracle module itself is built from source

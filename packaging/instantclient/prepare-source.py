@@ -17,11 +17,12 @@ args = parser.parse_args()
 recipe = Path(__file__).resolve().parent
 spec = json.loads((recipe / 'upstream.json').read_text())
 inputs = [recipe / 'upstream.json']
-for kind in ('basic', 'sdk'):
-    path = args.archives / spec[kind]['file']
-    if hashlib.sha256(path.read_bytes()).hexdigest() != spec[kind]['sha256']:
-        raise SystemExit(f'Archive checksum mismatch: {path}')
-    inputs.append(path)
+for arch in spec['architectures'].values():
+    for kind in ('basic', 'sdk'):
+        path = args.archives / arch[kind]['file']
+        if hashlib.sha256(path.read_bytes()).hexdigest() != arch[kind]['sha256']:
+            raise SystemExit(f'Archive checksum mismatch: {path}')
+        inputs.append(path)
 args.output.mkdir(parents=True, exist_ok=True)
 if any(args.output.iterdir()):
     raise SystemExit('Output directory must be empty')
@@ -31,7 +32,9 @@ tree.mkdir()
 epoch = int(subprocess.check_output([
     'dpkg-parsechangelog', '-l' + str(recipe / 'debian/changelog'), '-STimestamp']))
 archive = args.output / f'{name}_{spec["version"]}.orig.tar.xz'
-with tarfile.open(archive, 'w:xz', format=tarfile.GNU_FORMAT, preset=1) as tar:
+# Archive paths may be symlinks into a shared download cache. The source package
+# must contain the verified bytes, never links to a builder's local filesystem.
+with tarfile.open(archive, 'w:xz', format=tarfile.GNU_FORMAT, preset=1, dereference=True) as tar:
     for path in sorted(inputs):
         info = tar.gettarinfo(str(path), arcname=f'{tree.name}/{path.name}')
         info.uid = info.gid = 0

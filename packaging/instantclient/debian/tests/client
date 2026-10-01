@@ -14,6 +14,7 @@ int main(void) {
     return major == 23 && minor == 26 && update == 3 ? 0 : 1;
 }
 EOF
-cc -I/usr/lib/x86_64-linux-gnu/oracle/23/sdk/include client.c \
-    -L/usr/lib/x86_64-linux-gnu/oracle/23 -lclntsh -o client
+multiarch=$(cc -print-multiarch)
+cc -I"/usr/lib/$multiarch/oracle/23/sdk/include" client.c \
+    -L"/usr/lib/$multiarch/oracle/23" -lclntsh -o client
 ./client

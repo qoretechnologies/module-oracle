@@ -1,3 +1,9 @@
+qore-oracle-module (3.4.0~git20260928.1+ds-0qore2~ubuntu26.04) resolute; urgency=medium
+
+  * Enable native arm64 packages alongside amd64 using the packaged OCI SDK.
+
+ -- David Nichols <david@qore.org>  Thu, 01 Oct 2026 04:00:00 +0000
+
 qore-oracle-module (3.4.0~git20260928.1+ds-0qore1~ubuntu26.04) resolute; urgency=medium
 
   * Package the Oracle driver, OracleExtensions, metadata, docs and examples.

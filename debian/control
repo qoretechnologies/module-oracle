@@ -16,7 +16,7 @@ Vcs-Git: https://github.com/qoretechnologies/module-oracle.git
 Vcs-Browser: https://github.com/qoretechnologies/module-oracle
 
 Package: qore-oracle-module
-Architecture: amd64
+Architecture: amd64 arm64
 Depends: ${qore:Depends},
          ${shlibs:Depends},
          ${misc:Depends}

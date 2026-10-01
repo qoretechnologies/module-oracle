@@ -1,15 +1,34 @@
 {
-  "basic": {
-    "file": "instantclient-basic-linux.x64-23.26.3.0.0.zip",
-    "url": "https://download.oracle.com/otn_software/linux/instantclient/2326300/instantclient-basic-linux.x64-23.26.3.0.0.zip",
-    "sha256": "fce485361332927f8328ea4b68d98968c6b0ea124e62470de8c9d0cef880130e"
-  },
-  "sdk": {
-    "file": "instantclient-sdk-linux.x64-23.26.3.0.0.zip",
-    "url": "https://download.oracle.com/otn_software/linux/instantclient/2326300/instantclient-sdk-linux.x64-23.26.3.0.0.zip",
-    "sha256": "7ac13587ba8a734ae7cc06cf42753bbfdbe69839daf87bd5935a49c83decccfd"
-  },
   "version": "23.26.3.0.0",
-  "architecture": "amd64",
-  "root": "instantclient_23_26"
+  "root": "instantclient_23_26",
+  "architectures": {
+    "amd64": {
+      "multiarch": "x86_64-linux-gnu",
+      "elf_machine": 62,
+      "basic": {
+        "file": "instantclient-basic-linux.x64-23.26.3.0.0.zip",
+        "url": "https://download.oracle.com/otn_software/linux/instantclient/2326300/instantclient-basic-linux.x64-23.26.3.0.0.zip",
+        "sha256": "fce485361332927f8328ea4b68d98968c6b0ea124e62470de8c9d0cef880130e"
+      },
+      "sdk": {
+        "file": "instantclient-sdk-linux.x64-23.26.3.0.0.zip",
+        "url": "https://download.oracle.com/otn_software/linux/instantclient/2326300/instantclient-sdk-linux.x64-23.26.3.0.0.zip",
+        "sha256": "7ac13587ba8a734ae7cc06cf42753bbfdbe69839daf87bd5935a49c83decccfd"
+      }
+    },
+    "arm64": {
+      "multiarch": "aarch64-linux-gnu",
+      "elf_machine": 183,
+      "basic": {
+        "file": "instantclient-basic-linux.arm64-23.26.3.0.0.zip",
+        "url": "https://download.oracle.com/otn_software/linux/instantclient/2326300/instantclient-basic-linux.arm64-23.26.3.0.0.zip",
+        "sha256": "74b0744d7bf1be28f60c3d90a135e5d9aaca1946bab0adcc0c8db5fbc2cc9758"
+      },
+      "sdk": {
+        "file": "instantclient-sdk-linux.arm64-23.26.3.0.0.zip",
+        "url": "https://download.oracle.com/otn_software/linux/instantclient/2326300/instantclient-sdk-linux.arm64-23.26.3.0.0.zip",
+        "sha256": "5fb03b4615d86ca7a6453a41a334fc27dcac6d839dd7e541177322aaf39ee318"
+      }
+    }
+  }
 }
