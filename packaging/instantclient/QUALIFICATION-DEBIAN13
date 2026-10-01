@@ -1,0 +1,32 @@
+Debian 13 Oracle Instant Client qualification: 2026-10-01
+=======================================================
+
+Copyright 2026 Qore Technologies, s.r.o.
+
+Result: PASS for local packaging and installed client checks on native amd64
+and arm64. Public hosting approval remains outstanding.
+
+Source-package version: 23.26.3.0.0-0qore1~deb13
+Recipe base: d43183594bdcb81b84a62aedd87dd814d1583db8
+All Basic/SDK archive URLs, checksums and architecture mappings remain in
+upstream.json. Oracle's proprietary binaries are preserved unchanged; they
+are not compiled from source and no new detached debug symbols are generated.
+
+Evidence: qore-debian13-final-modules-20261001/dependencies on both hosts;
+<architecture>/oracle-instantclient/QUALIFICATION.json and
+vendor-inspection.json; oracle-source-reproducibility.json records source hashes.
+
+- Independent preparation reproduces the .dsc and source archives exactly.
+- Two offline package builds per CPU vary build paths and environments.
+  All three packages match byte-for-byte between the builds on each CPU.
+- Source and binary Lintian checks pass without errors; existing vendor-layout
+  warnings remain documented by the packaging and unmodified archive policy.
+- Every packaged Basic/SDK file and signature record matches its pinned ZIP
+  member; native ELF architecture, manifests and the libaio alias are checked.
+- An unprivileged installed C client compiles, links and checks the OCI version.
+- File verification, purge/autoremove/reinstall and complete client retest pass.
+
+These checks do not connect to a database. Earlier Ubuntu live-server results
+do not constitute a fresh Debian live-server run. Final release and live
+database acceptance, dependency maintenance and archive hosting approval
+remain separate gates. No proprietary dependency was publicly uploaded.
