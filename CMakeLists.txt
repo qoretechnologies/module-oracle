@@ -31,10 +31,17 @@ find_package(OracleClient REQUIRED)
 
 set(CMAKE_REQUIRED_INCLUDES ${ORACLE_INCLUDES})
 set(CMAKE_REQUIRED_LIBRARIES ${ORACLE_LIBRARY_CLNTSH})
+if (NOT APPLE)
+    # the checks link a test executable against the client library only to learn whether it defines the
+    # function; the Instant Client is built against glibc, so on musl (Alpine) the executable link fails on the
+    # library's own glibc-versioned references, which gcompat resolves at runtime, and every check would fail
+    set(CMAKE_REQUIRED_LINK_OPTIONS "-Wl,--allow-shlib-undefined")
+endif()
 check_symbol_exists(OCIClientVersion ociap.h HAVE_OCICLIENTVERSION)
 check_symbol_exists(OCILobWrite2 ociap.h HAVE_OCILOBWRITE2)
 unset(CMAKE_REQUIRED_INCLUDES)
 unset(CMAKE_REQUIRED_LIBRARIES)
+unset(CMAKE_REQUIRED_LINK_OPTIONS)
 
 include_directories(${CMAKE_SOURCE_DIR}/src)
 include_directories(${CMAKE_SOURCE_DIR}/src/ocilib)
