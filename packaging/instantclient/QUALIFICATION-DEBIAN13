@@ -1,4 +1,4 @@
-Debian 13 Oracle Instant Client qualification: 2026-10-01
+Debian 13 Oracle Instant Client qualification: 2026-10-02
 =======================================================
 
 Copyright 2026 Qore Technologies, s.r.o.
@@ -26,7 +26,16 @@ vendor-inspection.json; oracle-source-reproducibility.json records source hashes
 - An unprivileged installed C client compiles, links and checks the OCI version.
 - File verification, purge/autoremove/reinstall and complete client retest pass.
 
-These checks do not connect to a database. Earlier Ubuntu live-server results
-do not constitute a fresh Debian live-server run. Final release and live
-database acceptance, dependency maintenance and archive hosting approval
-remain separate gates. No proprietary dependency was publicly uploaded.
+The offline checks above are supplemented by fresh Debian live-server runs
+through the installed Qore Oracle module on both CPUs. Client 23.26.3.0.0
+connects to a new disposable Oracle AI Database 26ai Free 23.26.2.0.0 server;
+tiered/AST execution and freshly compiled clients pass. Each mode runs
+8 suites with 41 executed cases and 169 assertions. An independent fixture
+covers LONG text larger than 16 KiB; the inaccessible legacy system-view
+case is explicitly recorded as skipped.
+
+See ../../debian/QUALIFICATION-DEBIAN13 and the evidence bundle's
+oracle-live-20261002/QUALIFICATION.json for scope and exact results.
+Other server/client combinations, exact final release acceptance, dependency
+maintenance and public archive hosting approval remain separate gates.
+No proprietary dependency was publicly uploaded.

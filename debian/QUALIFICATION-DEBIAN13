@@ -36,8 +36,23 @@ Completed checks
 
 The separately packaged Oracle Basic/SDK archives remain byte-for-byte
 unchanged. Their local Debian client checks pass on both CPUs; see
-packaging/instantclient/QUALIFICATION-DEBIAN13. These package checks do not
-repeat live database tests. Public dependency hosting approval is outstanding.
+packaging/instantclient/QUALIFICATION-DEBIAN13. Public dependency hosting
+approval is outstanding.
+
+Fresh Debian live-database checks also pass on both CPUs against a new,
+disposable Oracle AI Database 26ai Free 23.26.2.0.0 server, using the packaged
+23.26.3.0.0 client. Installed modules run in tiered and AST modes as an
+unprivileged user with only installed /usr module paths. Each run covers
+8 suites, 42 registered cases, 41 executed cases and 169 assertions, plus
+two freshly compiled clients, including a live SQL query.
+
+The legacy system-view LONG case skips because that view is inaccessible;
+an independent fixture retrieves and verifies LONG text larger than 16 KiB
+with three assertions. Interactive AQ subscription and optional SSH server
+restart tests remain excluded. These results cover this server/client pair.
+Evidence: oracle-live-20261002/QUALIFICATION.json and
+<architecture>/oracle/live-QUALIFICATION.json in the same evidence bundle.
+The disposable database, SSH tunnel and temporary credentials were removed.
 
 Scope and remaining gates
 -------------------------
