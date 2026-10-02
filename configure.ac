@@ -546,8 +546,13 @@ AC_SUBST(ORACLE_LIB_DIR)
 # check for 'oci.h'
 SAVE_CXXFLAGS="$CXXFLAGS"
 SAVE_LDFLAGS="$LDFLAGS"
+SAVE_LIBS="$LIBS"
 CXXFLAGS="$CXXFLAGS $ORACLE_INCLUDES"
 LDFLAGS="$LDFLAGS $ORACLE_LIBS"
+# the function checks below link a test program, which only places the libraries in LIBS after its object file;
+# with LDFLAGS alone the Oracle client library comes first and is dropped when the linker uses --as-needed (the
+# default on Debian/Ubuntu and Alpine), so every check fails and the functions are compiled out
+LIBS="$ORACLE_LIBS $LIBS"
 AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
 #include <oci.h>
     ]],[[
@@ -566,6 +571,7 @@ if test "$have_ocilobwrite2" = "yes"; then
 fi
 CXXFLAGS="$SAVE_CXXFLAGS"
 LDFLAGS="$SAVE_LDFLAGS"
+LIBS="$SAVE_LIBS"
 
 set_qore_cppflags() {
     QORE_INC_DIR=$1
