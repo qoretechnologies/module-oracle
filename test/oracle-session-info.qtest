@@ -1,0 +1,534 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+/*  oracle-session-info.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
+
+    Tests the per-thread Oracle session information API: Qore::Oracle::setThreadSessionInfo() and
+    Qore::Oracle::getThreadSessionInfo().
+
+    Database tests need QORE_DB_CONNSTR_ORACLE (or the connection string as the first argument).  Tests that observe
+    a session from outside (V$SESSION, V$SESSTAT, killing a session) also need a privileged connection in
+    SYS_OMQ_DB_STRING (for example "oracle:system/pass@db").
+*/
+
+%modern
+
+%requires QUnit
+%requires oracle
+
+%exec-class OracleSessionInfoTest
+
+class OracleSessionInfoTest inherits QUnit::Test {
+    private {
+        *string connstr;
+        *string sys_connstr;
+
+        #! reads the session attributes of the current session with no privileges and in the same round trip
+        const ContextSql = "select sys_context('userenv', 'module') module, "
+            "sys_context('userenv', 'action') action, "
+            "sys_context('userenv', 'client_info') client_info, "
+            "sys_context('userenv', 'client_identifier') client_identifier from dual";
+
+        #! all attributes cleared
+        const NoInfo = {
+            "module": NULL,
+            "action": NULL,
+            "client_info": NULL,
+            "client_identifier": NULL,
+        };
+    }
+
+    constructor() : QUnit::Test("OracleSessionInfoTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE ?? shift ARGV;
+        sys_connstr = ENV.SYS_OMQ_DB_STRING;
+
+        addTestCase("thread API set, get, replace, and clear", \testThreadApi());
+        addTestCase("values are truncated on a character boundary", \testTruncation());
+        addTestCase("invalid arguments are rejected", \testInvalidArgs());
+        addTestCase("non-UTF-8 values are converted", \testEncoding());
+        addTestCase("session information is per thread", \testThreadIsolation());
+        addTestCase("every statement path sends the thread's values", \testStatementPaths());
+        addTestCase("pooled connections never leak another thread's values", \testPoolNoLeak());
+        addTestCase("setting session information does not acquire a connection", \testNoConnectionAcquired());
+        addTestCase("values are sent without additional statements or round trips", \testNoExtraRoundTrips());
+        addTestCase("commit and rollback carry the thread's values", \testCommitRollback());
+        addTestCase("values are restored on a reconnected session", \testReconnect());
+
+        set_return_value(main());
+    }
+
+    globalTearDown() {
+        Oracle::setThreadSessionInfo();
+    }
+
+    testThreadApi() {
+        Oracle::setThreadSessionInfo();
+        assertEq(NOTHING, Oracle::getThreadSessionInfo());
+
+        hash<OracleSessionInfo> info = <OracleSessionInfo>{
+            "module": "mod",
+            "action": "act",
+            "client_info": "info",
+            "client_identifier": "ident",
+        };
+        Oracle::setThreadSessionInfo(info);
+        assertEq(info, Oracle::getThreadSessionInfo());
+        assertEq("hash<OracleSessionInfo>", Oracle::getThreadSessionInfo().fullType());
+
+        # a new value replaces the previous one completely
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"action": "act2"});
+        hash<OracleSessionInfo> h = Oracle::getThreadSessionInfo();
+        assertEq("act2", h.action);
+        assertEq(NOTHING, h.module);
+        assertEq(NOTHING, h.client_info);
+        assertEq(NOTHING, h.client_identifier);
+
+        # named args
+        Oracle::setThreadSessionInfo(info = <OracleSessionInfo>{"module": "named"});
+        assertEq("named", Oracle::getThreadSessionInfo().module);
+
+        # a hash without any non-empty value clears the information
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "", "action": ""});
+        assertEq(NOTHING, Oracle::getThreadSessionInfo());
+
+        Oracle::setThreadSessionInfo(info);
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{});
+        assertEq(NOTHING, Oracle::getThreadSessionInfo());
+
+        Oracle::setThreadSessionInfo(info);
+        Oracle::setThreadSessionInfo();
+        assertEq(NOTHING, Oracle::getThreadSessionInfo());
+
+        # empty values are dropped
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "m", "action": ""});
+        h = Oracle::getThreadSessionInfo();
+        assertEq("m", h.module);
+        assertEq(NOTHING, h.action);
+        Oracle::setThreadSessionInfo();
+    }
+
+    testTruncation() {
+        on_exit Oracle::setThreadSessionInfo();
+
+        # single-byte characters: exactly 64 bytes are kept
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": strmul("m", 100), "action": strmul("a", 64)});
+        hash<OracleSessionInfo> h = Oracle::getThreadSessionInfo();
+        assertEq(strmul("m", 64), h.module);
+        assertEq(strmul("a", 64), h.action);
+
+        # two-byte characters: 32 characters fill 64 bytes exactly
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"client_info": strmul("ž", 40)});
+        h = Oracle::getThreadSessionInfo();
+        assertEq(strmul("ž", 32), h.client_info);
+        assertEq(64, h.client_info.size());
+
+        # three-byte characters: a character that would straddle the limit is dropped entirely
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"client_identifier": strmul("€", 30)});
+        h = Oracle::getThreadSessionInfo();
+        assertEq(strmul("€", 21), h.client_identifier);
+        assertEq(63, h.client_identifier.size());
+
+        # a mixed value whose limit falls inside a multi-byte character
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": strmul("a", 63) + "ž"});
+        assertEq(strmul("a", 63), Oracle::getThreadSessionInfo().module);
+    }
+
+    testInvalidArgs() {
+        on_exit Oracle::setThreadSessionInfo();
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "keep"});
+
+        # only an OracleSessionInfo hash is accepted; an untyped hash is rejected at runtime as well
+        assertThrows("RUNTIME-OVERLOAD-ERROR", \call_function(), ("Qore::Oracle::setThreadSessionInfo",
+            {"module": "x"}));
+        assertThrows("RUNTIME-OVERLOAD-ERROR", \call_function(), ("Qore::Oracle::setThreadSessionInfo", "x"));
+        # unknown keys and wrong value types cannot be converted to the hashdecl
+        auto bad_key = {"modul": "x"};
+        assertThrows("HASHDECL-INIT-ERROR", sub () {
+            Oracle::setThreadSessionInfo(cast<hash<OracleSessionInfo>>(bad_key));
+        });
+        auto bad_type = {"module": (1, 2)};
+        assertThrows("RUNTIME-TYPE-ERROR", sub () {
+            Oracle::setThreadSessionInfo(cast<hash<OracleSessionInfo>>(bad_type));
+        });
+
+        # a failed call leaves the previous value in place
+        assertEq("keep", Oracle::getThreadSessionInfo().module);
+
+        # an untyped hash with valid keys can be converted
+        auto good = {"module": "untyped", "action": "ok"};
+        Oracle::setThreadSessionInfo(cast<hash<OracleSessionInfo>>(good));
+        assertEq("untyped", Oracle::getThreadSessionInfo().module);
+        assertEq("ok", Oracle::getThreadSessionInfo().action);
+    }
+
+    testEncoding() {
+        on_exit Oracle::setThreadSessionInfo();
+        string latin2 = convert_encoding("Příliš žluťoučký kůň", "ISO-8859-2");
+        assertEq("ISO-8859-2", latin2.encoding());
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": latin2});
+        string module = Oracle::getThreadSessionInfo().module;
+        assertEq("UTF-8", module.encoding());
+        assertEq("Příliš žluťoučký kůň", module);
+
+        # short values can be stored without a string node
+        string short_latin2 = convert_encoding("kůň", "ISO-8859-2");
+        assertEq(3, short_latin2.size());
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"action": short_latin2, "module": "m"});
+        hash<OracleSessionInfo> h = Oracle::getThreadSessionInfo();
+        assertEq("kůň", h.action);
+        assertEq("m", h.module);
+    }
+
+    testThreadIsolation() {
+        on_exit Oracle::setThreadSessionInfo();
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "main"});
+
+        Queue to_thread();
+        Queue from_thread();
+        background sub () {
+            try {
+                # a new thread starts without session information
+                from_thread.push(Oracle::getThreadSessionInfo() ?? "none");
+                Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "thread"});
+                from_thread.push(Oracle::getThreadSessionInfo().module);
+                # wait until the main thread has checked its own value
+                to_thread.get();
+            } catch (hash<ExceptionInfo> ex) {
+                from_thread.push(ex);
+            }
+        }();
+
+        assertEq("none", from_thread.get());
+        assertEq("thread", from_thread.get());
+        # the other thread's value does not affect this thread
+        assertEq("main", Oracle::getThreadSessionInfo().module);
+        to_thread.push(True);
+
+        # a thread terminating with session information set does not affect the next thread
+        Counter done(1);
+        *hash<auto> next_info;
+        background sub () {
+            on_exit done.dec();
+            next_info = Oracle::getThreadSessionInfo();
+        }();
+        done.waitForZero();
+        assertEq(NOTHING, next_info);
+    }
+
+    testStatementPaths() {
+        if (!connstr) {
+            testSkip("no Oracle connection string; set QORE_DB_CONNSTR_ORACLE");
+        }
+        on_exit Oracle::setThreadSessionInfo();
+
+        Datasource ds(connstr);
+        on_exit ds.rollback();
+
+        # a new connection is used by a thread without session information
+        assertEq(NoInfo, ds.selectRow(ContextSql));
+
+        hash<auto> exp = setInfo("select", "selectRow", "info", "ident");
+        assertEq(exp, ds.selectRow(ContextSql));
+
+        exp = setInfo("select", "select", "info2");
+        assertEq(toColumns(exp), ds.select(ContextSql));
+
+        exp = setInfo("select", "selectRows");
+        assertEq((exp,), ds.selectRows(ContextSql));
+
+        exp = setInfo("exec", "exec", "info3", "ident3");
+        assertEq(toColumns(exp), ds.exec(ContextSql));
+
+        exp = setInfo("exec", "execRaw");
+        assertEq(toColumns(exp), ds.execRaw(ContextSql));
+
+        exp = setInfo("stmt", "SQLStatement", "info4");
+        {
+            SQLStatement stmt(ds);
+            on_exit stmt.close();
+            stmt.prepare(ContextSql);
+            stmt.exec();
+            assertTrue(stmt.next());
+            assertEq(exp, stmt.fetchRow());
+        }
+
+        # PL/SQL reads the values set with the same round trip
+        exp = setInfo("plsql", "begin");
+        hash<auto> out = ds.exec("begin :module := sys_context('userenv', 'module'); "
+            ":action := sys_context('userenv', 'action'); end;", Type::String, Type::String);
+        assertEq(exp.("module", "action"), out);
+
+        # clearing the information clears the session on the next statement
+        Oracle::setThreadSessionInfo();
+        assertEq(NoInfo, ds.selectRow(ContextSql));
+    }
+
+    testPoolNoLeak() {
+        if (!connstr) {
+            testSkip("no Oracle connection string; set QORE_DB_CONNSTR_ORACLE");
+        }
+        on_exit Oracle::setThreadSessionInfo();
+        Oracle::setThreadSessionInfo();
+
+        # a single connection is shared by all threads
+        DatasourcePool pool(connstr + "{min=1,max=1}");
+
+        hash<auto> a = runInThread(pool, <OracleSessionInfo>{"module": "thread-a", "action": "a",
+            "client_info": "client-a", "client_identifier": "ident-a"});
+        assertEq({"module": "thread-a", "action": "a", "client_info": "client-a", "client_identifier": "ident-a"}, a);
+
+        # a thread without session information sees none of the values the previous thread left
+        assertEq(NoInfo, pool.selectRow(ContextSql));
+
+        hash<auto> b = runInThread(pool, <OracleSessionInfo>{"module": "thread-b", "action": "b"});
+        # only the attributes set by this thread are reported; the previous thread's values are cleared
+        assertEq({"module": "thread-b", "action": "b", "client_info": NULL, "client_identifier": NULL}, b);
+
+        hash<auto> c = runInThread(pool, <OracleSessionInfo>{"client_info": "client-c"});
+        assertEq({"module": NULL, "action": NULL, "client_info": "client-c", "client_identifier": NULL}, c);
+
+        assertEq(NoInfo, pool.selectRow(ContextSql));
+
+        # concurrent threads alternating on the single connection always see their own values
+        list<hash<auto>> results = runConcurrent(pool, 8, 25);
+        foreach hash<auto> r in (results) {
+            assertEq(r.expected, r.actual, sprintf("thread %d iteration %d", r.thread, r.iteration));
+        }
+    }
+
+    testNoConnectionAcquired() {
+        if (!connstr) {
+            testSkip("no Oracle connection string; set QORE_DB_CONNSTR_ORACLE");
+        }
+        on_exit Oracle::setThreadSessionInfo();
+
+        DatasourcePool pool(connstr + "{min=1,max=1}");
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "no-acquire"});
+        assertFalse(pool.currentThreadInTransaction());
+
+        hash<auto> row = pool.selectRow(ContextSql);
+        assertEq("no-acquire", row.module);
+        # a select outside a transaction releases the connection in the same call
+        assertFalse(pool.currentThreadInTransaction());
+
+        # so another thread can use the pool's only connection at once
+        Counter done(1);
+        *hash<auto> other;
+        background sub () {
+            on_exit done.dec();
+            other = pool.selectRow(ContextSql);
+        }();
+        done.waitForZero();
+        assertEq(NoInfo, other);
+    }
+
+    testNoExtraRoundTrips() {
+        if (!connstr || !sys_connstr) {
+            testSkip("needs QORE_DB_CONNSTR_ORACLE and SYS_OMQ_DB_STRING");
+        }
+        on_exit Oracle::setThreadSessionInfo();
+        Oracle::setThreadSessionInfo();
+
+        Datasource ds(connstr);
+        Datasource sys(sys_connstr);
+        int sid = getSid(ds);
+
+        const int N = 20;
+        # baseline: no session information
+        hash<auto> before = getStats(sys, sid);
+        for (int i = 0; i < N; ++i) {
+            ds.selectRow("select 1 from dual");
+        }
+        hash<auto> base = diffStats(before, getStats(sys, sid));
+
+        # every statement changes every attribute
+        before = getStats(sys, sid);
+        for (int i = 0; i < N; ++i) {
+            Oracle::setThreadSessionInfo(<OracleSessionInfo>{
+                "module": "module-" + i,
+                "action": "action-" + i,
+                "client_info": "client-" + i,
+                "client_identifier": "ident-" + i,
+            });
+            ds.selectRow("select 1 from dual");
+        }
+        hash<auto> instrumented = diffStats(before, getStats(sys, sid));
+
+        assertEq(N, base."execute count");
+        assertEq(N, instrumented."execute count", "no statement was added to set the values");
+        assertEq(base."SQL*Net roundtrips to/from client", instrumented."SQL*Net roundtrips to/from client",
+            "the values were sent with the statements' own round trips");
+
+        # the session reports the last values
+        hash<auto> row = getSession(sys, sid);
+        assertEq({"module": "module-19", "action": "action-19", "client_info": "client-19",
+            "client_identifier": "ident-19"}, row);
+    }
+
+    testCommitRollback() {
+        if (!connstr || !sys_connstr) {
+            testSkip("needs QORE_DB_CONNSTR_ORACLE and SYS_OMQ_DB_STRING");
+        }
+        on_exit Oracle::setThreadSessionInfo();
+
+        Datasource ds(connstr);
+        Datasource sys(sys_connstr);
+        int sid = getSid(ds);
+
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "work", "action": "stmt"});
+        ds.exec("select 1 from dual");
+        assertEq({"module": "work", "action": "stmt", "client_info": NULL, "client_identifier": NULL},
+            getSession(sys, sid));
+
+        # the commit itself carries the change
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "work", "action": "commit"});
+        ds.commit();
+        assertEq({"module": "work", "action": "commit", "client_info": NULL, "client_identifier": NULL},
+            getSession(sys, sid));
+
+        # a rollback by a thread without session information clears the session
+        ds.exec("select 1 from dual");
+        Oracle::setThreadSessionInfo();
+        ds.rollback();
+        assertEq(NoInfo, getSession(sys, sid));
+    }
+
+    testReconnect() {
+        if (!connstr || !sys_connstr) {
+            testSkip("needs QORE_DB_CONNSTR_ORACLE and SYS_OMQ_DB_STRING");
+        }
+        on_exit Oracle::setThreadSessionInfo();
+
+        Datasource ds(connstr);
+        Datasource sys(sys_connstr);
+        hash<auto> exp = setInfo("reconnect", "before", "client", "ident");
+        assertEq(exp, ds.selectRow(ContextSql));
+
+        hash<auto> s = sys.selectRow("select sid, serial# serial from v$session where sid = %v", getSid(ds));
+        sys.exec(sprintf("alter system kill session '%d,%d' immediate", s.sid, s.serial));
+        sys.rollback();
+
+        # the select reconnects transparently; the new session gets the unchanged values again
+        assertEq(exp, ds.selectRow(ContextSql));
+        assertNeq(s.sid + ":" + s.serial, getSid(ds) + ":" + sys.selectRow("select serial# serial from v$session "
+            "where sid = %v", getSid(ds)).serial);
+        sys.rollback();
+    }
+
+    #! returns the expected Datasource::select() result for a single row
+    private static hash<auto> toColumns(hash<auto> row) {
+        hash<auto> rv = {};
+        foreach string key in (keys row) {
+            list<auto> l = ();
+            push l, row{key};
+            rv{key} = l;
+        }
+        return rv;
+    }
+
+    private hash<auto> setInfo(string module, string action, *string client_info, *string client_identifier) {
+        Oracle::setThreadSessionInfo(<OracleSessionInfo>{
+            "module": module,
+            "action": action,
+            "client_info": client_info,
+            "client_identifier": client_identifier,
+        });
+        return {
+            "module": module,
+            "action": action,
+            "client_info": client_info ?? NULL,
+            "client_identifier": client_identifier ?? NULL,
+        };
+    }
+
+    private hash<auto> runInThread(DatasourcePool pool, hash<OracleSessionInfo> info) {
+        Queue q();
+        background sub () {
+            try {
+                Oracle::setThreadSessionInfo(info);
+                q.push(pool.selectRow(ContextSql));
+            } catch (hash<ExceptionInfo> ex) {
+                q.push(ex);
+            }
+        }();
+        auto rv = q.get();
+        if (rv.err) {
+            throw rv.err, rv.desc;
+        }
+        return rv;
+    }
+
+    private list<hash<auto>> runConcurrent(DatasourcePool pool, int threads, int iterations) {
+        Queue q();
+        for (int t = 0; t < threads; ++t) {
+            background sub (int thread) {
+                list<hash<auto>> results = ();
+                try {
+                    for (int i = 0; i < iterations; ++i) {
+                        # odd iterations run without session information
+                        hash<auto> exp;
+                        if (i % 2) {
+                            Oracle::setThreadSessionInfo();
+                            exp = NoInfo;
+                        } else {
+                            exp = {
+                                "module": sprintf("t%d", thread),
+                                "action": sprintf("i%d", i),
+                                "client_info": NULL,
+                                "client_identifier": (thread % 2) ? sprintf("id%d", thread) : NULL,
+                            };
+                            Oracle::setThreadSessionInfo(<OracleSessionInfo>{
+                                "module": exp.module,
+                                "action": exp.action,
+                                "client_identifier": exp.client_identifier ?? NOTHING,
+                            });
+                        }
+                        results += {
+                            "thread": thread,
+                            "iteration": i,
+                            "expected": exp,
+                            "actual": pool.selectRow(ContextSql),
+                        };
+                    }
+                } catch (hash<ExceptionInfo> ex) {
+                    results += {
+                        "thread": thread,
+                        "iteration": -1,
+                        "expected": "no exception",
+                        "actual": sprintf("%s: %s", ex.err, ex.desc),
+                    };
+                }
+                q.push(results);
+            }(t);
+        }
+        list<hash<auto>> rv = ();
+        for (int t = 0; t < threads; ++t) {
+            rv += q.get();
+        }
+        assertEq(threads * iterations, rv.size());
+        return rv;
+    }
+
+    private static int getSid(Datasource ds) {
+        int sid = ds.selectRow("select sys_context('userenv', 'sid') sid from dual").sid.toInt();
+        ds.rollback();
+        return sid;
+    }
+
+    private static hash<auto> getSession(Datasource sys, int sid) {
+        on_exit sys.rollback();
+        return sys.selectRow("select module, action, client_info, client_identifier from v$session "
+            "where sid = %v", sid);
+    }
+
+    private static hash<auto> getStats(Datasource sys, int sid) {
+        on_exit sys.rollback();
+        return map {$1.name: $1.value.toInt()}, sys.select("select n.name, s.value from v$sesstat s, v$statname n "
+            "where s.statistic# = n.statistic# and s.sid = %v and n.name in ('execute count', "
+            "'SQL*Net roundtrips to/from client')", sid).contextIterator();
+    }
+
+    private static hash<auto> diffStats(hash<auto> before, hash<auto> after) {
+        return map {$1.key: $1.value - before{$1.key}}, after.pairIterator();
+    }
+}

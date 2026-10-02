@@ -41,6 +41,9 @@
 #include <memory>
 
 void init_oracle_functions(QoreNamespace& ns);
+TypedHashDecl* init_hashdecl_OracleSessionInfo(QoreNamespace& ns);
+
+const TypedHashDecl* hashdeclOracleSessionInfo = nullptr;
 QoreClass* initAQMessageClass(QoreNamespace& ns);
 QoreClass* initAQQueueClass(QoreNamespace& ns);
 
@@ -432,6 +435,7 @@ QoreNamespace OraNS("Qore::Oracle");
 static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink) {
    QORE_TRACE("oracle_module_init()");
 
+   hashdeclOracleSessionInfo = init_hashdecl_OracleSessionInfo(OraNS);
    init_oracle_functions(OraNS);
    OraNS.addSystemClass(initAQMessageClass(OraNS));
    OraNS.addSystemClass(initAQQueueClass(OraNS));
@@ -495,6 +499,9 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
    methods.registerOption(DBI_OPT_TIMEZONE, "set the server-side timezone, value must be a string in the format accepted by Timezone::constructor() on the client (ie either a region name or a UTC offset like \"+01:00\"), if not set the server's time zone will be assumed to be the same as the client's", stringTypeInfo);
 
    DBID_ORACLE = DBI.registerDriver("oracle", methods, dbi_oracle_caps);
+
+   // free per-thread session information when each Qore thread terminates
+   tclist.push(ora_thread_session_info_cleanup, nullptr);
 }
 
 static void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink) {
@@ -504,4 +511,8 @@ static void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, Except
 
 static void oracle_module_delete() {
    QORE_TRACE("oracle_module_delete()");
+   // free the session information of the thread deleting the module; the thread cleanup function is
+   // deliberately not removed with tclist.pop(): that removes the most recently pushed function, which
+   // can belong to another module, and binary modules are never unloaded, so the function stays valid
+   ora_thread_session_info_cleanup(nullptr);
 }

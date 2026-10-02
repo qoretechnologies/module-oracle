@@ -1,7 +1,7 @@
 
 cmake_minimum_required(VERSION 3.5.0)
 
-project(qore-oracle-module VERSION 3.4.0)
+project(qore-oracle-module VERSION 3.4.1)
 
 option(enable-scu "build as a single compilation unit" ON)
 

@@ -2085,6 +2085,11 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
         iters = !array_size ? 1 : array_size;
     }
 
+    // send the current thread's session attributes with the statement's round trip
+    if (conn.applyThreadSessionInfo(xsink)) {
+        return -1;
+    }
+
     int status;
     {
         // Register cancel callback for interruptible execution
@@ -2107,6 +2112,10 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
         }
 
         //printd(5, "QoreOracleStatement::execute() returned from OCILogon() status: %d\n", status);
+        // the reconnected session has none of the attributes; send them with the retried statement
+        if (conn.applyThreadSessionInfo(xsink)) {
+            return -1;
+        }
         {
             // Register cancel callback for interruptible execution (retry after reconnect)
             QoreOracleCancelHelper cancel_helper(conn.svchp, conn.errhp);

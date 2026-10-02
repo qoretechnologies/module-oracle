@@ -4,7 +4,7 @@
 
   Qore Programming Language
 
-  Copyright (C) 2003 - 2022 David Nichols
+  Copyright (C) 2003 - 2026 David Nichols
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -43,6 +43,9 @@
 #define SQLT_NTY_NONE 0
 #define SQLT_NTY_OBJECT 1
 #define SQLT_NTY_COLLECTION 2
+
+//! the Qore::Oracle::OracleSessionInfo hashdecl
+DLLLOCAL extern const TypedHashDecl* hashdeclOracleSessionInfo;
 
 #include "OraColumnValue.h"
 #include "QoreOracleConnection.h"

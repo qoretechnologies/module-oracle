@@ -101,6 +101,64 @@ public:
 // return optimal numeric values if options are supported
 #define OPT_NUM_DEFAULT OPT_NUM_OPTIMAL
 
+//! Oracle session attributes reported in V$SESSION that can be set per thread
+/** @see QoreOracleConnection::applyThreadSessionInfo()
+*/
+enum OraSessionAttr : unsigned {
+    ORA_SA_MODULE = 0,
+    ORA_SA_ACTION,
+    ORA_SA_CLIENT_INFO,
+    ORA_SA_CLIENT_IDENTIFIER,
+    ORA_SA_COUNT,
+};
+
+//! Maximum length in bytes that OCI accepts for any of the session attributes in OraSessionAttr
+/** Longer values are truncated on a character boundary, matching what \c DBMS_APPLICATION_INFO does
+    on the server.
+*/
+#define ORA_SESSION_ATTR_MAX_BYTES 64
+
+//! Session attribute values for one thread; all values are UTF-8 and an empty value means NULL
+class OracleSessionInfo {
+public:
+    //! the attribute values, indexed by OraSessionAttr
+    std::string val[ORA_SA_COUNT];
+
+    //! returns true if no attribute is set
+    DLLLOCAL bool empty() const {
+        for (unsigned i = 0; i < ORA_SA_COUNT; ++i) {
+            if (!val[i].empty()) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+
+//! Returns the session attribute hash key for the given attribute
+DLLLOCAL const char* ora_session_attr_key(unsigned attr);
+
+//! Returns the session information set for the current thread, or nullptr if none is set
+DLLLOCAL const OracleSessionInfo* ora_get_thread_session_info();
+
+//! Replaces the session information for the current thread
+/** @param info a hash with optional \c module, \c action, \c client_info, and \c client_identifier string
+    keys; nullptr or a hash with no non-empty values clears the thread's session information
+    @param xsink exception sink
+
+    @return 0 for OK, -1 if an exception was raised
+*/
+DLLLOCAL int ora_set_thread_session_info(const QoreHashNode* info, ExceptionSink* xsink);
+
+//! Returns the session information for the current thread as a hash, or nullptr if none is set
+DLLLOCAL QoreHashNode* ora_get_thread_session_info_hash(ExceptionSink* xsink);
+
+//! Releases the current thread's session information; registered as a Qore thread cleanup function
+DLLLOCAL void ora_thread_session_info_cleanup(void* arg);
+
+//! Truncates a UTF-8 string to at most the given number of bytes on a character boundary
+DLLLOCAL void ora_truncate_utf8(std::string& str, size_t max_bytes);
+
 // forward reference
 class QorePreparedStatement;
 #ifdef QDBI_METHOD_BULK_LOAD_BEGIN
@@ -206,6 +264,23 @@ public:
 
     DLLLOCAL int commit(ExceptionSink* xsink);
     DLLLOCAL int rollback(ExceptionSink* xsink);
+
+    //! Makes this connection's session attributes match the current thread's session information
+    /** Sets the \c MODULE, \c ACTION, \c CLIENT_INFO, and \c CLIENT_IDENTIFIER session attributes
+        with OCIAttrSet() on the session handle; this is a client-side operation: OCI sends the
+        values to the server with the next call that makes a round trip, so no additional statement
+        or round trip is needed.
+
+        Only attributes that differ from the values last sent on this connection are set.  When the
+        current thread has no session information, attributes left on the connection by another
+        thread are cleared, so values never leak between threads sharing pooled connections.
+
+        Must be called immediately before each OCI call that makes a server round trip on behalf of
+        the current thread.
+
+        @return 0 for OK, -1 if an exception was raised
+    */
+    DLLLOCAL int applyThreadSessionInfo(ExceptionSink* xsink);
 
     DLLLOCAL DateTimeNode* getTimestamp(bool get_tz, OCIDateTime *odt, ExceptionSink* xsink);
 
@@ -411,6 +486,14 @@ public:
 protected:
     typedef std::set<QorePreparedStatement*> stmt_set_t;
     stmt_set_t stmt_set;
+
+    //! the session attribute values (UTF-8) last set on this connection; only valid if session_info_known
+    std::string session_attr[ORA_SA_COUNT];
+    //! true if session_attr reflects the values set on the session; false after every logon
+    bool session_info_known = false;
+
+    //! Sets one session attribute on the session handle, converting it to the connection's encoding
+    DLLLOCAL int setSessionAttr(unsigned attr, const std::string& value, ExceptionSink* xsink);
 
     DLLLOCAL static sb4 readClobCallback(void *sp, CONST dvoid *bufp, ub4 len, ub1 piece) {
         //printd(5, "QoreOracleConnection::readClobCallback(%p, %p, %d, %d)\n", sp, bufp, len, piece);

@@ -6,7 +6,7 @@
 
     Qore Programming Language
 
-    Copyright 2003 - 2022 Qore Technologies, s.r.o.
+    Copyright 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -25,6 +25,31 @@
 
 #include "oracle.h"
 #include "oracle-module.h"
+
+//! Oracle session attributes reported in \c V$SESSION for the statements executed by a thread
+/** All values are optional; a missing or empty value is reported as \c NULL.  Values longer than 64 bytes are
+    truncated on a character boundary.
+
+    @see
+    - @ref Qore::Oracle::setThreadSessionInfo() "setThreadSessionInfo()"
+    - @ref Qore::Oracle::getThreadSessionInfo() "getThreadSessionInfo()"
+    - @ref ora_thread_session_info
+
+    @since oracle 3.4.1
+*/
+hashdecl Qore::Oracle::OracleSessionInfo {
+    //! the \c MODULE column of \c V$SESSION: the name of the module currently running
+    *string module;
+
+    //! the \c ACTION column of \c V$SESSION: the action within the current module
+    *string action;
+
+    //! the \c CLIENT_INFO column of \c V$SESSION: information about the client application
+    *string client_info;
+
+    //! the \c CLIENT_IDENTIFIER column of \c V$SESSION: the end user or context the session works for
+    *string client_identifier;
+}
 
 /** @defgroup oracle_functions Oracle Functions
  */
@@ -140,5 +165,70 @@ hash placeholderOracleCollection(string type_name) [flags=CONSTANT,NAMED_ARGS] {
     h->setKeyValue("type", new QoreStringNode(ORACLE_COLLECTION), xsink);
     h->setKeyValue("value", type_name->refSelf(), xsink);
     return h;
+}
+
+//! Sets the Oracle session attributes reported for all statements that the current thread executes
+/** The values are applied to whichever Oracle connection executes each statement, commit, or rollback on behalf of
+    the current thread, including pooled connections acquired through a @ref Qore::SQL::DatasourcePool
+    "DatasourcePool".  They are set as OCI session attributes, which Oracle receives with the statement itself, so
+    no additional statement or server round trip is made, and setting them does not acquire a connection or start
+    a transaction.
+
+    A connection that executes a statement for a thread without session information has any values left by another
+    thread cleared, so values never leak between threads sharing pooled connections.
+
+    @param info the new session information for the current thread, replacing any previous value; keys that are
+    missing or empty are reported as \c NULL; \c NOTHING or a hash without any non-empty value clears the
+    session information for the current thread
+
+    @par Example:
+    @code{.py}
+Oracle::setThreadSessionInfo(<OracleSessionInfo>{
+    "module": "order-import:1.0",
+    "action": "batch 42",
+    "client_info": "workflow:ORDER-IMPORT:1.0",
+});
+on_exit Oracle::setThreadSessionInfo();
+pool.select("select * from orders where status = %v", "NEW");
+    @endcode
+
+    @throw ORACLE-SESSION-INFO-ERROR a value cannot be converted to UTF-8
+
+    @note
+    - values longer than 64 bytes are truncated on a character boundary
+    - the session information belongs to the current thread and is freed when the thread terminates
+    - mixing this function with direct calls to the \c DBMS_APPLICATION_INFO or \c DBMS_SESSION packages on the
+      same connection is not supported: the driver only tracks the values that it set itself
+
+    @see
+    - @ref Qore::Oracle::getThreadSessionInfo() "getThreadSessionInfo()"
+    - @ref ora_thread_session_info
+
+    @since oracle 3.4.1
+*/
+nothing setThreadSessionInfo(*hash<OracleSessionInfo> info) [flags=NAMED_ARGS;dom=DATABASE] {
+    ora_set_thread_session_info(info, xsink);
+}
+
+//! Returns the Oracle session attributes set for the current thread
+/** @return the session information set for the current thread with
+    @ref Qore::Oracle::setThreadSessionInfo() "setThreadSessionInfo()" (with values longer than 64 bytes
+    truncated), or \c NOTHING if none is set
+
+    @par Example:
+    @code{.py}
+*hash<OracleSessionInfo> prev = Oracle::getThreadSessionInfo();
+Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "report", "action": "monthly"});
+on_exit Oracle::setThreadSessionInfo(prev);
+    @endcode
+
+    @see
+    - @ref Qore::Oracle::setThreadSessionInfo() "setThreadSessionInfo()"
+    - @ref ora_thread_session_info
+
+    @since oracle 3.4.1
+*/
+*hash<OracleSessionInfo> getThreadSessionInfo() [flags=RET_VALUE_ONLY;dom=DATABASE] {
+    return ora_get_thread_session_info_hash(xsink);
 }
 ///@}

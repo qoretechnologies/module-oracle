@@ -25,9 +25,161 @@
 
 #include "ocilib_internal.h"
 
+#include <memory>
+
 // ensure that numeric values are returned with no thousands separator and a dot decimal separator
 // despite the locale because we currently retrieve number values as strings
 static char session_sql[] = "alter session set nls_numeric_characters = \". \"";
+
+// hash keys and OCI attribute codes for the session attributes, indexed by OraSessionAttr
+static const char* ora_session_attr_keys[ORA_SA_COUNT] = {
+    "module",
+    "action",
+    "client_info",
+    "client_identifier",
+};
+
+static const ub4 ora_session_attr_codes[ORA_SA_COUNT] = {
+    OCI_ATTR_MODULE,
+    OCI_ATTR_ACTION,
+    OCI_ATTR_CLIENT_INFO,
+    OCI_ATTR_CLIENT_IDENTIFIER,
+};
+
+// the session information for the current thread; owned by the thread, freed by
+// ora_thread_session_info_cleanup() when the Qore thread terminates
+static thread_local OracleSessionInfo* ora_thread_session_info = nullptr;
+
+const char* ora_session_attr_key(unsigned attr) {
+    assert(attr < ORA_SA_COUNT);
+    return ora_session_attr_keys[attr];
+}
+
+void ora_truncate_utf8(std::string& str, size_t max_bytes) {
+    if (str.size() <= max_bytes) {
+        return;
+    }
+    size_t len = max_bytes;
+    // do not split a multi-byte character: back up over continuation bytes to the character's lead byte
+    while (len && (static_cast<unsigned char>(str[len]) & 0xc0) == 0x80) {
+        --len;
+    }
+    str.resize(len);
+}
+
+const OracleSessionInfo* ora_get_thread_session_info() {
+    return ora_thread_session_info;
+}
+
+int ora_set_thread_session_info(const QoreHashNode* info, ExceptionSink* xsink) {
+    std::unique_ptr<OracleSessionInfo> new_info;
+    if (info) {
+        new_info.reset(new OracleSessionInfo);
+        for (unsigned i = 0; i < ORA_SA_COUNT; ++i) {
+            QoreValue v = info->getKeyValue(ora_session_attr_keys[i]);
+            if (v.isNullOrNothing()) {
+                continue;
+            }
+            if (v.getType() != NT_STRING) {
+                xsink->raiseException("ORACLE-SESSION-INFO-ERROR", "key '%s' must be a string; got type '%s' "
+                    "instead", ora_session_attr_keys[i], v.getTypeName());
+                return -1;
+            }
+            // note: short values can be held in inline short string storage, which has no QoreStringNode
+            QoreStringDataHelper data(v);
+            if (data.getEncoding() == QCS_UTF8) {
+                new_info->val[i].assign(data.c_str(), data.size());
+            } else {
+                QoreString src(data.c_str(), data.size(), data.getEncoding());
+                TempEncodingHelper str(src, QCS_UTF8, xsink);
+                if (*xsink) {
+                    return -1;
+                }
+                new_info->val[i].assign(str->c_str(), str->size());
+            }
+            ora_truncate_utf8(new_info->val[i], ORA_SESSION_ATTR_MAX_BYTES);
+        }
+        if (new_info->empty()) {
+            new_info.reset();
+        }
+    }
+
+    delete ora_thread_session_info;
+    ora_thread_session_info = new_info.release();
+    return 0;
+}
+
+QoreHashNode* ora_get_thread_session_info_hash(ExceptionSink* xsink) {
+    const OracleSessionInfo* info = ora_thread_session_info;
+    if (!info) {
+        return nullptr;
+    }
+
+    ReferenceHolder<QoreHashNode> h(new QoreHashNode(hashdeclOracleSessionInfo, xsink), xsink);
+    for (unsigned i = 0; i < ORA_SA_COUNT; ++i) {
+        if (info->val[i].empty()) {
+            continue;
+        }
+        h->setKeyValue(ora_session_attr_keys[i], new QoreStringNode(info->val[i].c_str(), QCS_UTF8), xsink);
+        if (*xsink) {
+            return nullptr;
+        }
+    }
+    return h.release();
+}
+
+void ora_thread_session_info_cleanup(void* arg) {
+    delete ora_thread_session_info;
+    ora_thread_session_info = nullptr;
+}
+
+int QoreOracleConnection::setSessionAttr(unsigned attr, const std::string& value, ExceptionSink* xsink) {
+    assert(attr < ORA_SA_COUNT);
+    const QoreEncoding* enc = ds.getQoreEncoding();
+
+    // OCI expects the value in the environment's character set
+    if (value.empty() || !enc || enc == QCS_UTF8) {
+        return checkerr(OCIAttrSet(usrhp, OCI_HTYPE_SESSION, (void*)value.c_str(), (ub4)value.size(),
+            ora_session_attr_codes[attr], errhp), "QoreOracleConnection::setSessionAttr()", xsink);
+    }
+
+    // a character can need more bytes in the connection's encoding than in UTF-8; drop characters from the
+    // end until the converted value fits
+    std::string src = value;
+    while (true) {
+        QoreString utf8(src.c_str(), src.size(), QCS_UTF8);
+        TempEncodingHelper str(utf8, enc, xsink);
+        if (*xsink) {
+            return -1;
+        }
+        if (str->size() <= ORA_SESSION_ATTR_MAX_BYTES) {
+            return checkerr(OCIAttrSet(usrhp, OCI_HTYPE_SESSION, (void*)str->c_str(), (ub4)str->size(),
+                ora_session_attr_codes[attr], errhp), "QoreOracleConnection::setSessionAttr()", xsink);
+        }
+        assert(!src.empty());
+        ora_truncate_utf8(src, src.size() - 1);
+    }
+}
+
+int QoreOracleConnection::applyThreadSessionInfo(ExceptionSink* xsink) {
+    const OracleSessionInfo* info = ora_thread_session_info;
+    static const std::string empty_value;
+
+    for (unsigned i = 0; i < ORA_SA_COUNT; ++i) {
+        const std::string& value = info ? info->val[i] : empty_value;
+        if (session_info_known && session_attr[i] == value) {
+            continue;
+        }
+        if (setSessionAttr(i, value, xsink)) {
+            // the session state is no longer known; set every attribute again on the next call
+            session_info_known = false;
+            return -1;
+        }
+        session_attr[i] = value;
+    }
+    session_info_known = true;
+    return 0;
+}
 
 QoreOracleConnection::QoreOracleConnection(Datasource &n_ds, ExceptionSink *xsink)
   : errhp(0), svchp(0), srvhp(0), usrhp(0), ocilib_cn(0), ds(n_ds), ocilib_init(false),
@@ -382,6 +534,9 @@ int QoreOracleConnection::doException(const char *query_name, text errbuf[], sb4
 }
 
 int QoreOracleConnection::logon(ExceptionSink *xsink) {
+   // a new session starts without the attributes set on a previous session; set all of them again
+   session_info_known = false;
+
    const std::string &user = ds.getUsernameStr();
    const std::string &pass = ds.getPasswordStr();
 
@@ -453,6 +608,11 @@ int QoreOracleConnection::commit(ExceptionSink* xsink) {
    if (qore_check_cancel(xsink)) {
       return -1;
    }
+   // the commit's round trip carries any session attribute change, so the session reports the
+   // committing thread's context, or no context if the thread has none
+   if (applyThreadSessionInfo(xsink)) {
+      return -1;
+   }
    sword rc;
    {
       QoreOracleCancelHelper cancel_helper(svchp, errhp);
@@ -471,6 +631,10 @@ int QoreOracleConnection::rollback(ExceptionSink* xsink) {
    }
 #endif
    if (qore_check_cancel(xsink)) {
+      return -1;
+   }
+   // the rollback's round trip carries any session attribute change; see commit()
+   if (applyThreadSessionInfo(xsink)) {
       return -1;
    }
    sword rc;

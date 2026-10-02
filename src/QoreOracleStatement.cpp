@@ -555,6 +555,11 @@ int QoreOracleSimpleStatement::exec(const char* sql, unsigned len, ExceptionSink
         return -1;
     }
 
+    // send the current thread's session attributes with the statement's round trip
+    if (conn.applyThreadSessionInfo(xsink)) {
+        return -1;
+    }
+
     int status;
     {
         // Register cancel callback for interruptible execution
