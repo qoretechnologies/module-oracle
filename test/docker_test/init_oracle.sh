@@ -68,7 +68,16 @@ ds.commit();
             echo "last error from the DB connection attempt:"
             echo "$out"
             exit 1
-        elif ! echo "$out" | grep -E "QoreOracleConnection::logon.*ORA-(01033|12514|12541)" > /dev/null 2>&1; then
+        # errors that the gvenzl/oracle-free service container reports while it is still starting are waited out
+        # (bounded by max_tries above); any other error is fatal at once:
+        # - ORA-01033 initialization or shutdown in progress, ORA-01034 Oracle not available, ORA-01089 immediate
+        #   shutdown in progress
+        # - ORA-01109 database not open: the pluggable database is opened after the listener accepts connections
+        # - ORA-01017 invalid credential: the container sets the SYSTEM password from ORACLE_PASSWORD during its first
+        #   boot, so the password is refused until initialization completes
+        # - ORA-12514 / ORA-12528 / ORA-12541: the listener does not know the service yet, blocks new connections,
+        #   or is not up yet
+        elif ! echo "$out" | grep -E "QoreOracleConnection::logon.*ORA-(01017|01033|01034|01089|01109|12514|12528|12541)" > /dev/null 2>&1; then
             echo "Error in Oracle initialization:"
             echo "$out"
             exit 1
