@@ -3,7 +3,7 @@ Oracle RPM packaging audit
 
 Copyright 2026 Qore Technologies, s.r.o.
 
-Scope: multi-distribution RPM recipe, isolated fixture helpers, tests and packaging documentation. No native or Qore runtime source edits. Candidate 7 and installed-6 qualification cover Fedora 44, AlmaLinux 10 and openSUSE Leap 16; final lifecycle/debugger controls are recorded separately in qore-packaging evidence. All 62 checks reviewed.
+Scope: multi-distribution RPM recipe, isolated fixture helpers, tests and packaging documentation. No native or Qore runtime source edits. Candidate 8 and installed-7 qualification cover Fedora 44, AlmaLinux 10 and openSUSE Leap 16; removal/reinstallation and GDB source/breakpoint controls pass on all three targets (oracle-final-controls-3). Final case-insensitive build-log scans report no warnings. Evidence: qore-packaging/evidence/oracle-rpm-qualification-20261003.json. All 62 checks reviewed.
 
 .. list-table:: Complete audit-changes checklist
    :header-rows: 1

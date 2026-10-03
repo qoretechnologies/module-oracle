@@ -60,13 +60,14 @@ unset ORACLE_HOME ORACLE_INSTANT_CLIENT ORACLE_INCLUDES TNS_ADMIN
 qore_set_source_prefix_maps "%{qore_debug_source_dir}"
 cmake -S . -B build -G 'Unix Makefiles' \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-DNDEBUG \
-  -DCMAKE_INSTALL_PREFIX=%{_prefix} -DCMAKE_INSTALL_LIBDIR=%{_lib} \
+  -DCMAKE_INSTALL_PREFIX=%{_prefix} -DCMAKE_POLICY_DEFAULT_CMP0177=NEW \
   -DCMAKE_SKIP_RPATH=ON -DCMAKE_IGNORE_PREFIX_PATH=/usr/local \
   -DORACLE_PATH_INCLUDES:PATH=/usr/include/oracle/23/client64 \
   -DORACLE_PATH_LIB:PATH=/usr/lib/oracle/23/client64/lib \
   -DQore_DIR=%{_libdir}/cmake/Qore -DQORE_EXECUTABLE=/usr/bin/qore \
   -DQORE_QPP_EXECUTABLE=/usr/bin/qpp -DQORE_QCC_EXECUTABLE=/usr/bin/qcc \
   -DQORE_BUILD_AOT_MODULES=ON -DQORE_AOT_LINK_SOURCE_MODULES=OFF \
+  -DQORE_GENERATE_JAVA_BINDINGS=OFF \
   -DQORE_QM_METADATA_ENV:STRING="QORE_MODULE_DIR=$PWD/build:$PWD/build/qlib-qmod:$PWD/qlib:$qore_stdlib_paths;QORE_MODULE_DIR_ONLY=1;QORE_INCLUDE_DIR=;LD_LIBRARY_PATH=" \
   -DCMAKE_DISABLE_FIND_PACKAGE_Doxygen=%{!?with_docs:ON}%{?with_docs:OFF}
 cmake --build build -- %{?_smp_mflags}
