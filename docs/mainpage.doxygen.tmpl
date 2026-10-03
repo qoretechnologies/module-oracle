@@ -297,45 +297,45 @@ hash<auto> h = ds.select("select a.id, b.id, c.id from a, b, c where a.id = b.id
 
     @subsection binding_by_value Binding by Value
 
-    |!Argument|!OCI Type|!Description|
-    |\c Type::Binary|\c SQLT_BIN|For use with \c BLOB columns, for example.|
-    |\c Type::String|\c SQLT_STR|For use with string data, \c VARCHAR, \c CHAR, \c CLOB columns, etc|
-    |\c Type::Int|\c SQLT_INT or \c SQLT_STR|if the int > 32-bits = \c SQLT_STR, <= 32-bit int = \c SQLT_INT|
-    |\c Type::Boolean|\c SQLT_INT|True is bound as 1, False as 0|
-    |\c Type::Float|\c SQLT_BDOUBLE|For use with \c FLOAT, \c BINARY_FLOAT, \c BINARY_DOUBLE columns, etc|
-    |\c Type::Date|\c SQLT_TIMESTAMP|For use with \c DATE, \c TIMESTAMP, etc columns|
-    |Wrapped \c Type::Hash and \c Type::List|\c SQLT_NTY|For use with @ref named_types|
+    |!Argument|!OCI Type|!Description
+    |\c Type::Binary|\c SQLT_BIN|For use with \c BLOB columns, for example.
+    |\c Type::String|\c SQLT_STR|For use with string data, \c VARCHAR, \c CHAR, \c CLOB columns, etc
+    |\c Type::Int|\c SQLT_INT or \c SQLT_STR|if the int > 32-bits = \c SQLT_STR, <= 32-bit int = \c SQLT_INT
+    |\c Type::Boolean|\c SQLT_INT|True is bound as 1, False as 0
+    |\c Type::Float|\c SQLT_BDOUBLE|For use with \c FLOAT, \c BINARY_FLOAT, \c BINARY_DOUBLE columns, etc
+    |\c Type::Date|\c SQLT_TIMESTAMP|For use with \c DATE, \c TIMESTAMP, etc columns
+    |Wrapped \c Type::Hash and \c Type::List|\c SQLT_NTY|For use with @ref named_types
 
     @subsection binding_by_placeholder Binding by Placeholder
 
-    |!Argument|!OCI Type|!Description|
-    |\c Type::Binary|\c SQLT_BIN|For retrieving \c RAW data up to 65531 bytes in size.|
-    |\c SQL::BLOB|\c SQLT_BLOB|For retrieving \c BLOB data. The \c LOB handle is used to read the entire \c BLOB content into a binary object.|
-    |\c SQL::CLOB|\c SQLT_CLOB|For retrieving \c CLOB data. The \c LOB handle is used to read the entire \c CLOB content into a Qore string.|
-    |\c SQL::RESULTSET|\c SQLT_RSET|For retrieving a result set as a @ref Qore::SQL::SQLStatement "SQLStatement" object|
-    |\c SQL::VARCHAR|\c SQLT_STR|For retrieving character data (\c VARCHAR2, etc). To specify a buffer size larger than 512 bytes, simply use the size in bytes as the argument. See @ref string_sizes|
-    |\c Type::Int|\c SQLT_INT|For retrieving integer numeric data up to 32 bits (for larger numbers or for non-integer numbers use \c SQL::VARCHAR or \c Type::Float.|
-    |\c Type::Float|\c SQLT_BDOUBLE|For retrieving data in 64-bit floating point format.|
-    |\c Type::Date|\c SQLT_TIMESTAMP|For retrieving dates and times.|
-    |\c Type::Hash|\c SQLT_RSET|For retrieving result sets from a stored procedure that returns a cursor.|
-    |Wrapped \c Type::Hash and \c Type::List|\c SQLT_NTY|For use with @ref named_types|
+    |!Argument|!OCI Type|!Description
+    |\c Type::Binary|\c SQLT_BIN|For retrieving \c RAW data up to 65531 bytes in size.
+    |\c SQL::BLOB|\c SQLT_BLOB|For retrieving \c BLOB data. The \c LOB handle is used to read the entire \c BLOB content into a binary object.
+    |\c SQL::CLOB|\c SQLT_CLOB|For retrieving \c CLOB data. The \c LOB handle is used to read the entire \c CLOB content into a Qore string.
+    |\c SQL::RESULTSET|\c SQLT_RSET|For retrieving a result set as a @ref Qore::SQL::SQLStatement "SQLStatement" object
+    |\c SQL::VARCHAR|\c SQLT_STR|For retrieving character data (\c VARCHAR2, etc). To specify a buffer size larger than 512 bytes, simply use the size in bytes as the argument. See @ref string_sizes
+    |\c Type::Int|\c SQLT_INT|For retrieving integer numeric data up to 32 bits (for larger numbers or for non-integer numbers use \c SQL::VARCHAR or \c Type::Float.
+    |\c Type::Float|\c SQLT_BDOUBLE|For retrieving data in 64-bit floating point format.
+    |\c Type::Date|\c SQLT_TIMESTAMP|For retrieving dates and times.
+    |\c Type::Hash|\c SQLT_RSET|For retrieving result sets from a stored procedure that returns a cursor.
+    |Wrapped \c Type::Hash and \c Type::List|\c SQLT_NTY|For use with @ref named_types
 
     @subsection default_oracle_to_qore_mapping Default Oracle to Qore Mappings
 
-    |!Oracle Column Type|!Qore Type|!Notes|
-    |\c REAL, \c FLOAT, \c DOUBLE \c PRECISION, \c BINARY_FLOAT, \c BINARY_DOUBLE|\c Type::Float|direct conversion|
-    |\c DATE|\c Type::Date|direct conversion|
-    |\c TIMESTAMP|\c Type::Date (absolute)|resolution to the microsecond|
-    |\c TIMESTAMP \c WITH \c TIME \c ZONE|\c Type::Date (absolute)|includes time zone information and has a resolution to the microsecond|
-    |\c TIMESTAMP \c WITH \c LOCAL \c TIME \c ZONE|\c Type::Date (absolute)|includes time zone information and has a resolution to the microsecond|
-    |\c INTERVAL \c YEAR \c TO \c MONTH|\c Type::Date (relative)|direct conversion to a relative date|
-    |\c INTERVAL \c DAY \c TO \c SECOND|\c Type::Date (relative)|direct conversion to a relative date|
-    |\c SMALLINT, \c INTEGER|\c Type::Int|direct conversion|
-    |\c NUMBER, \c NUMERIC, \c DECIMAL|\c Type::String|conversion to a string to avoid loss of precision|
-    |\c CLOB|\c Type::String|the LOB handle is used to read the entire CLOB content into a string|
-    |\c RAW, \c LONG RAW|\c Type::Binary|direct conversion|
-    |\c BLOB|\c Type::Binary|the LOB handle is used to read the entire BLOB content into a binary object|
-    |\c CURSOR (result set)|\c Type::Hash|the result set is returned as a hash of lists|
+    |!Oracle Column Type|!Qore Type|!Notes
+    |\c REAL, \c FLOAT, \c DOUBLE \c PRECISION, \c BINARY_FLOAT, \c BINARY_DOUBLE|\c Type::Float|direct conversion
+    |\c DATE|\c Type::Date|direct conversion
+    |\c TIMESTAMP|\c Type::Date (absolute)|resolution to the microsecond
+    |\c TIMESTAMP \c WITH \c TIME \c ZONE|\c Type::Date (absolute)|includes time zone information and has a resolution to the microsecond
+    |\c TIMESTAMP \c WITH \c LOCAL \c TIME \c ZONE|\c Type::Date (absolute)|includes time zone information and has a resolution to the microsecond
+    |\c INTERVAL \c YEAR \c TO \c MONTH|\c Type::Date (relative)|direct conversion to a relative date
+    |\c INTERVAL \c DAY \c TO \c SECOND|\c Type::Date (relative)|direct conversion to a relative date
+    |\c SMALLINT, \c INTEGER|\c Type::Int|direct conversion
+    |\c NUMBER, \c NUMERIC, \c DECIMAL|\c Type::String|conversion to a string to avoid loss of precision
+    |\c CLOB|\c Type::String|the LOB handle is used to read the entire CLOB content into a string
+    |\c RAW, \c LONG RAW|\c Type::Binary|direct conversion
+    |\c BLOB|\c Type::Binary|the LOB handle is used to read the entire BLOB content into a binary object
+    |\c CURSOR (result set)|\c Type::Hash|the result set is returned as a hash of lists
 
     @subsection oracle_array_bind Oracle Array Binds
 
@@ -352,7 +352,7 @@ hash<auto> h = ds.select("select a.id, b.id, c.id from a, b, c where a.id = b.id
     <b>Array Binding Support</b>
     |!Qore Type|!IN|!OUT|!Single
     |@ref string "string"|\c Y|\c Y|\c Y
-    |@ref int "int"|\c Y|\c Y|\c Y
+    |@ref Qore::Type::Int "int"|\c Y|\c Y|\c Y
     |@ref number "number"|\c Y|\c Y|\c Y
     |@ref boolean "bool"|\c Y|\c Y|\c Y
     |@ref float "float"|\c Y|\c N|\c Y
@@ -456,7 +456,7 @@ int rows = ds.exec("merge into merge_target t using (select %v as id, %v as val,
     this module can only be resolved at parse time if the module is
     explicitly required as above.
 
-    |!Function|!Description|
+    |!Function|!Description
     |Qore::Oracle::bindOracleObject()|Binds a Qore \c value as a Object type \c typename. Hash keys are object \
         attributes
     |Qore::Oracle::placeholderOracleObject()|Allows fetching Object type \c typename. The returned hash is a plain \

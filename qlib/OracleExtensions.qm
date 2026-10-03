@@ -1,7 +1,7 @@
 # -*- mode: qore; indent-tabs-mode: nil -*-
 # @file OracleExtensions.qm OracleExtensions module definition
 
-/*  OracleExtensions.qm Copyright (C) 2012 - 2022 Qore Technologies s.r.o.
+/*  OracleExtensions.qm Copyright (C) 2012 - 2026 Qore Technologies s.r.o.
 
 Permission is hereby granted, free of charge, to any person obtaining a
 copy of this software and associated documentation files (the "Software"),
@@ -523,7 +523,7 @@ public class OracleDatasourceBase inherits Qore::SQL::AbstractDatasource, Oracle
     #! vexec with automatic approach of getting application info
     /**
         @param sql a SQL statement
-        @param ... binding arguments as in parent class method
+        @param vargs list of binding arguments as in the parent class method
         @retval any a result as in parent class method
 
     This method tries to find application info automatically. The previously set
@@ -543,7 +543,7 @@ public class OracleDatasourceBase inherits Qore::SQL::AbstractDatasource, Oracle
     #! vselect with automatic approach of getting application info
     /**
         @param sql a SQL statement
-        @param ... binding arguments as in parent class method
+        @param vargs list of binding arguments as in the parent class method
         @retval any a result as in parent class method
 
     This method tries to find application info automatically. The previously set
@@ -562,7 +562,7 @@ public class OracleDatasourceBase inherits Qore::SQL::AbstractDatasource, Oracle
     #! vselectRow with automatic approach of getting application info
     /**
         @param sql a SQL statement
-        @param ... binding arguments as in parent class method
+        @param vargs list of binding arguments as in the parent class method
         @retval any a result as in parent class method
 
     This method tries to find application info automatically. The previously set
@@ -581,7 +581,7 @@ public class OracleDatasourceBase inherits Qore::SQL::AbstractDatasource, Oracle
     #! vselectRows with automatic approach of getting application info
     /**
         @param sql a SQL statement
-        @param ... binding arguments as in parent class method
+        @param vargs list of binding arguments as in the parent class method
         @retval any a result as in parent class method
 
     This method tries to find application info automatically. The previously set
@@ -1073,6 +1073,15 @@ public class OracleDatasourcePool inherits OracleExtensions::OracleDatasourceBas
 
     #! Standard Qore::DatasourcePool constructor
     /**
+        @param driver database driver name
+        @param user database user name, or NOTHING
+        @param pass database password, or NOTHING
+        @param db database name, or NOTHING
+        @param encoding database character encoding, or NOTHING
+        @param host database host, or NOTHING
+        @param min minimum connection pool size
+        @param max maximum connection pool size
+        @param port database port (zero selects the default)
         @param userAutoInfo see @ref instrumentation_info_auto
      */
     constructor(string driver, *string user, *string pass, *string db, *string encoding, *string host, softint min=3, softint max=10, softint port=0, *code userAutoInfo)
@@ -1082,6 +1091,7 @@ public class OracleDatasourcePool inherits OracleExtensions::OracleDatasourceBas
     }
     #! Standard Qore::DatasourcePool constructor
     /**
+        @param desc datasource connection string
         @param userAutoInfo see @ref instrumentation_info_auto
      */
     constructor(string desc, *code userAutoInfo)
@@ -1091,6 +1101,7 @@ public class OracleDatasourcePool inherits OracleExtensions::OracleDatasourceBas
     }
     #! Standard Qore::DatasourcePool constructor
     /**
+        @param opts datasource connection options
         @param userAutoInfo see @ref instrumentation_info_auto
      */
     constructor(hash opts, *code userAutoInfo)
@@ -1101,6 +1112,7 @@ public class OracleDatasourcePool inherits OracleExtensions::OracleDatasourceBas
     #! New constructor: use already existing DatasourcePool.
     /** The original DatasourcePool is embedded into this object.
 
+        @param ds existing datasource or pool to wrap
         @param userAutoInfo see @ref instrumentation_info_auto
      */
     constructor(DatasourcePool ds, *code userAutoInfo)
@@ -1126,6 +1138,13 @@ public class OracleDatasource inherits OracleExtensions::OracleDatasourceBase {
 
     #! Standard Qore::DatasourcePool constructor
     /**
+        @param driver database driver name
+        @param user database user name, or NOTHING
+        @param pass database password, or NOTHING
+        @param db database name, or NOTHING
+        @param encoding database character encoding, or NOTHING
+        @param host database host, or NOTHING
+        @param port database port (zero selects the default)
         @param userAutoInfo see @ref instrumentation_info_auto
      */
     constructor(string driver, *string user, *string pass, *string db, *string encoding, *string host, softint port=0, *code userAutoInfo)
@@ -1135,6 +1154,7 @@ public class OracleDatasource inherits OracleExtensions::OracleDatasourceBase {
     }
     #! Standard Qore::DatasourcePool constructor
     /**
+        @param desc datasource connection string
         @param userAutoInfo see @ref instrumentation_info_auto
      */
     constructor(string desc, *code userAutoInfo)
@@ -1144,6 +1164,7 @@ public class OracleDatasource inherits OracleExtensions::OracleDatasourceBase {
     }
     #! Standard Qore::DatasourcePool constructor
     /**
+        @param opts datasource connection options
         @param userAutoInfo see @ref instrumentation_info_auto
      */
     constructor(hash opts, *code userAutoInfo)
@@ -1154,6 +1175,7 @@ public class OracleDatasource inherits OracleExtensions::OracleDatasourceBase {
     #! New constructor: use  already existing Datasource
     /** The original Datasource is embedded into this instance.
 
+        @param ds existing datasource or pool to wrap
         @param userAutoInfo see @ref instrumentation_info_auto
      */
     constructor(Datasource ds, *code userAutoInfo)

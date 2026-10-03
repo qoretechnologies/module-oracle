@@ -132,7 +132,7 @@ AQMessage::constructor(*hash obj) {
 }
 
 //! Set \c hash as Oracle object for this message instance
-/** @param obj \c hash, or \c NOTHING. An Oracle object created with \c bindOracleObject
+/** @param h \c hash, or \c NOTHING. An Oracle object created with \c bindOracleObject
  */
 nothing AQMessage::setObject(hash h) {
     msg->setObject(h, xsink);
@@ -178,7 +178,7 @@ nothing AQMessage::setEnqueueDelay(int delay) {
 //}
 
 //! Return the duration that the message is available for dequeuing.
-/** @param int seconds count
+/** @return the expiration time in seconds
  */
 int AQMessage::getExpiration() {
    return msg->getExpiration();

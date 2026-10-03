@@ -104,7 +104,7 @@ set(QMOD
     qlib/OracleExtensions.qm
 )
 
-qore_wrap_qpp_value(QPP_SOURCES METALIST QPP_META_SRC ${QPP_SRC})
+qore_wrap_qpp_value(QPP_SOURCES DOXLIST QPP_DOX_SRC METALIST QPP_META_SRC ${QPP_SRC})
 add_custom_target(QPP_GENERATED_FILES DEPENDS ${QPP_SOURCES})
 
 set(module_name "oracle")
@@ -128,6 +128,8 @@ if (DEFINED ENV{DOXYGEN_EXECUTABLE})
     set(DOXYGEN_EXECUTABLE $ENV{DOXYGEN_EXECUTABLE})
 endif()
 
+# Document the public Qore declarations, not generated C++ implementation files.
+set(MODULE_DOX_INPUT ${CMAKE_BINARY_DIR}/mainpage.dox ${QPP_DOX_SRC})
 qore_external_binary_module(${module_name} ${PROJECT_VERSION} ${ORACLE_LIBRARY_CLNTSH} Threads::Threads)
 
 qore_external_user_module("qlib/OracleExtensions.qm" "")
