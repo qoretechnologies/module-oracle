@@ -1,0 +1,88 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page oraclenamed_typesguide Named Types (Objects)
+
+    @tableofcontents
+
+    Qore Oracle driver supports Oracle objects and collections (NTY in the following text).
+
+    Special initialization of the driver is mandatory to use NTY in Qore scripts:
+
+    @code{.py}
+    %requires oracle
+    @endcode
+
+    This statement imports additional functions for NTY binding and fetching
+    and therefore is required in Qore code that wants to use these
+    functions - the automatic loading of DBI drivers on reference happens
+    at run-time, therefore any references to the functions provided by
+    this module can only be resolved at parse time if the module is
+    explicitly required as above.
+
+    |!Function|!Description
+    |Qore::Oracle::bindOracleObject()|Binds a Qore \c value as a Object type \c typename. Hash keys are object \
+        attributes
+    |Qore::Oracle::placeholderOracleObject()|Allows fetching Object type \c typename. The returned hash is a plain \
+        %Qore hash with keys set as the object's attributes
+    |Qore::Oracle::bindOracleCollection()|Binds \c value as a Collection \c typename
+    |Qore::Oracle::placeholderOracleCollection()|Allows fetching a Collection \c typename. The returned list is a \
+        plain %Qore list of values with the collection's type
+
+    Type names (strings) are case insensitive.
+
+    Key names in \c value hashes are case sensitive and should follow
+    Oracle uppercase naming convention.
+
+    Keys which are not found in the keys-attribute mappings are silently
+    ignored. If there is a missing key for any attribute, an exception is thrown.
+
+    @note Strings/integers are converted to date in collections and objects when required - collection of datetimes,
+    object datetime attributes, etc. So eg. 1970-01-01 is the value of "wrong" strings.
+
+    Functions can be nested so there can be for example list (collection)
+    of objects and vice versa:
+
+    Sample named types defined in the DB:
+
+    @code{.py}
+    CREATE OR REPLACE TYPE test_object
+        AUTHID current_user AS OBJECT
+    (
+        attr_num number,
+        attr_varchar varchar2(20)
+    );
+    CREATE OR REPLACE TYPE test_collection IS TABLE OF test_object;
+    @endcode
+
+    Example of binding NTY:
+
+    @code{.py}
+    hash obj1 = ( "ATTR_NUM" : 1, "ATTR_VARCHAR" : "lorem ipsum" );
+    hash obj2 = ( "ATTR_NUM" : 2, "ATTR_VARCHAR" : "dolor sir amet" );
+    list l = ( bindOracleObject('test_object', obj1),
+               bindOracleObject('test_object', obj2) );
+    ds.exec("begin test_pkg.foo(%v); end;", bindOracleCollection('test_collection', l));
+    @endcode
+
+    Example of fetching NTY:
+
+    @code{.py}
+    *hash res = ds.exec("begin test_pkg.get_obj(:retval); end;",
+                        placeholderOracleObject("TEST_OBJECT"));
+    printf("%N\n", res);
+
+    # will print out
+    hash: (
+        "ATTR_NUM" : 5,
+        "ATTR_VARCHAR" : "foobar!"
+    )
+    @endcode
+
+    @warning Oracle Named Types (objects and collections) are custom data types
+        stored directly in the Oracle system catalogue. They are real SQL
+        types - created with \c CREATE \c [ \c OR \c REPLACE \c ] \c TYPE
+        command. It's a common misundrestanding that PL/SQL types created
+        for example in package specification can be used as NTY too, however this is an
+	incorrect assumption.  PL/SQL types cannot be used directly with the Oracle \c OCI
+        library, however you can use custom wrappers or any other workarounds, of course.
+*/

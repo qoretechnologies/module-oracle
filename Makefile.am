@@ -50,6 +50,7 @@ if COND_DOXYGEN
 DOX = oracle OracleExtensions
 DOXYGEN_OUTPUT = docs/oracle/html docs/OracleExtensions/html
 DOXYFILES = docs/doxyfile docs/mainpage.doxygen
+DOXYFILES += docs/guide-ora_releasenotes.dox docs/guide-ora_known_issues.dox docs/guide-aq.dox docs/guide-named_types.dox docs/guide-select_with_dup_col.dox docs/guide-bindings_and_types.dox docs/guide-ora_options.dox docs/guide-ora_native_bulk_load.dox docs/guide-ora_thread_session_info.dox
 DOXYFILES_SRC = docs/doxyfile.tmpl docs/footer_template.html docs/qlib/Doxyfile.tmpl
 QLIB_TMP_DOXYFILES = docs/qlib/OracleExtensions.qm.dox.h docs/qlib/Doxyfile.OracleExtensions
 QDX = qdx
@@ -77,6 +78,34 @@ docs/mainpage.doxygen: docs/mainpage.doxygen.tmpl
 
 docs/doxyfile: docs/doxyfile.tmpl
 	sed -e s/__VERSION__/${VERSION}/ -e s:__USERMODDIR__:${usermoddir}: $< > $@
+
+docs/guide-ora_releasenotes.dox: docs/guide-ora_releasenotes.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-ora_known_issues.dox: docs/guide-ora_known_issues.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-aq.dox: docs/guide-aq.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-named_types.dox: docs/guide-named_types.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-select_with_dup_col.dox: docs/guide-select_with_dup_col.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-bindings_and_types.dox: docs/guide-bindings_and_types.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-ora_options.dox: docs/guide-ora_options.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-ora_native_bulk_load.dox: docs/guide-ora_native_bulk_load.dox.tmpl
+	$(QDX) -d $< $@
+
+docs/guide-ora_thread_session_info.dox: docs/guide-ora_thread_session_info.dox.tmpl
+	$(QDX) -d $< $@
+
 
 doxygen-doc: $(DOXYGEN_OUTPUT)
 
@@ -107,3 +136,14 @@ endif
 
 libtool: $(LIBTOOL_DEPS)
 	$(SHELL) ./config.status --recheck
+
+# Documentation guide sources shipped with the module.
+EXTRA_DIST += docs/guide-ora_releasenotes.dox.tmpl \
+	docs/guide-ora_known_issues.dox.tmpl \
+	docs/guide-aq.dox.tmpl \
+	docs/guide-named_types.dox.tmpl \
+	docs/guide-select_with_dup_col.dox.tmpl \
+	docs/guide-bindings_and_types.dox.tmpl \
+	docs/guide-ora_options.dox.tmpl \
+	docs/guide-ora_native_bulk_load.dox.tmpl \
+	docs/guide-ora_thread_session_info.dox.tmpl

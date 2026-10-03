@@ -1,0 +1,108 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page oracleora_known_issuesguide Known Issues
+
+    @tableofcontents
+
+    Unfortunately there are some known bugs in the Oracle Module which cannot be fixed
+    in the Qore driver right now. These are bugs in the underlying Oracle C Interface
+    (OCI) library mostly.
+
+    @section named_types_known_issues Named Types Known Issues
+
+    - Returning a collection of objects and Oracle client 10.x does not work correctly sometimes.
+      There is only one instance of object (a first one) used for all items in the
+      collection in some cases. Upgrade to Oracle client 11.x solves it.
+
+    - Binding a collection of objects can lose VARCHAR2 attribute values replacing
+      them with NULL. This behavior has been observed on Solaris SPARC architecture
+      using Oracle CLient 11.1.x. Upgrading to 11.2.x solves the issue.
+
+    - Oracle Metalink Bug #3604465 - bind named type by placeholder can cause
+      \c ORA-21525 (attribute number or (collection element at index) %s violated
+      its constraints) if the object contains numbers with size constraint. An example:
+
+    @code{.py}
+    TYPE a_object AS OBJECT (
+        my_num1 number(3), -- it will cause ORA-21525
+        my_num2 number     -- it will work
+    )
+    @endcode
+
+    - A crash when is the \c placeholderOracleObject() used in the place
+      where is the \c placeholderOracleCollection() expected by Oracle.
+
+    @code{.py}
+    hash res = ds.exec("begin test_pkg.get_collection(:retval); end;",
+                        placeholderOracleObject("test_object"));
+
+    # there is an exception expected: OCI-21710 but following crash appears:
+    OCI-21500: internal error code, arguments: [kgepop: no error frame to pop to], [], [], [], [], [], [], []
+    OCI-21710: argument is expecting a valid memory address of an object
+    @endcode
+
+    @section aq_known_issues Advaned Queueing Known Issues
+
+    - Some versions of 11.2 client software is unable to receive change notifications/OCI Callbacks or
+      AQ notifications against some versions of 11.2 database.
+
+      Typically no errors result, and the observed behavior is that the notification simply does not occur.
+
+      A row will be observed in \c DBA_CHANGE_NOTIFICATION_REGS, but then be removed,
+      without notification occurring at the client.
+
+      Note that the behavior of this problem is consistent, and no notifications
+      at all will be received. This bug does not apply for intermittent behaviors.
+
+      In the case of 11.2.0.1 client pointing to 11.2.0.2 database, the following error may occur:
+      @code{.py}
+kpcerecv: incorrect iovec count=6210
+kpcest_err_handler: Max errors exceeded..Closing connection
+      @endcode
+
+      Behavior may be noticed as a result of upgrading either client or database software
+      to the affected versions, or after applying a CPU that contains the fix for unpublished Bug 10065474.
+
+      This behavior is a result of Oracle Bug 10065474, and is specific to 11.2 database.
+
+      The fix is primarily a client side fix, however there are some database side changes
+      that may be required once the client side fix is applied, so the fix for Oracle Bug 10065474
+      can actually CAUSE this behavior, if the change is not applied at both client and server.
+
+      <b>Solution:</b> Apply patches or upgrade versions as applicable to obtain a working combination.
+
+      <b>Workaround:</b> A workaround can be used in most cases to bypass the authentication phase, which is where the
+      problem behavior occurs.  To do that, set the following event in the database:
+      @code{.py}
+      alter system set events '10867 trace name context forever, level 1';
+      @endcode
+
+<table>
+   <tr><td rowspan="2">Server version</td><td colspan="4">Client version</td></tr>
+   <tr><th>11.2.0.1.0</th><th>11.2.0.2.0</th><th>11.2.0.2.0+fix</th><th>11.2.0.3.0</th></tr>
+   <tr><th>11.2.0.1.0</th><td>works</td><td>fails</td><td>works</td><td>fails</td></tr>
+   <tr><th>11.2.0.2.0</th><td>fails</td><td>works</td><td>fails</td><td>fails</td></tr>
+   <tr><th>11.2.0.2.0+fix</th><td>works</td><td>fails</td><td>works</td><td>works</td></tr>
+   <tr><th>11.2.0.3.0</th><td>&nbsp;</td><td>fails</td><td>works</td><td>works</td></tr>
+</table>
+
+    @section darwin_issues Issues on Darwin/macOS
+
+    Due to the way that Apple has changed dynamic library path handling in recent releases of
+    Darwin/macOS, the Oracle module's rpath must be updated with the path to the Oracle
+    dynamic libraries.
+
+    Therefore if you have moved/upgraded your Oracle libraries or are using a binary module
+    build on another system, execute the following command to update the module's
+    internal rpath:
+
+    @verbatim install_name_tool -add_rpath ${ORACLE_LIB_DIR} ${MODULE_NAME}@endverbatim
+
+    for example:
+    @verbatim
+    sudo install_name_tool -add_rpath ${ORACLE_INSTANT_CLIENT} /usr/local/lib/qore-modules/oracle*.qmod
+    @endverbatim
+
+    Note that this should not be necessary when building and installing on the same system,
+    as the rpath used when linking is set automatically when the module is installed.
+*/

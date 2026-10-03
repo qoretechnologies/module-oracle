@@ -1,0 +1,66 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page oraclebindings_and_typesguide Binding and Types
+
+    @tableofcontents
+
+    When retrieving Oracle data, Oracle types are converted to Qore types as
+    per @ref default_oracle_to_qore_mapping.
+
+    Binding by value is supported for any statement executed through this
+    driver; Oracle types are converted to Qore types as per @ref binding_by_value.
+
+    Binding by placeholder is required to retrieve values from a procedure
+    or function call. The oracle driver assumes that any placeholder values
+    are string values unless a placeholder buffer specification is passed
+    in the argument position corresponding to the placeholder specification
+    in the string. For placeholder buffer specification values,
+    see @ref binding_by_placeholder.
+
+    Oracle \c TIMESTAMP data supports time resolution to the microsecond,
+    however Qore's date/time value only supports a millisecond resolution.
+    Any Oracle \c TIMESTAMP values are rounded to millisecond resolution
+    when converted to Qore data types.  See also @ref timezone.
+
+    PL/SQL code and stored procedure and function execution is supported;
+    the following is an example of a stored procedure call using bind by
+    value and bind by placeholder (the \c %v characters represent the
+    positions for binding the arguments following the SQL string by
+    value, and the placeholder names are prefixed by a colon):
+
+    @code{.py}
+hash<auto> result = ds.exec("begin h3g_psft_order_import.insert_h3g_psft_customers(%v, %v, :status_code,
+    :error_code, :error_description); end;", "Customer Name", "Customer-ID", Type::Int, Type::Int);
+    printf("%N\n", result);
+    @endcode
+
+    This will bind the \c "Customer Name" and \c "Customer-ID" strings by
+    value (as per @ref binding_by_value these will be bound with Oracle type
+    \c SQLT_STRING), and the output variables will be bound by placeholder
+    (the first two will be bound as per @ref binding_by_placeholder with
+    buffers of Oracle type \c SQLT_INT, and the last placeholder buffer
+    will get the default buffer type of \c SQLT_STRING), resulting in a hash
+    giving the values of the output variables:
+
+    @code{.py}
+    hash: (3 members)
+        status_code : 0
+        error_code : 0
+        error_description : <NULL>;
+    @endcode
+
+    @section timezone Time Zone Support
+
+    The driver now sets the server's time zone rules when the connection is established; this is taken from the
+    current time zone settings of the calling Program object and can also be overridden/changed by setting the
+    \c "timezone" driver option (see @ref ora_options).
+
+    All date/time values bound by value are converted to the server's time zone before binding to ensure that
+    date/time values are stored correctly in the server.
+
+    When selecting date/time values, the values returned are tagged with the server's time zone.
+
+    Note that the above rules are applied when the current Program's time zone settings are different than the
+    connection's time zone settings at the time when the write operation (bind) read operation (select) is performed.
+    This is meant to provide consistent support to connecting to a database server in a different time zone.
+*/

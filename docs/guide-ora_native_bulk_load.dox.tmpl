@@ -1,0 +1,84 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page oracleora_native_bulk_loadguide Native OCI Direct Path Bulk Loading
+
+    @tableofcontents
+
+    When built against a %Qore library with the native bulk-load DBI API, this driver implements
+    \c DBI_CAP_HAS_BULK_LOAD with OCI Direct Path Load.  The path is insert-only and explicitly
+    opt-in through BulkSqlUtil; ordinary inserts and array binds remain the default.
+
+    @code{.py}
+%requires BulkSqlUtil
+%requires SqlUtil
+
+Datasource ds("oracle:user/password@db%host:1521");
+SqlUtil::AbstractTable table = (new SqlUtil::Table(ds, "my_table")).getTable();
+BulkSqlUtil::BulkInsertOperation op(table, {
+    "bulk_load": True,       # require direct path; "auto" falls back when ineligible
+    "block_size": 1000,
+    "bulk_load_options": {
+        "oracle_direct_path_buffer_size": 1048576,
+    },
+});
+on_error {
+    op.discard();
+    ds.rollback();
+}
+map op.queueData($1), rows.iterator();
+op.endStream();
+    @endcode
+
+    One direct-path context remains active across all buffered blocks.  Numeric, character, \c DATE,
+    and non-time-zone \c TIMESTAMP columns are eligible when the table and column names are simple
+    unquoted Oracle identifiers.  Quoted identifiers, \c RAW, LOB, \c LONG, interval, object,
+    collection, \c REF, cursor, and time-zone timestamp columns are dynamically ineligible;
+    \c "bulk_load": \c "auto" uses the ordinary insert path for these cases, while \c True reports
+    that the required native path is unavailable.
+
+    The following optional values can be passed in \c "bulk_load_options":
+    - \c "oracle_direct_path_buffer_size": OCI stream buffer size in bytes; the minimum is 65536 and
+      the default is 1048576
+    - \c "oracle_direct_path_parallel": enables OCI parallel direct-path loading; defaults to \c False
+    - \c "oracle_direct_path_nolog": requests OCI no-logging mode; defaults to \c False
+
+    @warning OCI Direct Path Load has materially different transaction, trigger, constraint, and
+    logging behavior from ordinary SQL.  In particular, successful \c OCIDirPathFinish() commits the
+    direct-path load independently of \c Datasource::commit(), while abort leaves its rows invisible.
+    Use this opt-in only where those Oracle semantics are acceptable.  Enabling parallel or no-logging
+    mode can impose additional Oracle restrictions and operational requirements.
+
+    The driver validates every hash-of-columns block, broadcasts scalar values, cooperatively checks
+    cancellation during large conversions, and aborts the OCI context on errors, observer refusal,
+    rollback, or connection close.  Native loads own mutation-observer stream reporting so events are
+    emitted exactly once.  Consumed bytes are the encoded field payload supplied to OCI, excluding OCI
+    framing; NULL fields contribute zero bytes.
+
+    The \c Datasource::getServerVersion() and \c Datasource::getClientVersion()
+    methods are implemented for this driver. \c Datasource::getServerVersion()
+    returns a string giving server information similar to the following:
+
+    @code{.py}
+    Oracle Database 10g Release 10.2.0.1.0 - 64bit Production
+    @endcode
+
+    The \c Datasource::getClientVersion() returns a hash giving version
+    information in the following keys: \c major, \c minor,
+    \c update, \c patch, \c port_update.
+
+    Note: There seems to be a bug in Oracle 9i and earlier in the streaming
+    \c OCILobRead() function, where the LOB buffer must be at least twice
+    as big as the LOB data to be read. This bug does not affect versions
+    of the Qore oracle module linked with Oracle 10g libraries or later.
+
+    @note Object (Oracle named type) and collection support is supplied
+    courtesy of \c ocilib (http://orclib.sourceforge.net/), note that
+    \c ocilib was highly modified to be usable in this module, mostly
+    due to the fact that we use a separate environment data structure for
+    each connection to ensure maximum thread scalability - the Oracle docs
+    say that all operations on an environment handle or any handle derived
+    from an environment handle (i.e. statement handles, etc) must be either
+    wrapped in a mutex (when initialized with \c OCI_NO_MUTEX) or will
+    be wrapped in a mutex by oracle (with \c OCI_THREADED and
+    without \c OCI_NO_MUTEX).
+*/

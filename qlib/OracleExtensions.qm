@@ -48,6 +48,8 @@ module OracleExtensions {
 
 /** @mainpage OracleExtensions Module
 
+    @section oracleextensionsintro OracleExtensions Module Introduction
+
 The %OracleExtensions module provides functionality for advanced Oracle DBMS
 operations or tools.
 

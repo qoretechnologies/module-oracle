@@ -1,0 +1,43 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page oracleora_thread_session_infoguide Per-Thread Session Information
+
+    @tableofcontents
+
+    Oracle reports the \c MODULE, \c ACTION, \c CLIENT_INFO, and \c CLIENT_IDENTIFIER attributes of each session in
+    \c V$SESSION (and in the SQL trace, AWR, and ASH data derived from it), so DBAs can see what an application is
+    doing in every session.  The driver sets these attributes for the statements executed by a thread from the
+    session information set for that thread with
+    @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()":
+
+    @code{.py}
+DatasourcePool pool("oracle:user/pass@db%host:1521");
+
+Oracle::setThreadSessionInfo(<OracleSessionInfo>{
+    "module": "invoice-export:2.1",
+    "action": "batch 1043",
+    "client_info": "workflow:INVOICE-EXPORT:2.1",
+});
+on_exit Oracle::setThreadSessionInfo();
+
+# V$SESSION shows the values above for the session executing this statement
+list<hash<auto>> rows = pool.selectRows("select * from invoices where batch_id = %v", 1043);
+    @endcode
+
+    The values are set as OCI session attributes on whichever connection executes a statement, commit, or rollback
+    for the thread, including pooled connections; OCI sends them to the server with that call, so:
+    - no additional statement (such as a \c DBMS_APPLICATION_INFO call) or server round trip is made
+    - setting the information does not acquire a connection or start a transaction
+    - each statement reports the values of the thread that executes it: a connection used by a thread without
+      session information has any values left by another thread cleared, so values never leak between threads that
+      share pooled connections
+    - an idle connection keeps reporting the values of the last statement, commit, or rollback it executed
+    - a connection that is reconnected transparently after a lost connection gets the values again
+
+    Values longer than 64 bytes are truncated on a character boundary.  The information belongs to the thread and is
+    freed when the thread terminates; use @ref Qore::Oracle::getThreadSessionInfo() "Oracle::getThreadSessionInfo()"
+    to save and restore it around nested code.
+
+    @note The driver only tracks the values that it set itself; setting the same attributes directly with the
+    \c DBMS_APPLICATION_INFO or \c DBMS_SESSION packages on a connection used with this API is not supported.
+*/

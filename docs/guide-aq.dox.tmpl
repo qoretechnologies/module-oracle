@@ -1,0 +1,31 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page oracleaqguide Oracle Advanced Queueing (AQ)
+
+    @tableofcontents
+
+    Oracle Advanced Queueing (AQ) is the Oracle database's queue management
+    feature. AQ provides a message queuing infrastructure as integral part
+    of the Oracle server engine. It provides an API for enqueing messages
+    to database queues. These messages can later be dequeued for asynchronous
+    processing. Oracle AQ also provides functionality to preserve, track,
+    document, correlate, and query messages in queues.
+
+    Features:
+
+    - synchronous message posting
+    - synchronouns message fetching
+    - asynchronous event-driven listening in the DB queue
+
+    Special initialization of the driver is mandatory to use AQ in Qore scripts:
+
+    @code{.py}
+    %requires oracle
+    @endcode
+
+    Qore Oracle module contains these classes to handle AQ:
+
+    |!Class|!Description
+    |Qore::Oracle::AQQueue|Main queue handler
+    |Qore::Oracle::AQMessage|Enhanced features for message
+*/

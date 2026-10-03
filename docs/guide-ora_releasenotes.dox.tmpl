@@ -1,0 +1,178 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page oracleora_releasenotesguide Release Notes
+
+    @tableofcontents
+
+    @section oracle3_4_1 oracle Driver Version 3.4.1
+    - added @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()" and
+      @ref Qore::Oracle::getThreadSessionInfo() "Oracle::getThreadSessionInfo()" to report per-thread
+      \c MODULE, \c ACTION, \c CLIENT_INFO, and \c CLIENT_IDENTIFIER values in \c V$SESSION without additional
+      statements or round trips (see @ref ora_thread_session_info)
+
+    @section oracle3_4_0 oracle Driver Version 3.4.0
+    - added opt-in \c DBI_CAP_HAS_BULK_LOAD support with a persistent OCI Direct Path Load context
+      spanning all BulkSqlUtil blocks
+    - added exact field-payload stream accounting, cooperative cancellation, row-shape validation,
+      observer refusal handling, and abort backstops for rollback and connection close
+    - added automatic fallback for identifiers and Oracle data types that are not safely eligible for
+      direct-path loading
+    - documented Oracle direct-path transaction, trigger, constraint, logging, and type restrictions
+
+    @section oracle3_3_3 oracle Driver Version 3.3.3
+    - fixed array binds of strings with values 32K bytes or longer; in this case the values are all bound as CLOB
+      values
+      (<a href="https://github.com/qorelanguage/qore/issues/4899">issue 4899</a>)
+    - added columnar DBI result support with \c Datasource::selectColumnar() and
+      \c SQLStatement::fetchColumnar() when built against %Qore with columnar DBI APIs
+    - optimized columnar DBI results to return packed dense buffers for integer, floating-point, and safe
+      \c NUMBER(precision,scale) result columns, including \c decimal128 buffers when possible
+
+    @section oracle3_3_2 oracle Driver Version 3.3.2
+    - fixed building with \c qpp from %Qore 1.12.4+
+
+    @section oracle3_3_1 oracle Driver Version 3.3.1
+    - fixed inconsistent bind exceptions to all use \c BIND-ERROR
+      (<a href="https://github.com/qorelanguage/qore/issues/4390">issue 4390</a>)
+    - fixed a bug where the driver would accept array binds for select statements and only bind the first array
+      value, silently returning erroneous results
+      (<a href="https://github.com/qorelanguage/qore/issues/2154">issue 2154</a>)
+    - added cmake build solution for this module
+
+    @section oracle33 oracle Driver Version 3.3
+    - fixed two off-by-one errors in ocilib code
+      (<a href="https://github.com/qorelanguage/qore/issues/4192">issue 4192</a>)
+    - fixed disconnection events to be handled with all SQL actions instead of just exec calls
+      (<a href="https://github.com/qorelanguage/qore/issues/3944">issue 3944</a>)
+    - fixed a crash with open statements with NTY placeholders with a connection loss
+      (<a href="https://github.com/qorelanguage/qore/issues/3446">issue 3446</a>)
+    - updated to build with up to v19 of Oracle libs
+      (<a href="https://github.com/qorelanguage/qore/issues/3424">issue 3424</a>)
+    - added support for the <tt>STMT EXEC DESCRIBE</tt> DBI method for efficient describing of SQL statements without
+      executing the statement itself and therefore avoiding a large performance penalty for this operation
+      (<a href="https://github.com/qorelanguage/qore/issues/2773">issue 2773</a>)
+    - added support for the \c RESULTSET placeholder specification and the \c DBI_CAP_HAS_RESULTSET_OUTPUT driver capability
+      that allow result set output variables to be returned as @ref Qore::SQL::SQLStatement "SQLStatement" objects
+      (<a href="https://github.com/qorelanguage/qore/issues/1300">issue 1300</a>)
+    - fixed a bug where NTY truncated CLOBs to a quarter of their lengths
+      (<a href="https://github.com/qorelanguage/qore/issues/1802">issue 1802</a>)
+    - fixed a bug where \c ORA-03113 and \c ORA-03114 were not treated as lost connections
+      (<a href="https://github.com/qorelanguage/qore/issues/1963">issue 1963</a>)
+    - fixed a bug where \c DBI-SELECT-ROW-ERROR exceptions were being raised as \c ORACLE-SELECT-ROW-ERROR exceptions
+      (<a href="https://github.com/qorelanguage/qore/issues/2542">issue 2542</a>)
+    - implemented a workaround for a bug in Oracle pre 12c related to \c ORA-01041 errors
+      (<a href="https://github.com/qorelanguage/qore/issues/802">issue 802</a>)
+    - fixed issues related to rpath handling on Darwin/macOS
+      (<a href="https://github.com/qorelanguage/qore/issues/475">issue 475</a>)
+    - fixed an issue selecting large \c LONG column values
+      (<a href="https://github.com/qorelanguage/qore/issues/2609">issue 2609</a>)
+
+    @section oracle321 oracle Driver Version 3.2.1
+    - updated SQLStatement::fetchColumns() to return an empty hash when no data is available in all cases
+      (<a href="https://github.com/qorelanguage/qore/issues/1241">issue 1241</a>)
+    - implemented support for the lost connection API added in Qore 0.8.12.10
+      (<a href="https://github.com/qorelanguage/qore/issues/1250">issue 1250</a>)
+    - fixed a memory leak in connection handling
+      (<a href="https://github.com/qorelanguage/qore/issues/1272">issue 1272</a>)
+    - fixed a memory leak in error handling
+      (<a href="https://github.com/qorelanguage/qore/issues/1583">issue 1583</a>)
+    - fixed a bug in connection handling where statement and bind handles acquired on the old connection context were
+      freed on the new connection context after the old connection context had been freed itself
+      (<a href="https://github.com/qorelanguage/qore/issues/1717">issue 1717</a>)
+    - fixed a bug where NTY truncated CLOBs to a quarter of their lengths
+      (<a href="https://github.com/qorelanguage/qore/issues/1802">issue 1802</a>)
+    - worked around a bug in Oracle handling \c DATE values in selects with dates bound by value when the date is in
+      the same time zone as the server's time zone but has a different DST offset
+      (<a href="https://github.com/qorelanguage/qore/issues/2448">issue 2448</a>)
+
+    @section oracle32 oracle Driver Version 3.2
+    - added more Qore exception handling in ocilib object/NTY APIs
+    - ensure all strings written to the DB are converted to the target character encoding before writing
+    - copy all values when binding by value in case they are bound to an IN OUT variable, in which case memory
+      corruption would occur previously
+    - support for IN OUT variables by giving a hash argument with the "value" key as the input value for the output
+      variable
+    - placeholders and quotes in SQL comments are ignored
+    - user modules moved to top-level qore module directory from version-specific module directory since they are
+      valid for multiple versions of qore
+    - fixed a major bug where a lost connection during an SQL operation using named types could cause a crash due to
+      the database-specific private context becoming invalid and then used after deletion
+    - fixed a major bug where a crash generated internally in the OCI library would occur when NTYs were bound in a
+      prepared statement and the statement was executed in a new logon session after transparent reconnection
+    - fixed bugs binding values to number attributes of NTYs and collections
+    - fixed a crashing bug handling the case when there are multiple objects of different incompatible types added to
+      a collection; now an exception is raised
+    - implemented binding number types by placeholder (including in/out vars)
+    - implemented binding arrays of scalar values for input and output
+    - implemented support for returning an empty list or hash after a short read with SQLStatement::fetchRows() or
+      SQLStatement::fetchColumns(); if one of these methods is called a second time after returning an empty data
+      structure, then an exception is raised
+    - implemented support for bulk DML with selects by default and explicitly with SQLStatement::fetchRows() and
+      SQLStatement::fetchColumns(); default prefetch row count: 1000
+    - fixed a bug in driver option processing that could lead to a crash
+    - fixed a bug where duplicated columns would result in corrupt lists when selected in column mode
+    - fixed a bug where very large numbers were being retrieved incorrectly and would result in an \c ORA-01406 error
+    - fixed a bug where number values were being returned with decimal points truncated in locales where the decimal
+      position is not marked with a dot
+    - fixed a bug where collections with no columns (but based on a table for example) could not be used
+      (<a href="https://github.com/qorelanguage/qore/issues/455">issue 455</a>)
+    - fixed a bug where cached NTY information was reused with stale pointers when connections were reestablished
+      (<a href="https://github.com/qorelanguage/qore/issues/537">issue 537</a>)
+    - fixed a bug where SQLStatement::describe() was failing even though result set information was available
+    - fixed a bug rewriting column names when selecting with row formats
+      (https://github.com/qorelanguage/qore/issues/828)
+    - fixed a bug where binary values were bound directly which caused \c ORA-01461 errors when more than one binary
+      value > 4000 bytes was bound (<a href="https://github.com/qorelanguage/qore/issues/875">issue 875</a>)
+    - fixed some potentially ambiguous method declarations in \c OracleDatasourceBase in
+      @ref oracleextensionsintro "OracleExtensions" for forward-compatibility with future
+      versions of %Qore
+
+    @section oracle31 oracle Driver Version 3.1
+
+    <b>New Features and Bug Fixes</b>
+    - fixed retrieving NUMBER types from objects/NTYs
+    - added more Qore exception handling in ocilib object/NTY APIs
+    - enforce DBI options on NTY retrieval with numeric values
+
+    @section oracle30 oracle Driver Version 3.0
+
+    <b>New Features and Bug Fixes</b>
+    - driver supports Oracle Advanced Queuing
+    - driver supports selecting data from LONG columns (deprecated but used in system catalog tables for example)
+    - driver now claims support for DBI_CAP_AUTORECONNECT, however the underlying functionality has been present for a
+      long time
+
+    @section oracle221 oracle Driver Version 2.2.1
+
+    <b>Bug Fixes</b>
+    - fixed a bug where non-integer values were returned as integers
+    - fixed a bug in returning negative integer values that were being returned as arbitrary-precision numeric values
+      instead of integers
+    - updated CLOB writing to use the streaming APIs instead of trying to write in one large block since there are
+      bugs in some oracle client libraries related to trying to write large blocks, and using the streaming apis
+      resolves the problem
+
+    @section oracle22 oracle Driver Version 2.2
+
+    <b>New Features and Bug Fixes</b>
+    - fixed bugs in named type support - when an unknown named type is accessed for the first time, ocilib keeps an
+      invalid entry for the named type in the type list; the second time the type is accessed, a crash results (bug
+      reported and already fixed in upstream ocilib)
+    - fixed memory bugs in handling named type bind parameters created by hand where the value type is incorrect
+    - now the driver throws an exception if SQLStatement::fetchRow() is called before SQLStatement::next() (before it
+      would return garbage data)
+    - supports the arbitrary-precision numeric type in qore 0.8.6+
+    - supports DBI options with qore 0.8.6+; options supported:
+      - \c "optimal-numbers": return <tt>NUMBER</tt> values as an integer if possible, if not as an arbitrary-
+        precision number
+      - \c "string-numbers": return <tt>NUMBER</tt> values as strings (for backwards-compatibility)
+      - \c "numeric-numbers": return <tt>NUMBER</tt> values as arbitrary-precision number values
+      - \c "timezone": accepts a string argument that can be either a region name (ex: \c "Europe/Prague") or a UTC
+        offset (ex: \c "+01:00") to set the server's time zone rules; this is useful if connecting to a database
+        server in a different time zone.  If this option is not set then the server's time zone is assumed to be the
+        same as the client's time zone; see @ref timezone.
+    - the default for the number options (see @ref number_options) is now "optimal-numbers" - meaning that
+      <tt>NUMBER</tt> values are retrieved as <tt>int</tt> if possible, otherwise as a <tt>number</tt> type is
+      returned.\n
+      For backwards-compatibility, set the \c "string-numbers" option to return <tt>NUMBER</tt> values as strings
+*/

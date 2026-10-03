@@ -111,6 +111,15 @@ set(module_name "oracle")
 
 set(QORE_DOX_TMPL_SRC
     docs/mainpage.doxygen.tmpl
+    docs/guide-aq.dox.tmpl
+    docs/guide-bindings_and_types.dox.tmpl
+    docs/guide-named_types.dox.tmpl
+    docs/guide-ora_known_issues.dox.tmpl
+    docs/guide-ora_native_bulk_load.dox.tmpl
+    docs/guide-ora_options.dox.tmpl
+    docs/guide-ora_releasenotes.dox.tmpl
+    docs/guide-ora_thread_session_info.dox.tmpl
+    docs/guide-select_with_dup_col.dox.tmpl
 )
 
 if(enable-scu)
@@ -130,6 +139,17 @@ endif()
 
 # Document the public Qore declarations, not generated C++ implementation files.
 set(MODULE_DOX_INPUT ${CMAKE_BINARY_DIR}/mainpage.dox ${QPP_DOX_SRC})
+list(APPEND MODULE_DOX_INPUT
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-aq.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-bindings_and_types.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-named_types.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_known_issues.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_native_bulk_load.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_options.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_releasenotes.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_thread_session_info.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-select_with_dup_col.dox
+)
 qore_external_binary_module(${module_name} ${PROJECT_VERSION} ${ORACLE_LIBRARY_CLNTSH} Threads::Threads)
 
 qore_external_user_module("qlib/OracleExtensions.qm" "")
@@ -150,4 +170,9 @@ if (DOXYGEN_FOUND)
     qore_wrap_dox(QORE_DOX_SRC ${QORE_DOX_TMPL_SRC})
     add_custom_target(QORE_MOD_DOX_FILES DEPENDS ${QORE_DOX_SRC})
     add_dependencies(docs-module QORE_MOD_DOX_FILES)
+endif()
+
+# Resolve links between the native API and all companion user modules.
+if (DOXYGEN_FOUND)
+    qore_binary_module_two_phase_docs(${module_name} "OracleExtensions")
 endif()
