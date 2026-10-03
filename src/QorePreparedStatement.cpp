@@ -2279,20 +2279,20 @@ int QorePreparedStatement::bindOracle(ExceptionSink* xsink) {
 }
 
 int QorePreparedStatement::bind(const QoreListNode* args, ExceptionSink* xsink) {
-    int pos = 1;
     for (unsigned i = 0, end = node_list.size(); i < end; ++i) {
         OraBindNode* w = node_list[i];
 
         // get bind argument
         QoreValue v = args ? args->retrieveEntry(i) : QoreValue();
 
-        if (w->set(v, xsink))
+        if (w->set(v, xsink)) {
             return -1;
-        ++pos;
+        }
     }
 
-    if (bindOracle(xsink))
+    if (bindOracle(xsink)) {
         return -1;
+    }
 
     return 0;
 }

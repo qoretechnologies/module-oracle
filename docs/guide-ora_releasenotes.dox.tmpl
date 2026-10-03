@@ -5,6 +5,7 @@
     @tableofcontents
 
     @section oracle3_4_1 oracle Driver Version 3.4.1
+    - fixed an infinite loop when counting UTF-8 characters in nonempty LOB buffers
     - added @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()" and
       @ref Qore::Oracle::getThreadSessionInfo() "Oracle::getThreadSessionInfo()" to report per-thread
       \c MODULE, \c ACTION, \c CLIENT_INFO, and \c CLIENT_IDENTIFIER values in \c V$SESSION without additional

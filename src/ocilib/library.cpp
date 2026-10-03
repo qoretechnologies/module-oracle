@@ -472,7 +472,6 @@ boolean OCI_API OCI_Initialize2(OCI_Library *pOCILib, OCIEnv * d_ora_env, OCIErr
                                unsigned int mode)
 {
     boolean res  = TRUE;
-    ub4 oci_mode = OCI_ENV_MODE | OCI_OBJECT;
 
 #ifdef OCI_IMPORT_RUNTIME
 
@@ -1110,15 +1109,8 @@ boolean OCI_API OCI_Initialize2(OCI_Library *pOCILib, OCIEnv * d_ora_env, OCIErr
 
     if (res == TRUE)
     {
-        /* check modes */
-
-       // do not set OCI_THREADED
-       if (mode & OCI_ENV_THREADED && !(mode & OCI_NO_MUTEX))
-	  oci_mode |= OCI_THREADED;
-
-        if (mode & OCI_ENV_EVENTS)
-            oci_mode |= OCI_EVENTS;
-
+       // Qore supplies an existing OCI environment; its creation mode is already set.
+       // Qore integration changes Copyright (C) 2026 Qore Technologies, s.r.o.
        pOCILib->env = d_ora_env;
        pOCILib->err = errhp;
 

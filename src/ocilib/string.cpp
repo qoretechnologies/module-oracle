@@ -204,16 +204,16 @@ size_t OCI_StringLength(void *ptr, size_t size_elem)
  * OCI_StringUTF8Length
  * ------------------------------------------------------------------------ */
 
+// Qore integration changes Copyright (C) 2026 Qore Technologies, s.r.o.
 int OCI_StringUTF8Length(const char *str)
 {
-    int i    = 0;
     int size = 0;
 
-    while (*str) 
-    {
-        if ((*str & 0xc0) != 0x80)
-            size++;
-        i++;
+    while (*str) {
+        if ((*str & 0xc0) != 0x80) {
+            ++size;
+        }
+        ++str;
     }
     
     return size;
@@ -980,4 +980,3 @@ int ociwcscasecmp(const wchar_t *str1, const wchar_t *str2)
 }
 
 #endif
-
