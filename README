@@ -38,6 +38,9 @@ COPYING.LGPL and COPYING.MIT for more information
 BUILD AND INSTALL
 -----------------
 
+For Fedora, AlmaLinux and openSUSE RPM builds with the Qore 3.0 SDK, see
+rpm/README.rst for client dependencies, build commands and qualification limits.
+
 If you have Oracle 9i or higher or have Oracle Instant Client with development
 files included, you can build the oracle module.
 

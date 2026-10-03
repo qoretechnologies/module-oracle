@@ -1,193 +1,144 @@
-%define mod_ver 3.4.1
-
-%{?_datarootdir: %global mydatarootdir %_datarootdir}
-%{!?_datarootdir: %global mydatarootdir /usr/share}
-
-%define module_api %(qore --latest-module-api 2>/dev/null)
-%define module_dir %{_libdir}/qore-modules
-%global user_module_dir %{mydatarootdir}/qore-modules/
-
-%if 0%{?sles_version}
-
-%define dist .sles%{?sles_version}
-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+# SPDX-License-Identifier: MIT
+%global source_date_epoch_from_changelog 1
+%global use_source_date_epoch_as_buildtime 1
+%if v"%{rpmversion}" >= v"4.20"
+%global build_mtime_policy clamp_to_source_date_epoch
 %else
-%if 0%{?suse_version}
-
-# get *suse release major version
-%define os_maj %(echo %suse_version|rev|cut -b3-|rev)
-# get *suse release minor version without trailing zeros
-%define os_min %(echo %suse_version|rev|cut -b-2|rev|sed s/0*$//)
-
-%if %suse_version
-%define dist .opensuse%{os_maj}_%{os_min}
+%global clamp_mtime_to_source_date_epoch 1
 %endif
-
-%endif
-%endif
-
-# see if we can determine the distribution type
-%if 0%{!?dist:1}
-%define rh_dist %(if [ -f /etc/redhat-release ];then cat /etc/redhat-release|sed "s/[^0-9.]*//"|cut -f1 -d.;fi)
-%if 0%{?rh_dist}
-%define dist .rhel%{rh_dist}
-%else
-%define dist .unknown
-%endif
-%endif
-
-Summary: Oracle DBI module for Qore
+%bcond_without tests
+%bcond_without docs
+%global _find_debuginfo_dwz_opts %{nil}
 Name: qore-oracle-module
-Version: %{mod_ver}
-Release: 1%{dist}
-License: MIT
-Group: Development/Languages/Other
-URL: http://www.qoretechnologies.com/qore
-Source: http://prdownloads.sourceforge.net/qore/%{name}-%{version}.tar.bz2
-BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root
+Version: 3.4.1
+Release: 2%{?dist}
+Summary: Oracle database driver and extensions for Qore
+License: MIT AND LGPL-2.1-or-later
+URL: https://github.com/qoretechnologies/module-oracle
+Source0: https://api.opensuse.org/public/source/home:davidnichols:qore:testing/%{name}/%{name}-%{version}.tar.xz
+ExclusiveArch: x86_64 aarch64
+Provides: bundled(ocilib)
 BuildRequires: cmake >= 3.5
+BuildRequires: make
 BuildRequires: gcc-c++
-BuildRequires: qore-devel >= 1.12.4
-BuildRequires: qore-stdlib >= 1.12.4
-BuildRequires: qore >= 1.12.4
+BuildRequires: binutils
+BuildRequires: python3
+BuildRequires: oracle-instantclient-devel >= 23.26.3.0.0
+BuildRequires: qore-devel >= 3.0.0~
+BuildRequires: qore-rpm-macros >= 3.0.0~
+%if %{with docs}
 BuildRequires: doxygen
-BuildRequires: oracle-instantclient
-BuildRequires: oracle-instantclient-devel
-Requires: /usr/bin/env
-Requires: qore-module(abi)%{?_isa} = %{module_api}
+%if 0%{?suse_version}
+BuildRequires: util-linux
+%else
+BuildRequires: util-linux-core
+%endif
+%endif
+%{?qore_enable_aot_post}
 
 %description
-Oracle DBI driver module for the Qore Programming Language. The Oracle driver is
-character set aware, supports multithreading, transaction management, stored
-procedure and function execution, etc.
+Native Oracle database access with transactions, prepared statements, named
+types, large objects, Advanced Queuing and bulk loading. Includes source and
+compiled OracleExtensions modules and compiler metadata. The proprietary
+Oracle Instant Client is a separate dependency; no database server is installed.
 
-%if 0%{?suse_version}
-%debug_package
+%if %{with docs}
+%package doc
+Summary: Oracle module reference documentation and examples
+BuildArch: noarch
+%description doc
+API reference and database test examples for Qore's Oracle driver.
 %endif
 
 %prep
-%setup -q
-
+%autosetup
 %build
-%if 0%{?el7}
-# enable devtoolset7
-. /opt/rh/devtoolset-7/enable
-unset msgpackPATH
+%{?set_build_flags}
+. %{_rpmconfigdir}/qore/module-env.sh
+unset ORACLE_HOME ORACLE_INSTANT_CLIENT ORACLE_INCLUDES TNS_ADMIN
+qore_set_source_prefix_maps "%{qore_debug_source_dir}"
+cmake -S . -B build -G 'Unix Makefiles' \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS_RELEASE=-DNDEBUG \
+  -DCMAKE_INSTALL_PREFIX=%{_prefix} -DCMAKE_INSTALL_LIBDIR=%{_lib} \
+  -DCMAKE_SKIP_RPATH=ON -DCMAKE_IGNORE_PREFIX_PATH=/usr/local \
+  -DORACLE_PATH_INCLUDES:PATH=/usr/include/oracle/23/client64 \
+  -DORACLE_PATH_LIB:PATH=/usr/lib/oracle/23/client64/lib \
+  -DQore_DIR=%{_libdir}/cmake/Qore -DQORE_EXECUTABLE=/usr/bin/qore \
+  -DQORE_QPP_EXECUTABLE=/usr/bin/qpp -DQORE_QCC_EXECUTABLE=/usr/bin/qcc \
+  -DQORE_BUILD_AOT_MODULES=ON -DQORE_AOT_LINK_SOURCE_MODULES=OFF \
+  -DQORE_QM_METADATA_ENV:STRING="QORE_MODULE_DIR=$PWD/build:$PWD/build/qlib-qmod:$PWD/qlib:$qore_stdlib_paths;QORE_MODULE_DIR_ONLY=1;QORE_INCLUDE_DIR=;LD_LIBRARY_PATH=" \
+  -DCMAKE_DISABLE_FIND_PACKAGE_Doxygen=%{!?with_docs:ON}%{?with_docs:OFF}
+cmake --build build -- %{?_smp_mflags}
+%if %{with docs}
+printf '\nWARN_AS_ERROR = FAIL_ON_WARNINGS\n' >> build/Doxyfile
+cmake --build build --target docs -- %{?_smp_mflags}
 %endif
-export CXXFLAGS="%{?optflags}"
-cmake -DCMAKE_INSTALL_PREFIX=%{_prefix} -DCMAKE_BUILD_TYPE=RELWITHDEBINFO -DCMAKE_SKIP_RPATH=1 -DCMAKE_SKIP_INSTALL_RPATH=1 -DCMAKE_SKIP_BUILD_RPATH=1 -DCMAKE_PREFIX_PATH=${_prefix}/lib64/cmake/Qore -DORACLE_PATH_INCLUDES=/usr/include/oracle/21.1.0.0.0/client .
-make %{?_smp_mflags}
-make %{?_smp_mflags} docs
-sed -i 's/#!\/usr\/bin\/env qore/#!\/usr\/bin\/qore/' test/*.q*
-
 %install
-make DESTDIR=%{buildroot} install %{?_smp_mflags}
-
-%clean
-rm -rf $RPM_BUILD_ROOT
-
+DESTDIR=%{buildroot} cmake --install build
+%qore_install_aot_sources qlib
+chmod 755 %{buildroot}%{_libdir}/qore-modules/*.qmod
+# Distribution GDB ignores LLVM's optional name index. Keep full DWARF and
+# source while preserving Qore's appended metadata around the ELF edit.
+python3 %{qore_rpm_helper} %{buildroot} objcopy --remove-section=.debug_names \
+  %{buildroot}%{_libdir}/qore-modules/OracleExtensions.qmod
+%if %{with docs}
+install -d %{buildroot}%{_docdir}/%{name}-doc
+cp -a build/docs/. %{buildroot}%{_docdir}/%{name}-doc/
+install -d %{buildroot}%{_docdir}/%{name}-doc/examples
+python3 - <<'PYTHON'
+from pathlib import Path
+import shutil
+root = Path('%{buildroot}%{_docdir}/%{name}-doc/examples/test')
+for source in sorted(Path('test').rglob('*')):
+    if source.is_file() and source.suffix in ('.q', '.qtest', '.qclass', '.sql'):
+        target = root / source.relative_to('test')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        target.chmod(0o644)
+PYTHON
+# Examples remain directly runnable with the packaged interpreter.
+find %{buildroot}%{_docdir}/%{name}-doc/examples -type f \( -name '*.q' -o -name '*.qtest' \) \
+  -exec sed -i '1s|^#!/usr/bin/env qore$|#!/usr/bin/qore|' {} +
+hardlink -t -O %{buildroot}%{_docdir}/%{name}-doc
+%endif
+%check
+%if %{with tests}
+. %{_rpmconfigdir}/qore/module-env.sh
+# Inspect the packaged output after RPM's strip/debug processing, so a missing
+# preservation hook fails the build even when the unstripped module loads.
+python3 -B -W error - <<'PYTHON'
+import importlib.util
+from pathlib import Path
+import subprocess
+spec = importlib.util.spec_from_file_location('aot', '%{qore_rpm_helper}')
+aot = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(aot)
+binary = Path('%{buildroot}%{_libdir}/qore-modules/OracleExtensions.qmod')
+assert b'QAMD' in aot.read_trailers(binary), 'AOT metadata was lost during RPM processing'
+sections = subprocess.check_output(['readelf', '-SW', str(binary)], text=True)
+assert '.gnu_debuglink' in sections, 'Separate AOT debug information is missing'
+assert '.debug_names' not in sections and '.debug_info' not in sections
+PYTHON
+python3 -B -W error rpm/test_fixture.py -v
+python3 -B -W error rpm/run-tests.py --build-dir "$PWD/build"
+ORACLE_BUILD_DIR="$PWD/build" python3 -B -W error test/test_ocilib_utf8_length.py -v
+%endif
 %files
-%defattr(-,root,root,-)
-%{module_dir}
-%{user_module_dir}
-%doc COPYING.MIT COPYING.LGPL README RELEASE-NOTES AUTHORS
-
-%package doc
-Summary: oracle module for Qore
-Group: Development/Languages/Other
-
-%description doc
-Oracle module for the Qore Programming Language.
-
-This RPM provides API documentation, test and example programs
-
+%license COPYING.MIT COPYING.LGPL debian/copyright
+%doc README RELEASE-NOTES AUTHORS rpm/README.rst
+%{_libdir}/qore-modules/oracle-api-*.qmod
+%{_libdir}/qore-modules/OracleExtensions.qmod
+%{_datadir}/qore-modules/OracleExtensions.qm
+%dir %{_datadir}/qore/metadata/oracle
+%{_datadir}/qore/metadata/oracle/*.meta.json
+%if %{with docs}
 %files doc
-%defattr(-,root,root,-)
-%doc docs/oracle test/*.q*
-
+%license COPYING.MIT COPYING.LGPL debian/copyright
+%doc %{_docdir}/%{name}-doc/
+%endif
 %changelog
-* Fri Oct 2 2026 David Nichols <david@qore.org> - 3.4.1
-- added per-thread session information reported in V$SESSION without additional statements
-
-* Sat Aug 8 2026 David Nichols <david@qore.org> - 3.4.0
-- added native OCI direct path bulk loading
-
-* Wed Jun 19 2024 David Nichols <david@qore.org> - 3.3.3
-- updated to version 3.3.3
-
-* Mon Dec 19 2022 David Nichols <david@qore.org> - 3.3.2
-- updated to version 3.3.2
-- updated spec file to use cmake
-
-* Sat Jan 15 2022 David Nichols <david@qore.org> - 3.3.1
-- updated to version 3.3.1
-
-* Sun Jun 11 2017 David Nichols <david@qore.org> - 3.3
-- updated to version 3.3
-
-* Tue Sep 13 2016 David Nichols <david@qore.org> - 3.2.1
-- updated to version 3.2.1
-
-* Sun Jun 5 2016 David Nichols <david@qore.org> - 3.2
-- added test scripts
-- updated to version 3.2
-
-* Fri Aug 2 2013 David Nichols <david@qore.org> - 3.1
-- updated to version 3.1
-
-* Mon Mar 18 2013 David Nichols <david@qore.org> - 3.0
-- updated to version 3.0
-
-* Sun Nov 11 2012 David Nichols <david@qore.org> - 2.3
-- updated to version 2.3
-
-* Tue Oct 30 2012 David Nichols <david@qore.org> - 2.2.1
-- updated to version 2.2.1
-
-* Fri Jun 8 2012 David Nichols <david@qore.org> - 2.2
-- updated to version 2.2
-
-* Fri Jan 21 2011 David Nichols <david@qore.org> - 2.1
-- updated to version 2.1
-
-* Tue Aug 3 2010 David Nichols <david@qore.org>
-- updated to version 2.0
-
-* Thu Jul 2 2010 David Nichols <david@qore.org>
-- updated to version 1.3
-
-* Thu Apr 15 2010 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.2
-
-* Mon Dec 7 2009 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.1
-
-* Tue Aug 18 2009 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.0.9
-
-* Thu Jun 18 2009 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.0.8
-
-* Mon Apr 6 2009 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.0.7
-
-* Tue Mar 24 2009 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.0.6
-
-* Wed Feb 4 2009 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.0.5
-
-* Wed Jan 7 2009 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.0.4
-
-* Thu Dec 4 2008 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.0.3
-
-* Fri Nov 28 2008 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.0.2
-
-* Fri Oct 17 2008 David Nichols <david_nichols@users.sourceforge.net>
-- updated to version 1.0.1
-
-* Tue Sep 2 2008 David Nichols <david_nichols@users.sourceforge.net>
-- initial spec file for separate oracle module release
+* Sat Oct 03 2026 David Nichols <david@qore.org> - 3.4.1-2
+- Build with the packaged Qore SDK and the separate Oracle Instant Client RPMs.
+- Package source and AOT extensions, metadata, strict API docs and examples.
+- Run isolated offline driver/source/AOT and native UTF-8 helper regressions.
