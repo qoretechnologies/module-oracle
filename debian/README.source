@@ -37,7 +37,7 @@ CMake uses the explicitly MIT-licensed FindOracleClient.cmake instead. It accept
 ORACLE_PATH_INCLUDES/ORACLE_PATH_LIB or ORACLE_INSTANT_CLIENT/ORACLE_HOME roots.
 CMake does not use Autoconf. From a clean checkout:
 
-    version=3.4.0~git20260928.1+ds
+    version=3.4.1~git20261004.1+ds
     mkdir -p ../oracle-package-work
     git archive --format=tar --prefix="qore-oracle-module-$version/" \
         HEAD -- . ':!debian' ':!m4/acx_pthread.m4' ':!cmake/FindOracle.cmake' \

@@ -110,6 +110,7 @@ add_custom_target(QPP_GENERATED_FILES DEPENDS ${QPP_SOURCES})
 set(module_name "oracle")
 
 set(QORE_DOX_TMPL_SRC
+    docs/guide-oraclecapabilities.dox.tmpl
     docs/mainpage.doxygen.tmpl
     docs/guide-aq.dox.tmpl
     docs/guide-bindings_and_types.dox.tmpl
@@ -140,6 +141,7 @@ endif()
 # Document the public Qore declarations, not generated C++ implementation files.
 set(MODULE_DOX_INPUT ${CMAKE_BINARY_DIR}/mainpage.dox ${QPP_DOX_SRC})
 list(APPEND MODULE_DOX_INPUT
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-oraclecapabilities.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-aq.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-bindings_and_types.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-named_types.dox

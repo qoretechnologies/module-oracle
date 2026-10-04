@@ -30,31 +30,8 @@
     Datasource ds("oracle:user/password@db%host:1522");
     @endcode
 
-    This driver supports the following DBI capabilities:
-    - \c DBI_CAP_TRANSACTION_MANAGEMENT
-    - \c DBI_CAP_STORED_PROCEDURES
-    - \c DBI_CAP_CHARSET_SUPPORT
-    - \c DBI_CAP_LOB_SUPPORT
-    - \c DBI_CAP_BIND_BY_VALUE
-    - \c DBI_CAP_BIND_BY_PLACEHOLDER
-    - \c DBI_CAP_HAS_EXECRAW
-    - \c DBI_CAP_HAS_STATEMENT
-    - \c DBI_CAP_HAS_SELECT_ROW
-    - \c DBI_CAP_HAS_NUMBER_SUPPORT
-    - \c DBI_CAP_HAS_OPTION_SUPPORT
-    - \c DBI_CAP_SERVER_TIME_ZONE
-    - \c DBI_CAP_AUTORECONNECT
-    - \c DBI_CAP_HAS_ARRAY_BIND
-    - \c DBI_CAP_HAS_RESULTSET_OUTPUT
-    - \c DBI_CAP_HAS_COLUMNAR_SELECT
-    - \c DBI_CAP_HAS_BULK_LOAD
-
-    When built against a %Qore library with columnar DBI support, the driver implements
-    \c Datasource::selectColumnar() and \c SQLStatement::fetchColumnar() to return
-    \c Qore::SQL::ColumnarResult objects suitable for DataFrame and analytical workloads.
-    Integer, floating-point, and safe \c NUMBER(precision,scale) values are delivered as packed
-    dense buffers, including \c decimal128 buffers when the precision and scale fit the fixed-width
-    decimal representation; other Oracle data types use the standard columnar conversion path.
+    The driver supports transactions, bound parameters, and prepared statements.
+    See @ref oraclecapabilitiesguide for supported features and their requirements.
 
     @section oracleqlibmodules Qore User Modules
 
@@ -62,6 +39,7 @@
 
     @section oracledocumentation Documentation
 
+    - @subpage oraclecapabilitiesguide
     - @anchor ora_thread_session_info @subpage oracleora_thread_session_infoguide
     - @anchor ora_native_bulk_load @subpage oracleora_native_bulk_loadguide
     - @anchor ora_options @subpage oracleora_optionsguide

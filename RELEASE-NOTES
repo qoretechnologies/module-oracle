@@ -1,1 +1,2 @@
-see doxygen-generated release notes or source in docs/mainpage.doxygen.tmpl
+See the oracle module release notes in the generated Doxygen documentation.
+The authoritative source is docs/guide-ora_releasenotes.dox.tmpl.
