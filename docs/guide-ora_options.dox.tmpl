@@ -4,6 +4,24 @@
 
     @tableofcontents
 
+    @section oracle_connect_timeouts Connection establishment
+
+    Configure Oracle Net timeouts in the connect descriptor used as the datasource's database name:
+    @code
+    (DESCRIPTION=(CONNECT_TIMEOUT=5)(TRANSPORT_CONNECT_TIMEOUT=3)(RETRY_COUNT=0)
+      (ADDRESS_LIST=(FAILOVER=ON)(LOAD_BALANCE=OFF)
+        (ADDRESS=(PROTOCOL=TCP)(HOST=db1.internal)(PORT=1521))
+        (ADDRESS=(PROTOCOL=TCP)(HOST=db2.internal)(PORT=1521)))
+      (CONNECT_DATA=(SERVICE_NAME=orders)))
+    @endcode
+    These are Oracle Net descriptor parameters, not Qore driver options. Oracle applies them per
+    address/attempt; retry settings and multiple addresses can increase the total connection time.
+    @note OCI does not expose nonblocking server attachment before login, and OCIBreak does not reliably
+    interrupt OCIServerAttach. Configure finite Oracle Net timeouts. Pending Qore cancellation is checked
+    after server attachment and session creation. Session creation registers an OCIBreak callback, and
+    cancellation callbacks cannot access OCI handles after their helper has been destroyed.
+
+
     When compiled again Qore 0.8.6+ the oracle driver support the following DBI options on each connection:
     - \c "optimal-numbers": return <tt>NUMBER</tt> types as an integer if possible, if not as an arbitrary-precision
       number

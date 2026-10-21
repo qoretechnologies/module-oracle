@@ -5,6 +5,10 @@
     @tableofcontents
 
     @section oracle3_4_1 oracle Driver Version 3.4.1
+    - preserved Qore cancellation after server attachment and session creation, and registered session-login cancellation
+    - fixed cancellation callbacks outliving their helper and accessing freed OCI handles
+    - documented Oracle Net connection timeouts and raised the build language requirement to C++17
+
     - fixed an infinite loop when counting UTF-8 characters in nonempty LOB buffers
     - added @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()" and
       @ref Qore::Oracle::getThreadSessionInfo() "Oracle::getThreadSessionInfo()" to report per-thread

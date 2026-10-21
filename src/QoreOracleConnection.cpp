@@ -567,8 +567,14 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
    }
 
    /* attach to the server - use default host? */
-   e = checkerr(OCIServerAttach(srvhp, errhp, (text *)dblink.getBuffer(), dblink.size(), (ub4) OCI_DEFAULT), "QoreOracleConnection::logon() server attach", xsink);
-   if (e) return -1;
+   sword rc = OCIServerAttach(srvhp, errhp, reinterpret_cast<const OraText*>(dblink.getBuffer()),
+       dblink.size(), OCI_DEFAULT);
+   if (qore_check_cancel(xsink, "attaching to the Oracle server")) {
+       return -1;
+   }
+   if (checkerr(rc, "QoreOracleConnection::logon() server attach", xsink)) {
+       return -1;
+   }
 
    /* set the server attribute in the service context */
    e = checkerr(OCIAttrSet(svchp, OCI_HTYPE_SVCCTX, srvhp, 0, OCI_ATTR_SERVER, errhp), "QoreOracleConnection::logon() server to service context", xsink);
@@ -580,8 +586,16 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
    }
 
    /* log on */
-   e = checkerr(OCISessionBegin(svchp, errhp, usrhp, OCI_CRED_RDBMS, OCI_DEFAULT), "QoreOracleConnection::logon() session begin", xsink);
-   if (e) return -1;
+   {
+       QoreOracleCancelHelper cancel_helper(svchp, errhp);
+       rc = OCISessionBegin(svchp, errhp, usrhp, OCI_CRED_RDBMS, OCI_DEFAULT);
+   }
+   if (qore_check_cancel(xsink, "starting the Oracle session")) {
+       return -1;
+   }
+   if (checkerr(rc, "QoreOracleConnection::logon() session begin", xsink)) {
+       return -1;
+   }
 
    /* set the session attribute in the service context */
    e = checkerr(OCIAttrSet(svchp, OCI_HTYPE_SVCCTX, usrhp, 0, OCI_ATTR_SESSION, errhp), "QoreOracleConnection::logon() set the session attribute in the service context", xsink);

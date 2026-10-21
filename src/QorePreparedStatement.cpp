@@ -29,22 +29,27 @@
 
 #include <stdlib.h>
 #include <memory>
+#include <mutex>
 
 //------------------------------------------------------------------------------
 // QoreOracleCancelHelper implementation
 //------------------------------------------------------------------------------
 
-QoreOracleCancelHelper::QoreOracleCancelHelper(OCISvcCtx* svchp, OCIError* errhp)
-    : svchp(svchp), errhp(errhp) {
+struct QoreOracleCancelHelper::State {
+    State(OCISvcCtx* svc, OCIError* err) : svc(svc), err(err) {
+    }
+    std::mutex lock;
+    OCISvcCtx* svc;
+    OCIError* err;
+};
+
+QoreOracleCancelHelper::QoreOracleCancelHelper(OCISvcCtx* svchp, OCIError* errhp) {
     if (smh && svchp && errhp) {
-        // Register cancel callback
-        smh->registerCancelCallback(this, [this]() -> bool {
-            // Load pointers atomically - they may be set to nullptr by destructor
-            OCISvcCtx* svc = this->svchp.load(std::memory_order_acquire);
-            OCIError* err = this->errhp.load(std::memory_order_acquire);
-            if (svc && err) {
-                // OCIBreak cancels the current OCI operation
-                sword status = OCIBreak(svc, err);
+        state = std::make_shared<State>(svchp, errhp);
+        smh->registerCancelCallback(this, [s = state]() -> bool {
+            std::lock_guard<std::mutex> lock(s->lock);
+            if (s->svc) {
+                sword status = OCIBreak(s->svc, s->err);
                 return status == OCI_SUCCESS;
             }
             return false;
@@ -53,12 +58,13 @@ QoreOracleCancelHelper::QoreOracleCancelHelper(OCISvcCtx* svchp, OCIError* errhp
 }
 
 QoreOracleCancelHelper::~QoreOracleCancelHelper() {
-    // Set pointers to nullptr atomically before unregistering to prevent
-    // use-after-free if a callback is currently being invoked
-    svchp.store(nullptr, std::memory_order_release);
-    errhp.store(nullptr, std::memory_order_release);
-    if (smh) {
+    if (state) {
         smh->unregisterCancelCallback(this);
+        // An interrupt may have copied the callback before unregistering. Keep its state alive,
+        // join an in-flight OCIBreak(), and prevent later copies from reaching released handles.
+        std::lock_guard<std::mutex> lock(state->lock);
+        state->svc = nullptr;
+        state->err = nullptr;
     }
 }
 

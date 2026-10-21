@@ -32,6 +32,7 @@
 #include <qore/QoreSandboxManager.h>
 
 #include <atomic>
+#include <memory>
 #include <vector>
 #include <string>
 
@@ -67,9 +68,8 @@ public:
     QoreOracleCancelHelper& operator=(const QoreOracleCancelHelper&) = delete;
 
 private:
-    // Use atomic pointers for thread safety with callback invocation
-    std::atomic<OCISvcCtx*> svchp;
-    std::atomic<OCIError*> errhp;
+    struct State;
+    std::shared_ptr<State> state;
     QoreSandboxManagerHelper smh;
 };
 
