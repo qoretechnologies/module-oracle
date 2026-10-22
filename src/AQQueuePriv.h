@@ -4,7 +4,7 @@
 
   Qore Programming Language
 
-  Copyright (C) 2003 - 2022 Qore Technologies, sro
+  Copyright (C) 2003 - 2026 Qore Technologies, sro
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -43,8 +43,6 @@ public:
 
    DLLLOCAL void connect(ExceptionSink *xsink);
    DLLLOCAL void disconnect(ExceptionSink *xsink);
-   DLLLOCAL int reconnectSubscription(ExceptionSink* xsink);
-   DLLLOCAL bool ping();
 
    DLLLOCAL OCI_TypeInfo* typeInfo() { return m_typeInfo; }
    DLLLOCAL QoreOracleConnection* connection() { return m_conn; }
@@ -65,6 +63,13 @@ public:
 
    DLLLOCAL QoreObject* qoreObject() { return m_self; }
 
+   //! Called by the subscription watchdog thread: restores a subscription whose connection was lost
+   /** If the subscription cannot be restored, the object is removed from the watchdog and
+       AQQueue::onSubscriptionLost() is called.  No lock is held when onSubscriptionLost() is called, so it can
+       restart the subscription.
+   */
+   DLLLOCAL void checkSubscription();
+
 private:
    // mutex for atomicity
    QoreThreadLock l;
@@ -84,14 +89,15 @@ private:
 
    bool m_hasSubscription, valid;
 
-   QoreObject *m_self;
+   QoreObject *m_self = nullptr;
 
    DLLLOCAL bool pingUnlocked();
    DLLLOCAL void destructorUnlocked(ExceptionSink *xsink);
    DLLLOCAL int checkValidUnlocked(const char* m, ExceptionSink* xsink);
    DLLLOCAL int reconnectUnlocked(ExceptionSink* xsink);
    DLLLOCAL int reconnectSubscriptionUnlocked(ExceptionSink* xsink);
-   DLLLOCAL int stopSubscriptionUnlocked(ExceptionSink *xsink);
+   //! Stops the subscription; releases the subscription's callback thread ID if release_callback_thread is true
+   DLLLOCAL int stopSubscriptionUnlocked(ExceptionSink *xsink, bool release_callback_thread);
    DLLLOCAL int connectUnlocked(ExceptionSink *xsink);
    DLLLOCAL void disconnectUnlocked(ExceptionSink *xsink);
    DLLLOCAL bool checkDequeueUnlocked(QoreObject* self, ExceptionSink *xsink);

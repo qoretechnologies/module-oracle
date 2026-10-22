@@ -46,6 +46,7 @@ TypedHashDecl* init_hashdecl_OracleSessionInfo(QoreNamespace& ns);
 const TypedHashDecl* hashdeclOracleSessionInfo = nullptr;
 QoreClass* initAQMessageClass(QoreNamespace& ns);
 QoreClass* initAQQueueClass(QoreNamespace& ns);
+DLLLOCAL void aq_module_delete();
 
 static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink);
 static void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink);
@@ -511,6 +512,8 @@ static void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, Except
 
 static void oracle_module_delete() {
    QORE_TRACE("oracle_module_delete()");
+   // stop the AQ subscription watchdog thread
+   aq_module_delete();
    // free the session information of the thread deleting the module; the thread cleanup function is
    // deliberately not removed with tclist.pop(): that removes the most recently pushed function, which
    // can belong to another module, and binary modules are never unloaded, so the function stays valid

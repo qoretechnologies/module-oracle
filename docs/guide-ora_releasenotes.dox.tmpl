@@ -5,6 +5,12 @@
     @tableofcontents
 
     @section oracle3_4_1 oracle Driver Version 3.4.1
+    - fixed the AQ subscription watchdog: subscriptions started after all earlier subscriptions had been stopped were
+      no longer watched, so that a lost connection was never restored or reported; a lost connection raised an
+      internal OCILIB error instead of being restored;
+      @ref Qore::Oracle::AQQueue::onSubscriptionLost() "AQQueue::onSubscriptionLost()" blocked forever when it called
+      @ref Qore::Oracle::AQQueue::startSubscription() "AQQueue::startSubscription()" to restore the subscription;
+      and a queue in use by another thread blocked the checks of all other subscriptions
     - preserved Qore cancellation after server attachment and session creation, and registered session-login cancellation
     - fixed cancellation callbacks outliving their helper and accessing freed OCI handles
     - documented Oracle Net connection timeouts and raised the build language requirement to C++17

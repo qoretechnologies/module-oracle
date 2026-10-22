@@ -1,0 +1,302 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+
+# The callbacks of an AQ subscription are called on threads that Qore did not start: AQQueue::onAsyncMessage() on
+# the Oracle client's notification thread, AQQueue::onSubscriptionLost() on the subscription watchdog thread, which
+# both serve every subscription.
+#
+# The watchdog checks the subscriptions periodically: a subscription whose connection was lost is restored, or, if
+# it cannot be restored, reported with onSubscriptionLost(), which can restart it.
+#
+# The subscriptions are started by the code of another Program, whose callbacks read a file.
+#
+# Needs an Oracle database: QORE_DB_CONNSTR_ORACLE gives the connection of a user that can create types and use
+# DBMS_AQADM and DBMS_AQ; the lost-subscription cases also need SYS_OMQ_DB_STRING, the connection of a user that
+# can lock that user's account and kill its sessions.
+
+%modern
+%no-child-restrictions
+
+%requires QUnit
+%requires Util
+%requires oracle
+
+%exec-class AqSubscriptionTest
+
+class AqSubscriptionTest inherits QUnit::Test {
+    private {
+        #! the connection of the test user
+        *string connstr;
+        #! the connection of the administrative user
+        *string sysconnstr;
+        #! the connection of the test user, for setup and for posting messages
+        *Datasource ds;
+        #! why the queue could not be set up
+        *string setup_error;
+        #! the test directory
+        string dir;
+        #! the file that the callbacks read
+        string secret;
+    }
+
+    #! the content of the secret file
+    const SecretContent = "the secret content";
+
+    #! the queue
+    const QueueName = "QORE_SBX_AQ_Q";
+    #! the queue table
+    const QueueTableName = "QORE_SBX_AQ_QT";
+    #! the message type
+    const TypeName = "QORE_SBX_AQ_MSG";
+
+    #! true on Alpine Linux, where the Oracle Instant Client runs on musl through a glibc compatibility layer
+    /** There a subscription that onSubscriptionLost() restarts on the watchdog thread after the failed restore is
+        accepted by the client (OCISubscriptionRegister() succeeds) but is never registered with the server (it is not
+        in DBA_SUBSCR_REGISTRATIONS, and its messages are not delivered); restarted on any other thread, it is.  So the
+        restart is checked on glibc systems only.
+    */
+    const OracleClientOnMusl = is_file("/etc/alpine-release");
+
+    #! the longest a test waits for a callback; it is a guard against a hang, never an expected time
+    /** a lost subscription is noticed by the watchdog, which checks the subscriptions every 25 seconds
+    */
+    const CallbackTimeout = 120s;
+
+    #! the code that starts the subscriptions: subscription callbacks that read a file
+    const TrustedSource = "
+%requires oracle
+
+string sub read_file(string path) {
+    try {
+        return ReadOnlyFile::readTextFile(path);
+    } catch (hash<ExceptionInfo> ex) {
+        return ex.err;
+    }
+}
+
+class Subscriber inherits Oracle::AQQueue {
+    private {
+        string path;
+        Queue results;
+        *Queue gate;
+    }
+
+    constructor(string queue, string type, string conn, string path, Queue results, *Queue gate)
+            : Oracle::AQQueue(queue, type, conn) {
+        self.path = path;
+        self.results = results;
+        self.gate = gate;
+    }
+
+    nothing onAsyncMessage() {
+        # consume the messages that are available
+        {
+            on_success commit();
+            on_error rollback();
+            while (getMessage(0)) {
+            }
+        }
+        results.push({\"event\": \"message\", \"result\": read_file(path)});
+    }
+
+    nothing onSubscriptionLost() {
+        results.push({\"event\": \"lost\", \"result\": read_file(path)});
+        if (gate) {
+            # the subscription is restored once the test has made the database available again
+            gate.get();
+            try {
+                startSubscription();
+                results.push({\"event\": \"restarted\"});
+            } catch (hash<ExceptionInfo> ex) {
+                results.push({\"event\": \"restart-error\", \"result\": sprintf(\"%s: %s\", ex.err, ex.desc)});
+            }
+        }
+    }
+}
+
+Oracle::AQQueue sub subscribe(string queue, string type, string conn, string path, Queue results, *Queue gate) {
+    Subscriber s(queue, type, conn, path, results, gate);
+    s.startSubscription();
+    return s;
+}
+
+code sub get_subscribe() {
+    return \\subscribe();
+}
+";
+
+    constructor() : QUnit::Test("AqSubscriptionTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE;
+        sysconnstr = ENV.SYS_OMQ_DB_STRING;
+        addTestCase("a subscription's callback reads the file", \testUnsandboxed());
+        addTestCase("a lost subscription is reported and can be restarted from onSubscriptionLost()",
+            \testLostUnsandboxed());
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        string tmp = tmp_location() + DirSep + "qore-aq-subscription-" + get_random_string(8);
+        mkdir(tmp);
+        dir = realpath(tmp);
+        secret = dir + DirSep + "secret.txt";
+        File f();
+        f.open2(secret, O_CREAT | O_TRUNC | O_WRONLY);
+        f.write(SecretContent);
+        f.close();
+
+        if (!connstr) {
+            return;
+        }
+        ds = new Datasource(connstr);
+        ds.open();
+        dropQueue();
+        try {
+            ds.exec("create or replace type " + TypeName + " as object (code number, text varchar2(100))");
+            ds.exec(sprintf("begin dbms_aqadm.create_queue_table(queue_table => '%s', queue_payload_type => '%s'); "
+                "dbms_aqadm.create_queue(queue_name => '%s', queue_table => '%s'); "
+                "dbms_aqadm.start_queue(queue_name => '%s'); end;", QueueTableName, TypeName, QueueName,
+                QueueTableName, QueueName));
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            ds.rollback();
+            setup_error = sprintf("the AQ queue cannot be created with %s: %s: %s", connstr, ex.err, ex.desc);
+        }
+    }
+
+    globalTearDown() {
+        if (ds) {
+            dropQueue();
+        }
+        if (dir.val()) {
+            try {
+                unlink(secret);
+                rmdir(dir);
+            } catch (hash<ExceptionInfo> ex) {
+            }
+        }
+    }
+
+    #! drops the queue, its table and its type, if they exist
+    private dropQueue() {
+        try {
+            ds.exec(sprintf("begin dbms_aqadm.stop_queue(queue_name => '%s'); "
+                "dbms_aqadm.drop_queue(queue_name => '%s'); end;", QueueName, QueueName));
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        try {
+            ds.exec(sprintf("begin dbms_aqadm.drop_queue_table(queue_table => '%s', force => true); end;",
+                QueueTableName));
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        try {
+            ds.exec("drop type " + TypeName + " force");
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        ds.commit();
+    }
+
+    #! skips the test case if there is no queue
+    private checkQueue() {
+        if (!connstr) {
+            testSkip("QORE_DB_CONNSTR_ORACLE is not set");
+        }
+        if (setup_error) {
+            testSkip(setup_error);
+        }
+    }
+
+    #! returns the trusted code
+    private Program getTrusted() {
+        Program u(PO_NEW_STYLE);
+        u.parse(TrustedSource, "trusted");
+        return u;
+    }
+
+    #! posts a message to the queue
+    private post() {
+        ds.exec(sprintf("declare enq dbms_aq.enqueue_options_t; props dbms_aq.message_properties_t; id raw(16); "
+            "begin dbms_aq.enqueue(queue_name => '%s', enqueue_options => enq, message_properties => props, "
+            "payload => %s(1, 'message'), msgid => id); end;", QueueName, TypeName));
+        ds.commit();
+    }
+
+    #! returns the next result of the given event, skipping the results of other events
+    private static auto getResult(Queue results, string event) {
+        while (True) {
+            hash<auto> h = results.get(CallbackTimeout);
+            if (h.event == event) {
+                return h.result;
+            }
+        }
+    }
+
+    testUnsandboxed() {
+        checkQueue();
+        Program u = getTrusted();
+        Queue results();
+        AQQueue q = u.callFunction("subscribe", QueueName, TypeName, connstr, secret, results);
+        post();
+        assertEq(SecretContent, getResult(results, "message"));
+        q.stopSubscription();
+        delete q;
+    }
+
+    testLostUnsandboxed() {
+        lostTest(SecretContent);
+    }
+
+    #! the subscription's session is killed, and the account is locked so that the subscription cannot be restored
+    /** @param expected the result of reading the file in the subscription's callbacks
+    */
+    private lostTest(string expected) {
+        checkQueue();
+        if (!sysconnstr) {
+            testSkip("SYS_OMQ_DB_STRING is not set");
+        }
+        Datasource sys(sysconnstr);
+        sys.setAutoCommit(True);
+        string user = parse_datasource(connstr).user.upr();
+
+        Program u = getTrusted();
+        Queue results();
+        Queue gate();
+        AQQueue q = u.callFunction("subscribe", QueueName, TypeName, connstr, secret, results, gate);
+        on_exit {
+            sys.exec("alter user " + user + " account unlock");
+            # the callback may still be waiting for the gate
+            gate.push(True);
+            try {
+                q.stopSubscription();
+            } catch (hash<ExceptionInfo> ex) {
+                # the subscription's session was killed if the test failed before it was restored
+            }
+            delete q;
+        }
+
+        # the subscription's session is lost, and it cannot be restored while the account is locked
+        sys.exec("alter user " + user + " account lock");
+        list<hash<auto>> sessions = sys.selectRows("select sid, serial# as serial from v$session where username = %v "
+            "and module = %v", user, "Qore AQ Queue: " + QueueName);
+        assertEq(1, sessions.size(), "the session of the subscription");
+        foreach hash<auto> s in (sessions) {
+            sys.exec(sprintf("alter system kill session '%d,%d' immediate", s.sid, s.serial));
+        }
+
+        assertEq(expected, getResult(results, "lost"), "onSubscriptionLost()");
+
+        # onSubscriptionLost() restarts the subscription once the account is available again
+        sys.exec("alter user " + user + " account unlock");
+        gate.push(True);
+        hash<auto> h = results.get(CallbackTimeout);
+        assertEq("restarted", h.event, sprintf("the restart: %y", h.result));
+        if (OracleClientOnMusl) {
+            # see OracleClientOnMusl
+            return;
+        }
+
+        # the restarted subscription delivers messages
+        post();
+        assertEq(expected, getResult(results, "message"), "onAsyncMessage() after the restart");
+    }
+}
