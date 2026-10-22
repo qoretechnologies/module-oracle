@@ -52,14 +52,6 @@ class AqSubscriptionTest inherits QUnit::Test {
     #! the message type
     const TypeName = "QORE_SBX_AQ_MSG";
 
-    #! true on Alpine Linux, where the Oracle Instant Client runs on musl through a glibc compatibility layer
-    /** There a subscription that onSubscriptionLost() restarts on the watchdog thread after the failed restore is
-        accepted by the client (OCISubscriptionRegister() succeeds) but is never registered with the server (it is not
-        in DBA_SUBSCR_REGISTRATIONS, and its messages are not delivered); restarted on any other thread, it is.  So the
-        restart is checked on glibc systems only.
-    */
-    const OracleClientOnMusl = is_file("/etc/alpine-release");
-
     #! the longest a test waits for a callback; it is a guard against a hang, never an expected time
     /** a lost subscription is noticed by the watchdog, which checks the subscriptions every 25 seconds
     */
@@ -336,10 +328,6 @@ auto sub run(code c, ...) {
         gate.push(True);
         hash<auto> h = results.get(CallbackTimeout);
         assertEq("restarted", h.event, sprintf("the restart: %y", h.result));
-        if (OracleClientOnMusl) {
-            # see OracleClientOnMusl
-            return;
-        }
 
         # the restarted subscription delivers messages under the sandbox of the code that started it first
         post();

@@ -26,6 +26,7 @@
 
 #include "AQQueuePriv.h"
 
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -219,9 +220,112 @@ private:
 
 AQSubscriptionManager aqSubscriptionManager;
 
+// calls AQQueue::onSubscriptionLost() for the subscriptions that the watchdog cannot restore, on its own thread
+/** The watchdog reports a lost subscription right after it failed to ping its connection and to restore it, and
+    onSubscriptionLost() typically restarts the subscription; started there, on the thread whose Oracle client calls
+    on the lost connection just failed, a subscription is not registered with the server by the Oracle Instant Client
+    on musl (Alpine) although OCISubscriptionRegister() succeeds, while it is registered from any other thread.  So the
+    callbacks run on this thread, outside the watchdog's OCI processing, on every platform; each runs under the sandbox
+    of the code that started the subscription (see AQQueuePriv::notifySubscriptionLost()).
+
+    The thread runs while notifications are queued; a finished thread is joined when the next notification starts a
+    new one and when the module is deleted.
+*/
+class AQLostSubscriptionNotifier {
+public:
+   DLLLOCAL ~AQLostSubscriptionNotifier() {
+      assert(queue.empty());
+      assert(!running);
+   }
+
+   //! Queues the notification for the given subscription; takes over the reference to the private data
+   /** @return 0 if the notification was queued, -1 if it could not be (then the caller must make it itself)
+   */
+   DLLLOCAL int post(AQQueuePriv* priv) {
+      AutoLocker al(l);
+      try {
+         queue.push_back(priv);
+      } catch (std::bad_alloc&) {
+         return -1;
+      }
+      if (running) {
+         return 0;
+      }
+      // the previous thread has left its loop: reap it before starting a new one
+      joinUnlocked();
+      // the thread runs Qore code and Oracle client calls, so it gets the stack size of a Qore thread
+      pthread_attr_t attr;
+      pthread_attr_init(&attr);
+      pthread_attr_setstacksize(&attr, q_thread_get_stack_size());
+      int rc = pthread_create(&thread, &attr, &AQLostSubscriptionNotifier::thread_helper, this);
+      pthread_attr_destroy(&attr);
+      if (rc) {
+         queue.pop_back();
+         return -1;
+      }
+      started = true;
+      running = true;
+      return 0;
+   }
+
+   //! Waits for the queued notifications to be made and joins the thread; called when the module is deleted
+   DLLLOCAL void stop() {
+      AutoLocker al(l);
+      if (started) {
+         // the thread needs the lock to leave its loop
+         AutoUnlocker aul(l);
+         pthread_join(thread, nullptr);
+      }
+      started = false;
+   }
+
+private:
+   QoreThreadLock l;
+   //! the private data of the lost subscriptions (referenced)
+   std::deque<AQQueuePriv*> queue;
+   //! the thread, if started and not joined
+   pthread_t thread;
+   //! true if the thread must be joined
+   bool started = false;
+   //! true while the thread is in its loop
+   bool running = false;
+
+   DLLLOCAL void run() {
+      QoreForeignThreadHelper qfth;
+      AutoLocker al(l);
+      while (!queue.empty()) {
+         AQQueuePriv* priv = queue.front();
+         queue.pop_front();
+         AutoUnlocker aul(l);
+         priv->notifySubscriptionLost();
+         priv->deref();
+      }
+      running = false;
+   }
+
+   //! joins a thread that has left its loop; the lock must be held
+   DLLLOCAL void joinUnlocked() {
+      assert(!running);
+      if (started) {
+         // the thread has left its loop and released the lock, so it ends without it
+         pthread_join(thread, nullptr);
+         started = false;
+      }
+   }
+
+   DLLLOCAL static void* thread_helper(void* context) {
+      static_cast<AQLostSubscriptionNotifier*>(context)->run();
+      return nullptr;
+   }
+};
+
+AQLostSubscriptionNotifier aqLostSubscriptionNotifier;
+
 DLLLOCAL void aq_module_delete();
 void aq_module_delete() {
+   // no subscription is reported lost once the watchdog is stopped
    aqSubscriptionManager.stop();
+   aqLostSubscriptionNotifier.stop();
 }
 
 void on_async_message(OCI_Dequeue* deq) {
@@ -696,7 +800,6 @@ void AQQueuePriv::checkSubscription() {
 
    // errors restoring the subscription are reported when the sink goes out of scope
    ExceptionSink xsink;
-   QoreObject* lost = nullptr;
    {
       // a queue that another thread is using is not checked now: its connection is in use, and the watchdog must
       // not wait for it (a dequeue can wait without a time limit)
@@ -717,16 +820,42 @@ void AQQueuePriv::checkSubscription() {
       // the subscription cannot be restored: it is no longer watched
       aqSubscriptionManager.remove(this);
       aqCallbackThreadManager.dec();
-      // the object is called below without the lock; a weak reference keeps it valid
-      lost = m_self;
-      lost->tRef();
+      // the object is called later without the lock; a weak reference keeps it valid until then
+      m_self->tRef();
+      QoreObject* prev = m_lost.exchange(m_self);
+      if (prev) {
+         // a loss that has not been reported yet is reported once
+         prev->tDeref();
+      }
    }
 
-   // the subscription is reported lost without any lock held, so that onSubscriptionLost() can restart it; an
-   // exception that the method raises is reported when the sink goes out of scope
-   ExceptionSink cb_xsink;
-   lost->evalMethod("onSubscriptionLost", 0, &cb_xsink);
-   lost->tDeref();
+   // the subscription is reported lost on the notifier thread, outside this thread's OCI processing (see
+   // AQLostSubscriptionNotifier), without any lock held, so that onSubscriptionLost() can restart it
+   ref();
+   if (aqLostSubscriptionNotifier.post(this)) {
+      // the notifier thread cannot be started: the loss is reported here
+      notifySubscriptionLost();
+      deref();
+   }
+}
+
+void AQQueuePriv::notifySubscriptionLost() {
+   // the queue's lock is not needed: another thread can use the queue for a long time (getMessage() can wait without a
+   // time limit)
+   QoreObject* obj = m_lost.exchange(nullptr);
+   if (!obj) {
+      return;
+   }
+   std::shared_ptr<const QoreSandboxCapture> sandbox = getSandbox();
+   assert(sandbox);
+   {
+      // onSubscriptionLost() runs under the sandbox of the code that started the subscription
+      QoreSandboxCaptureHelper sch(*sandbox);
+      // an exception that the method raises is reported when the sink goes out of scope
+      ExceptionSink xsink;
+      obj->evalMethod("onSubscriptionLost", 0, &xsink);
+   }
+   obj->tDeref();
 }
 
 void AQQueuePriv::startSubscription(QoreObject* self, unsigned port, int64 timeout, ExceptionSink *xsink) {
@@ -906,8 +1035,9 @@ static void aqqueue_constructor_hash(const QoreStringNode* queueName, const Qore
  *
  * When a subscription is active (see @ref AQQueue::startSubscription()), @ref AQQueue::onAsyncMessage() is called
  * by the Oracle client's notification thread, and a background watchdog thread checks the connection of every
- * subscription every 25 seconds, restores lost subscriptions, and calls @ref AQQueue::onSubscriptionLost() when a
- * subscription cannot be restored.  Both threads serve the subscriptions of all objects; each callback, and each
+ * subscription every 25 seconds and restores lost subscriptions; when a subscription cannot be restored,
+ * @ref AQQueue::onSubscriptionLost() is called on another background thread, so that it can restart the
+ * subscription.  These threads serve the subscriptions of all objects; each callback, and each
  * reconnection made for a subscription, runs under the sandbox (\c Qore::SandboxManager) of the code that called
  * @ref AQQueue::startSubscription(), so it can never do more than that code.
  */
@@ -1053,7 +1183,8 @@ nothing AQQueue::onAsyncMessage() {
 
 //! Automatically called when the connection is externally disconnected
 /** A method which is called when there is a subscription but the periodical check for a live connection fails and
-    the subscription cannot be restored.
+    the subscription cannot be restored.  It is called on a background thread of the module, after the subscription
+    has been removed from the periodical check.
 
     The default implementation does nothing; override this method in subclasses to be notified; the method can call
     @ref AQQueue::startSubscription() to restore the subscription, for example

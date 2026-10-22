@@ -28,6 +28,7 @@
 #include "oracle.h"
 #include "ocilib_internal.h"
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -74,10 +75,16 @@ public:
 
    //! Called by the subscription watchdog thread: restores a subscription whose connection was lost
    /** Runs under the sandbox of the code that started the subscription; if the subscription cannot be restored,
-       the object is removed from the watchdog and AQQueue::onSubscriptionLost() is called.  No lock is held when
-       onSubscriptionLost() is called, so it can restart the subscription.
+       the object is removed from the watchdog and the loss is reported with notifySubscriptionLost() on the notifier
+       thread.
    */
    DLLLOCAL void checkSubscription();
+
+   //! Calls AQQueue::onSubscriptionLost() for the subscription that checkSubscription() could not restore
+   /** Runs under the sandbox of the code that started the subscription; no lock is held when onSubscriptionLost() is
+       called, so it can restart the subscription.
+   */
+   DLLLOCAL void notifySubscriptionLost();
 
 private:
    // mutex for atomicity
@@ -99,6 +106,8 @@ private:
    bool m_hasSubscription, valid;
 
    QoreObject *m_self = nullptr;
+   //! the object of a subscription that could not be restored, weakly referenced until the loss is reported
+   std::atomic<QoreObject*> m_lost{nullptr};
 
    //! the sandbox of the code that started the current subscription; see getSandbox()
    std::shared_ptr<const QoreSandboxCapture> m_sandbox;
