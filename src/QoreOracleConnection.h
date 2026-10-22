@@ -26,6 +26,7 @@
 #define _QORE_ORACLEDATA_H
 
 #include <stdarg.h>
+#include <unistd.h>
 
 #include <set>
 
@@ -50,6 +51,11 @@ public:
     DLLLOCAL ~QoreOracleEnvironment() {
         if (envhp)
             OCIHandleFree(envhp, OCI_HTYPE_ENV);
+    }
+
+    //! Forgets the environment without freeing it (see QoreOracleConnection::isForkedChild())
+    DLLLOCAL void abandon() {
+        envhp = nullptr;
     }
 
     DLLLOCAL int init() {
@@ -191,8 +197,24 @@ public:
     QoreString cstr; // connection string
     int number_support;
 
+private:
+    //! the process that created the connection; see isForkedChild()
+    const pid_t pid = getpid();
+
+public:
+
     DLLLOCAL QoreOracleConnection(Datasource &n_ds, ExceptionSink* xsink);
     DLLLOCAL ~QoreOracleConnection();
+
+    //! Returns true in a child process created with fork() after the connection was created
+    /** The child shares the session's network connection with the parent, and a thread of the parent can have held
+        a lock of the connection's Oracle client environment when the process was created: the child abandons the
+        session's handles instead of ending the session, which would end the parent's session or wait for a reply
+        that the parent can read.
+    */
+    DLLLOCAL bool isForkedChild() const {
+        return getpid() != pid;
+    }
 
     DLLLOCAL int checkerr(sword status, const char *query_name, ExceptionSink* xsink, bool* retry = nullptr);
 

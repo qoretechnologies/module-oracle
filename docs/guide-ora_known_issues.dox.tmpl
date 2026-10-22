@@ -86,6 +86,26 @@ kpcest_err_handler: Max errors exceeded..Closing connection
    <tr><th>11.2.0.3.0</th><td>&nbsp;</td><td>fails</td><td>works</td><td>works</td></tr>
 </table>
 
+    @section fork_issues Child Processes Created with fork()
+
+    A child process created with \c fork() shares the network connection of each Oracle session of its parent, and
+    only the thread that called \c fork() exists in it: the Oracle client's threads and the module's AQ subscription
+    threads remain in the parent.  The sessions of the parent therefore cannot be used in the child:
+    - when the child closes a connection of its parent, or destroys an \c SQLStatement or an
+      @ref Qore::Oracle::AQQueue "AQQueue" of its parent (explicitly or when it ends its script), the session is
+      abandoned without being ended, so the parent's session is not affected, and the child waits for none of the
+      parent's threads
+    - every method of an @ref Qore::Oracle::AQQueue "AQQueue" created by the parent raises \c AQQUEUE-FORK-ERROR in
+      the child, so that the child cannot stop or change the parent's subscription
+    - other uses of the parent's sessions in the child (ex: a query with a \c Datasource of the parent) are not
+      detected and must be avoided: they share the session with the parent
+
+    The child can open its own connections.  It can start its own AQ subscriptions only if no subscription was
+    started in its parent (or in an ancestor) before \c fork(): the first subscription of a process starts the Oracle
+    client's notification listener, which then remains in that process, and a subscription started in the child
+    would not be notified, and could not be stopped (ORA-24950); @ref Qore::Oracle::AQQueue::startSubscription()
+    "AQQueue::startSubscription()" raises \c AQQUEUE-FORK-ERROR in such a child.
+
     @section darwin_issues Issues on Darwin/macOS
 
     Due to the way that Apple has changed dynamic library path handling in recent releases of

@@ -32,6 +32,8 @@
 #include <memory>
 #include <mutex>
 
+#include <unistd.h>
+
 class AQMessagePriv;
 
 DLLLOCAL extern qore_classid_t CID_AQQUEUE;
@@ -86,7 +88,18 @@ public:
    */
    DLLLOCAL void notifySubscriptionLost();
 
+   //! Returns true in a child process created with fork() after the object was created
+   /** The queue's session and subscription belong to the parent: the child shares the session's network connection
+       with the parent, and the threads that serve the subscription (the Oracle client's notification thread and the
+       module's watchdog thread, which can hold the object's lock) exist only in the parent.
+   */
+   DLLLOCAL bool isForkedChild() const {
+      return getpid() != m_pid;
+   }
+
 private:
+   //! the process that created the object; see isForkedChild()
+   const pid_t m_pid = getpid();
    // mutex for atomicity
    QoreThreadLock l;
    QoreOracleConnection *m_conn;
@@ -116,6 +129,10 @@ private:
 
    DLLLOCAL bool pingUnlocked();
    DLLLOCAL void destructorUnlocked(ExceptionSink *xsink);
+   //! Raises AQQUEUE-FORK-ERROR in a child process created with fork() after the object was created
+   DLLLOCAL int checkProcess(const char* m, ExceptionSink* xsink) const;
+   //! Abandons the queue's session and subscription in a child process created with fork(); see isForkedChild()
+   DLLLOCAL void abandon();
    DLLLOCAL int checkValidUnlocked(const char* m, ExceptionSink* xsink);
    DLLLOCAL int reconnectUnlocked(ExceptionSink* xsink);
    DLLLOCAL int reconnectSubscriptionUnlocked(ExceptionSink* xsink);

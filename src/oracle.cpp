@@ -47,6 +47,7 @@ const TypedHashDecl* hashdeclOracleSessionInfo = nullptr;
 QoreClass* initAQMessageClass(QoreNamespace& ns);
 QoreClass* initAQQueueClass(QoreNamespace& ns);
 DLLLOCAL void aq_module_delete();
+DLLLOCAL int aq_register_fork_handlers();
 
 static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink);
 static void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink);
@@ -404,6 +405,11 @@ static int oracle_stmt_free(SQLStatement* stmt, ExceptionSink* xsink) {
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
+   if (bg->isForkedChild()) {
+      // the handles belong to the parent's session (see QoreOracleConnection::isForkedChild())
+      return 0;
+   }
+
    // free all handles without closing the statement or freeing private data
    bg->clear(xsink);
    return *xsink ? -1 : 0;
@@ -412,6 +418,13 @@ static int oracle_stmt_free(SQLStatement* stmt, ExceptionSink* xsink) {
 static int oracle_stmt_close(SQLStatement* stmt, ExceptionSink* xsink) {
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
+
+   if (bg->isForkedChild()) {
+      // the statement and its handles belong to the parent's session (see QoreOracleConnection::isForkedChild()):
+      // they are abandoned; the memory is released with the process
+      stmt->setPrivateData(0);
+      return 0;
+   }
 
    bg->reset(xsink);
    delete bg;
@@ -435,6 +448,13 @@ QoreNamespace OraNS("Qore::Oracle");
 
 static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink) {
    QORE_TRACE("oracle_module_init()");
+
+   // registered in the initialization function, as fork handlers must be (see QoreForkHandler.h); nothing below
+   // fails, so they are removed only when the module is deleted
+   if (aq_register_fork_handlers()) {
+      xsink.outOfMemory();
+      return;
+   }
 
    hashdeclOracleSessionInfo = init_hashdecl_OracleSessionInfo(OraNS);
    init_oracle_functions(OraNS);

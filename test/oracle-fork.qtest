@@ -1,0 +1,348 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+
+# Child processes created with fork() while Oracle sessions and AQ subscriptions exist.  Only the forking thread
+# exists in a child: the Oracle client's threads and the module's subscription watchdog and notifier threads remain
+# in the parent, and the child shares the network connection of each of the parent's sessions.  The child must
+# neither wait for those threads nor end or change the parent's sessions and subscriptions.
+#
+# Each child exits with exit() and writes its result to a pipe whose write end it keeps open until it has exited:
+# the parent reads until the end of the data, so it waits for the child's exit deterministically.  A child that
+# waits forever makes the parent wait forever (the test runner's time limit is only a guard).
+#
+# Needs an Oracle database: QORE_DB_CONNSTR_ORACLE gives the connection of a user that can create types and use
+# DBMS_AQADM and DBMS_AQ.
+
+%modern
+%no-child-restrictions
+
+%requires QUnit
+%requires FsUtil
+%requires oracle
+
+%exec-class OracleForkTest
+
+#! a subscriber that reports each notification
+class ForkSubscriber inherits Oracle::AQQueue {
+    private {
+        Queue results;
+    }
+
+    constructor(string queue, string type, string conn, Queue results) : Oracle::AQQueue(queue, type, conn) {
+        self.results = results;
+    }
+
+    nothing onAsyncMessage() {
+        # consume the messages that are available
+        {
+            on_success commit();
+            on_error rollback();
+            while (getMessage(0)) {
+            }
+        }
+        results.push("message");
+    }
+}
+
+class OracleForkTest inherits QUnit::Test {
+    private {
+        #! the connection of the test user
+        *string connstr;
+        #! the connection of the test user, for setup and for posting messages
+        *Datasource ds;
+        #! why the queue could not be set up
+        *string setup_error;
+    }
+
+    #! the queue
+    const QueueName = "QORE_FORK_AQ_Q";
+    #! the queue table
+    const QueueTableName = "QORE_FORK_AQ_QT";
+    #! the message type
+    const TypeName = "QORE_FORK_AQ_MSG";
+
+    #! the longest a test waits for a notification; it is a guard against a hang, never an expected time
+    const CallbackTimeout = 120s;
+
+    #! posts a message to the queue
+    const PostSql = "declare enq dbms_aq.enqueue_options_t; props dbms_aq.message_properties_t; id raw(16); "
+        "begin dbms_aq.enqueue(queue_name => '" + QueueName + "', enqueue_options => enq, message_properties => "
+        "props, payload => " + TypeName + "(1, 'message'), msgid => id); end;";
+
+    constructor() : QUnit::Test("OracleForkTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE;
+        addTestCase("a child destroys a subscribed queue and closes a connection of its parent", \destroyTest());
+        addTestCase("a child cannot use a queue of its parent", \useTest());
+        addTestCase("a child cannot start a subscription after its parent started one", \childSubscriptionTest());
+        addTestCase("a child ends its script while a subscription of its parent is active", \scriptEndTest());
+        addTestCase("a child of a process without a subscription is notified of its own subscription",
+            \childNotificationTest());
+        addTestCase("fork() while another thread holds a lock of the module", \forkHandlersTest());
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        if (!connstr) {
+            return;
+        }
+        ds = new Datasource(connstr);
+        ds.open();
+        dropQueue();
+        try {
+            ds.exec("create or replace type " + TypeName + " as object (code number, text varchar2(100))");
+            ds.exec(sprintf("begin dbms_aqadm.create_queue_table(queue_table => '%s', queue_payload_type => '%s'); "
+                "dbms_aqadm.create_queue(queue_name => '%s', queue_table => '%s'); "
+                "dbms_aqadm.start_queue(queue_name => '%s'); end;", QueueTableName, TypeName, QueueName,
+                QueueTableName, QueueName));
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            ds.rollback();
+            setup_error = sprintf("the AQ queue cannot be created with %s: %s: %s", connstr, ex.err, ex.desc);
+        }
+    }
+
+    globalTearDown() {
+        if (ds) {
+            dropQueue();
+        }
+    }
+
+    #! drops the queue, its table and its type, if they exist
+    private dropQueue() {
+        try {
+            ds.exec(sprintf("begin dbms_aqadm.stop_queue(queue_name => '%s'); "
+                "dbms_aqadm.drop_queue(queue_name => '%s'); end;", QueueName, QueueName));
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        try {
+            ds.exec(sprintf("begin dbms_aqadm.drop_queue_table(queue_table => '%s', force => true); end;",
+                QueueTableName));
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        try {
+            ds.exec("drop type " + TypeName + " force");
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        ds.commit();
+    }
+
+    #! skips the test case if there is no queue or no fork()
+    private checkQueue() {
+        if (!Option::HAVE_FORK) {
+            testSkip("fork() is not available");
+        }
+        if (!connstr) {
+            testSkip("QORE_DB_CONNSTR_ORACLE is not set");
+        }
+        if (setup_error) {
+            testSkip(setup_error);
+        }
+    }
+
+    #! posts a message to the queue with the given connection
+    private static post(Datasource d) {
+        d.exec(PostSql);
+        d.commit();
+    }
+
+    # the child destroys the parent's subscribed queue and closes the parent's connection; the parent's
+    # subscription still delivers its notifications, and the parent's connection still works
+    destroyTest() {
+        checkQueue();
+        Queue results();
+        ForkSubscriber q(QueueName, TypeName, connstr, results);
+        q.startSubscription();
+        post(ds);
+        assertEq("message", results.get(CallbackTimeout));
+        assertEq("done", runChild(string sub () {
+            delete q;
+            ds.close();
+            return "done";
+        }));
+        post(ds);
+        assertEq("message", results.get(CallbackTimeout));
+        q.stopSubscription();
+    }
+
+    # every method of the parent's queue raises AQQUEUE-FORK-ERROR in the child, which can therefore not stop or
+    # change the parent's subscription
+    useTest() {
+        checkQueue();
+        Queue results();
+        ForkSubscriber q(QueueName, TypeName, connstr, results);
+        q.startSubscription();
+        string result = runChild(string sub () {
+            list<string> errors;
+            foreach code c in ((sub () { q.post({"CODE": 2, "TEXT": "child"}); },
+                sub () { q.getMessage(0); },
+                sub () { q.commit(); },
+                sub () { q.rollback(); },
+                sub () { q.stopSubscription(); },
+                sub () { q.startSubscription(); })) {
+                try {
+                    c();
+                    errors += "no error";
+                } catch (hash<ExceptionInfo> ex) {
+                    errors += ex.err;
+                }
+            }
+            return errors.join(",");
+        });
+        assertEq((map "AQQUEUE-FORK-ERROR", xrange(6)).join(","), result);
+        post(ds);
+        assertEq("message", results.get(CallbackTimeout));
+        q.stopSubscription();
+    }
+
+    # the child opens its own connection and posts a message, but cannot start a subscription: the Oracle client's
+    # notification listener, which the parent's subscription started, remains in the parent, so a subscription of the
+    # child would never be notified, and could not be stopped (ORA-24950); see childNotificationTest() for a child
+    # that can.  The parent's subscription is notified of the child's message and of the parent's next one.
+    childSubscriptionTest() {
+        checkQueue();
+        Queue results();
+        ForkSubscriber q(QueueName, TypeName, connstr, results);
+        q.startSubscription();
+        string result = runChild(string sub () {
+            post(new Datasource(connstr));
+            Queue child_results();
+            ForkSubscriber cq(QueueName, TypeName, connstr, child_results);
+            try {
+                cq.startSubscription();
+            } catch (hash<ExceptionInfo> ex) {
+                return ex.err;
+            }
+            return "no exception";
+        });
+        assertEq("AQQUEUE-FORK-ERROR", result);
+        assertEq("message", results.get(CallbackTimeout));
+        post(ds);
+        assertEq("message", results.get(CallbackTimeout));
+        q.stopSubscription();
+    }
+
+    # the child ends its script, which destroys the parent's queue and deletes the module, while the parent's
+    # subscription is active; the script runs in another process, whose output, and the child's, is read until both
+    # have exited
+    scriptEndTest() {
+        checkQueue();
+        TmpFile script(NOTHING, ".q");
+        script.file.write("%modern\n%requires oracle\n"
+            "class S inherits Oracle::AQQueue {\n"
+            "    constructor(string q, string t, string c) : Oracle::AQQueue(q, t, c) {}\n"
+            "    nothing onAsyncMessage() {}\n"
+            "}\n"
+            "S q(" + sprintf("%y, %y, %y", QueueName, TypeName, connstr) + ");\n"
+            "q.startSubscription();\n"
+            "flush();\n"
+            "if (!fork()) {\n"
+            "    printf(\"child: done\\n\");\n"
+            "} else {\n"
+            "    q.stopSubscription();\n"
+            "    printf(\"parent: done\\n\");\n"
+            "}\n");
+        script.file.close();
+        string output = backquote(sprintf("%s --enable-debug %s 2>&1", shellQuote(QORE_ARGV[0]),
+            shellQuote(script.path)));
+        assertRegex("child: done", output);
+        assertRegex("parent: done", output);
+    }
+
+    # the Oracle client's notification listener is started by the first subscription of a process: a child of a
+    # process that never started a subscription starts its own, so its subscription is notified in the child.  The
+    # scenario runs in another process, which has no subscription; its output, and the child's, is read until both
+    # have exited
+    childNotificationTest() {
+        checkQueue();
+        TmpFile script(NOTHING, ".q");
+        script.file.write("%modern\n%requires oracle\n"
+            "class S inherits Oracle::AQQueue {\n"
+            "    private { Queue r; }\n"
+            "    constructor(string q, string t, string c, Queue r) : Oracle::AQQueue(q, t, c) { self.r = r; }\n"
+            "    nothing onAsyncMessage() {\n"
+            "        {\n"
+            "            on_success commit();\n"
+            "            on_error rollback();\n"
+            "            while (getMessage(0)) {\n"
+            "            }\n"
+            "        }\n"
+            "        r.push(\"message\");\n"
+            "    }\n"
+            "}\n"
+            # the parent uses the database without a subscription
+            "Datasource ds(" + sprintf("%y", connstr) + ");\n"
+            "ds.open();\n"
+            "flush();\n"
+            "if (!fork()) {\n"
+            "    Queue r();\n"
+            "    S q(" + sprintf("%y, %y, %y", QueueName, TypeName, connstr) + ", r);\n"
+            "    q.startSubscription();\n"
+            "    Datasource d(" + sprintf("%y", connstr) + ");\n"
+            "    d.exec(" + sprintf("%y", PostSql) + ");\n"
+            "    d.commit();\n"
+            "    printf(\"child: %s\\n\", r.get(" + CallbackTimeout.durationSeconds() + "s));\n"
+            "    q.stopSubscription();\n"
+            "} else {\n"
+            "    printf(\"parent: done\\n\");\n"
+            "}\n");
+        script.file.close();
+        string output = backquote(sprintf("%s --enable-debug %s 2>&1", shellQuote(QORE_ARGV[0]),
+            shellQuote(script.path)));
+        assertRegex("child: message", output);
+        assertRegex("parent: done", output);
+    }
+
+    # another thread holds each process-wide lock of the module while fork() is called: fork() waits for it, and in
+    # the child the lock is free (the child takes it and releases it, as the prepare and parent handlers do)
+    forkHandlersTest() {
+        checkQueue();
+        if (!Option::HAVE_LIBRARY_DEBUGGING) {
+            testSkip("the test needs a debug build of the library");
+        }
+        foreach string name in ("oracle_aq_callback_thread", "oracle_aq_subscriptions",
+                "oracle_aq_lost_subscriptions") {
+            hash<auto> r = call_function("dbg_fork_while_handler_held", name);
+            assertTrue(r.waited, name + ": fork() waited for the thread holding the lock");
+            assertEq(0, r.status, name + ": the child took the lock");
+        }
+    }
+
+    #! runs the code in a child process created with fork() and returns its result
+    /** The child writes the string that the code returns, or the code of the exception that it raises, to a pipe and
+        exits with exit() while it holds the write end of the pipe open, so the parent reads the result until the child
+        has exited.
+    */
+    private string runChild(code child) {
+        # an anonymous pipe needs no file, and the parent cannot block in the open of a named pipe that a child
+        # ending early never opens
+        hash<PipeInfo> pipe = File::getPipe();
+        # the child must not write the parent's buffered output again when it exits
+        flush();
+        int pid = fork();
+        if (!pid) {
+            # the child holds the write end until it has exited: if it ends before it has written its result, the
+            # parent reads to the end of what it wrote
+            pipe.read.close();
+            string result;
+            try {
+                result = child();
+            } catch (hash<ExceptionInfo> ex) {
+                result = sprintf("exception: %s: %s", ex.err, ex.desc);
+            }
+            pipe.write.write(result);
+            Qore::exit(0);
+        }
+        pipe.write.close();
+        assertGt(0, pid);
+        string result;
+        while (*binary data = pipe.read.readBinary(4096)) {
+            result += data.toString();
+        }
+        return result;
+    }
+
+    private static string shellQuote(string arg) {
+        return "'" + replace(arg, "'", "'\\''") + "'";
+    }
+}

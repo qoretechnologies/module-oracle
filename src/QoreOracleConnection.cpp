@@ -330,6 +330,11 @@ QoreOracleConnection::QoreOracleConnection(Datasource &n_ds, ExceptionSink *xsin
 }
 
 QoreOracleConnection::~QoreOracleConnection() {
+   if (isForkedChild()) {
+      // the session belongs to the parent: its handles are abandoned, and their memory is released with the process
+      env.abandon();
+      return;
+   }
    //printd(5, "QoreOracleConnection::~QoreOracleConnection() this=%p ds=%p envhp=%p svchp=%p ocilib envhp=%p\n", this, &ds, *env, svchp, ocilib.env);
    //printd(5, "QoreOracleConnection::~QoreOracleConnection(): connection to %s closed.\n", ds.getDBName());
    //printd(5, "QoreOracleConnection::~QoreOracleConnection(): svchp, errhp: %p, %p\n", svchp, errhp);

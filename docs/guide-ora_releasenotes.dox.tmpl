@@ -21,6 +21,11 @@
       subscription restarted on the thread that had just failed to restore the connection was not)
     - fixed \c Datasource::getClientVersion() and the \c OCILobWrite2() LOB
       path being compiled out of builds with \c configure on Alpine Linux
+    - fixed a child process created with \c fork() ending its parent's sessions and subscriptions, or waiting
+      forever, when it closed connections or destroyed AQ queues and statements of its parent or ended its script;
+      the child now abandons the parent's sessions, and the methods of an AQ queue of the parent raise
+      \c AQQUEUE-FORK-ERROR in the child, as does starting a subscription in a child whose parent started one, which
+      the Oracle client would never notify (see @ref fork_issues)
     - preserved Qore cancellation after server attachment and session creation, and registered session-login cancellation
     - fixed cancellation callbacks outliving their helper and accessing freed OCI handles
     - documented Oracle Net connection timeouts and raised the build language requirement to C++17

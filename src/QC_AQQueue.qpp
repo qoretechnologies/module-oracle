@@ -26,9 +26,11 @@
 
 #include "AQQueuePriv.h"
 
-#include <deque>
+#include <cstring>
+#include <list>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <set>
 #include <string>
 #include <vector>
@@ -76,6 +78,26 @@ public:
    DLLLOCAL unsigned getCount() const {
       return count;
    }
+
+   //! the fork handlers of the lock (see aq_register_fork_handlers())
+   /** The lock's holders reserve and release a thread ID, which takes the library's thread list lock.
+   */
+   DLLLOCAL static void forkPrepare(void* arg) {
+      qore_fork_prepare_thread_lock(&static_cast<AQCallbackThreadManager*>(arg)->l);
+   }
+
+   DLLLOCAL static void forkParent(void* arg) {
+      qore_fork_parent_thread_lock(&static_cast<AQCallbackThreadManager*>(arg)->l);
+   }
+
+   //! in the child, the subscriptions of the parent are abandoned (see AQQueuePriv::isForkedChild()), and the
+   //! reserved thread ID belongs to the parent's notification thread, which does not exist in the child
+   DLLLOCAL static void forkChild(void* arg) {
+      AQCallbackThreadManager* m = static_cast<AQCallbackThreadManager*>(arg);
+      m->count = 0;
+      m->tid = 0;
+      qore_fork_child_thread_lock(&m->l);
+   }
 };
 
 AQCallbackThreadManager aqCallbackThreadManager;
@@ -93,6 +115,10 @@ protected:
    QoreThreadLock l;
    QoreCondition c;
    t_list objects;
+   //! in a child process created with fork(): the subscriptions of the parent, which are not watched in the child
+   /** They belong to the parent (see AQQueuePriv::isForkedChild()); their objects are not referenced by the set
+   */
+   t_list inherited;
    //! the watchdog thread, if started and not joined
    pthread_t checkThread;
    //! true if checkThread must be joined
@@ -114,6 +140,9 @@ public:
    }
 
    DLLLOCAL int add(AQQueuePriv* o, ExceptionSink* xsink) {
+      // the stack size is read before the lock is taken: reading it takes a lock of the library, which fork() takes
+      // before the lock of the manager (see aq_register_fork_handlers())
+      size_t stack_size = q_thread_get_stack_size();
       AutoLocker al(l);
       objects.insert(o);
       // a watchdog thread that is about to leave its loop because the last subscription was removed keeps running
@@ -127,7 +156,7 @@ public:
       // thread rather than the system default, which is only 128 KiB with musl
       pthread_attr_t attr;
       pthread_attr_init(&attr);
-      pthread_attr_setstacksize(&attr, q_thread_get_stack_size());
+      pthread_attr_setstacksize(&attr, stack_size);
       int rc = pthread_create(&checkThread, &attr, &AQSubscriptionManager::thread_helper, this);
       pthread_attr_destroy(&attr);
       if (rc) {
@@ -206,6 +235,37 @@ public:
        return 0;
    }
 
+   //! the fork handlers of the lock (see aq_register_fork_handlers())
+   /** The lock's holders change the set and start the watchdog thread, holding no other lock.
+   */
+   DLLLOCAL static void forkPrepare(void* arg) {
+      qore_fork_prepare_thread_lock(&static_cast<AQSubscriptionManager*>(arg)->l);
+   }
+
+   DLLLOCAL static void forkParent(void* arg) {
+      qore_fork_parent_thread_lock(&static_cast<AQSubscriptionManager*>(arg)->l);
+   }
+
+   //! in the child, the watchdog thread does not exist, and the subscriptions of the parent are not watched
+   /** Nothing is allocated or freed (see QoreForkHandler.h): the nodes of the set move to the inherited set.
+
+       The condition is initialized again, as the watchdog thread, which normally waits on it, does not exist in the
+       child: signaling a condition whose waiters are gone can wait for them forever (glibc).  Its old state is
+       neither destroyed, as pthread_cond_destroy() would wait for the waiters, nor initialized again in place, as an
+       implementation may refuse to initialize a condition in use: the storage is cleared first (no resources are
+       held by a condition's state).
+   */
+   DLLLOCAL static void forkChild(void* arg) {
+      AQSubscriptionManager* m = static_cast<AQSubscriptionManager*>(arg);
+      m->inherited.merge(m->objects);
+      m->started = false;
+      m->running = false;
+      m->quit = false;
+      memset(static_cast<void*>(&m->c), 0, sizeof(m->c));
+      new (&m->c) QoreCondition();
+      qore_fork_child_thread_lock(&m->l);
+   }
+
 private:
    //! joins a watchdog thread that has left its loop; the lock must be held
    DLLLOCAL void joinUnlocked() {
@@ -242,6 +302,9 @@ public:
    /** @return 0 if the notification was queued, -1 if it could not be (then the caller must make it itself)
    */
    DLLLOCAL int post(AQQueuePriv* priv) {
+      // the stack size is read before the lock is taken: reading it takes a lock of the library, which fork() takes
+      // before the lock of the notifier (see aq_register_fork_handlers())
+      size_t stack_size = q_thread_get_stack_size();
       AutoLocker al(l);
       try {
          queue.push_back(priv);
@@ -256,7 +319,7 @@ public:
       // the thread runs Qore code and Oracle client calls, so it gets the stack size of a Qore thread
       pthread_attr_t attr;
       pthread_attr_init(&attr);
-      pthread_attr_setstacksize(&attr, q_thread_get_stack_size());
+      pthread_attr_setstacksize(&attr, stack_size);
       int rc = pthread_create(&thread, &attr, &AQLostSubscriptionNotifier::thread_helper, this);
       pthread_attr_destroy(&attr);
       if (rc) {
@@ -282,7 +345,11 @@ public:
 private:
    QoreThreadLock l;
    //! the private data of the lost subscriptions (referenced)
-   std::deque<AQQueuePriv*> queue;
+   std::list<AQQueuePriv*> queue;
+   //! in a child process created with fork(): the losses that the parent reports
+   /** Their references belong to the parent; they are never released in the child
+   */
+   std::list<AQQueuePriv*> inherited;
    //! the thread, if started and not joined
    pthread_t thread;
    //! true if the thread must be joined
@@ -317,15 +384,90 @@ private:
       static_cast<AQLostSubscriptionNotifier*>(context)->run();
       return nullptr;
    }
+
+public:
+   //! the fork handlers of the lock (see aq_register_fork_handlers())
+   /** The lock's holders change the queue and start the notifier thread, holding no other lock.
+   */
+   DLLLOCAL static void forkPrepare(void* arg) {
+      qore_fork_prepare_thread_lock(&static_cast<AQLostSubscriptionNotifier*>(arg)->l);
+   }
+
+   DLLLOCAL static void forkParent(void* arg) {
+      qore_fork_parent_thread_lock(&static_cast<AQLostSubscriptionNotifier*>(arg)->l);
+   }
+
+   //! in the child, the notifier thread does not exist, and the parent reports the queued losses
+   /** Nothing is allocated or freed (see QoreForkHandler.h): the queued entries move to the inherited list.
+   */
+   DLLLOCAL static void forkChild(void* arg) {
+      AQLostSubscriptionNotifier* n = static_cast<AQLostSubscriptionNotifier*>(arg);
+      n->inherited.splice(n->inherited.end(), n->queue);
+      n->started = false;
+      n->running = false;
+      qore_fork_child_thread_lock(&n->l);
+   }
 };
 
 AQLostSubscriptionNotifier aqLostSubscriptionNotifier;
+
+// the process whose Oracle client started its notification listener, or 0 if no subscription was started: the first
+// subscription of a process starts the Oracle client's notification listener, which serves the process from then
+// on; a child process created with fork() inherits the client's notification state but not the listener's thread, so
+// a subscription that it started would not be notified, and stopping it would fail with ORA-24950 (see
+// AQQueuePriv::startSubscription())
+static std::atomic<pid_t> aq_notification_pid{0};
+
+// the fork handlers of the module's process-wide locks (see QoreForkHandler.h)
+static QoreForkHandlerRegistration* aq_callback_thread_fork_reg = nullptr;
+static QoreForkHandlerRegistration* aq_subscription_fork_reg = nullptr;
+static QoreForkHandlerRegistration* aq_lost_subscription_fork_reg = nullptr;
+
+DLLLOCAL void aq_unregister_fork_handlers();
+void aq_unregister_fork_handlers() {
+   qore_unregister_fork_handler(aq_lost_subscription_fork_reg);
+   aq_lost_subscription_fork_reg = nullptr;
+   qore_unregister_fork_handler(aq_subscription_fork_reg);
+   aq_subscription_fork_reg = nullptr;
+   qore_unregister_fork_handler(aq_callback_thread_fork_reg);
+   aq_callback_thread_fork_reg = nullptr;
+}
+
+// registers the fork handlers of the module's process-wide locks; called in the module's initialization function
+/** A child process created with fork() runs only the forking thread: a lock that another thread held then would
+    stay held in the child, and the watchdog and notifier threads exist only in the parent.  The locks are acquired
+    before fork(), so that the managers' data are consistent in the child, which resets their thread state.
+
+    The holders of the subscription and notifier locks take no lock of the library (they read the thread stack size
+    before they take their lock), so they are leaves; the holders of the callback thread lock reserve and release
+    thread IDs, which takes the library's thread list lock.
+
+    @return 0 if the handlers were registered, -1 if there was no memory for a registration
+*/
+DLLLOCAL int aq_register_fork_handlers();
+int aq_register_fork_handlers() {
+   aq_callback_thread_fork_reg = qore_register_fork_handler(QFR_MODULE_CANCELLABLE, "oracle_aq_callback_thread",
+      AQCallbackThreadManager::forkPrepare, AQCallbackThreadManager::forkParent, AQCallbackThreadManager::forkChild,
+      &aqCallbackThreadManager);
+   aq_subscription_fork_reg = qore_register_fork_handler(QFR_MODULE_LEAF, "oracle_aq_subscriptions",
+      AQSubscriptionManager::forkPrepare, AQSubscriptionManager::forkParent, AQSubscriptionManager::forkChild,
+      &aqSubscriptionManager);
+   aq_lost_subscription_fork_reg = qore_register_fork_handler(QFR_MODULE_LEAF, "oracle_aq_lost_subscriptions",
+      AQLostSubscriptionNotifier::forkPrepare, AQLostSubscriptionNotifier::forkParent,
+      AQLostSubscriptionNotifier::forkChild, &aqLostSubscriptionNotifier);
+   if (!aq_callback_thread_fork_reg || !aq_subscription_fork_reg || !aq_lost_subscription_fork_reg) {
+      aq_unregister_fork_handlers();
+      return -1;
+   }
+   return 0;
+}
 
 DLLLOCAL void aq_module_delete();
 void aq_module_delete() {
    // no subscription is reported lost once the watchdog is stopped
    aqSubscriptionManager.stop();
    aqLostSubscriptionNotifier.stop();
+   aq_unregister_fork_handlers();
 }
 
 void on_async_message(OCI_Dequeue* deq) {
@@ -389,8 +531,44 @@ AQQueuePriv::~AQQueuePriv() {
 
 void AQQueuePriv::destructor(ExceptionSink* xsink) {
    //printd(5, "AQQueuePriv::destructor() this: %p\n", this);
+   if (isForkedChild()) {
+      // the lock is not taken: the parent's watchdog thread can have held it when the process was created
+      abandon();
+      return;
+   }
    AutoLocker al(l);
    destructorUnlocked(xsink);
+}
+
+void AQQueuePriv::abandon() {
+   if (!valid) {
+      return;
+   }
+   // Nothing of the session is released: stopping the subscription would unregister the parent's subscription, and
+   // closing the connection would end the parent's session (the child shares its network connection) or wait for a
+   // reply that the parent can read; freeing the Oracle client's handles can need a lock that a thread of the parent
+   // held when the process was created.  The memory is released with the process.
+   m_tname->deref();
+   m_qname->deref();
+   m_enqueue = nullptr;
+   m_dequeue = nullptr;
+   m_typeInfo = nullptr;
+   m_conn = nullptr;
+   m_ds = nullptr;
+   m_tname = nullptr;
+   m_qname = nullptr;
+   m_hasSubscription = false;
+   valid = false;
+}
+
+int AQQueuePriv::checkProcess(const char* m, ExceptionSink* xsink) const {
+   if (isForkedChild()) {
+      xsink->raiseException("AQQUEUE-FORK-ERROR", "the AQQueue::%s() method cannot be called in a child process "
+         "created with fork() after the object was created: the queue's session and subscription belong to process "
+         "%d", m, static_cast<int>(m_pid));
+      return -1;
+   }
+   return 0;
 }
 
 void AQQueuePriv::destructorUnlocked(ExceptionSink *xsink) {
@@ -557,6 +735,9 @@ int AQQueuePriv::checkValidUnlocked(const char* m, ExceptionSink* xsink) {
 }
 
 bool AQQueuePriv::post(AQMessagePriv *message, ExceptionSink *xsink) {
+   // checked before the lock, which the parent's watchdog thread can have held when the process was created
+   if (checkProcess("post", xsink))
+      return false;
    AutoLocker al(l);
    if (checkValidUnlocked("post", xsink))
       return false;
@@ -635,6 +816,9 @@ bool AQQueuePriv::post(AQMessagePriv *message, ExceptionSink *xsink) {
 }
 
 bool AQQueuePriv::post(const QoreHashNode *h, ExceptionSink *xsink) {
+   // checked before the lock, which the parent's watchdog thread can have held when the process was created
+   if (checkProcess("post", xsink))
+      return false;
    AutoLocker al(l);
    if (checkValidUnlocked("post", xsink))
       return false;
@@ -678,6 +862,9 @@ bool AQQueuePriv::post(const QoreHashNode *h, ExceptionSink *xsink) {
 }
 
 bool AQQueuePriv::commit(ExceptionSink *xsink) {
+   // checked before the lock, which the parent's watchdog thread can have held when the process was created
+   if (checkProcess("commit", xsink))
+      return false;
    AutoLocker al(l);
    if (checkValidUnlocked("commit", xsink))
       return false;
@@ -686,6 +873,9 @@ bool AQQueuePriv::commit(ExceptionSink *xsink) {
 }
 
 bool AQQueuePriv::rollback(ExceptionSink *xsink) {
+   // checked before the lock, which the parent's watchdog thread can have held when the process was created
+   if (checkProcess("rollback", xsink))
+      return false;
    AutoLocker al(l);
    if (checkValidUnlocked("rollback", xsink))
       return false;
@@ -694,6 +884,9 @@ bool AQQueuePriv::rollback(ExceptionSink *xsink) {
 }
 
 QoreObject* AQQueuePriv::getMessage(QoreObject* self, int timeout, ExceptionSink *xsink) {
+   // checked before the lock, which the parent's watchdog thread can have held when the process was created
+   if (checkProcess("getMessage", xsink))
+      return 0;
    AutoLocker al(l);
    if (checkValidUnlocked("getMessage", xsink))
       return 0;
@@ -859,6 +1052,9 @@ void AQQueuePriv::notifySubscriptionLost() {
 }
 
 void AQQueuePriv::startSubscription(QoreObject* self, unsigned port, int64 timeout, ExceptionSink *xsink) {
+   // checked before the lock, which the parent's watchdog thread can have held when the process was created
+   if (checkProcess("startSubscription", xsink))
+      return;
    AutoLocker al(l);
    if (checkValidUnlocked("startSubscription", xsink))
       return;
@@ -874,6 +1070,16 @@ void AQQueuePriv::startSubscription(QoreObject* self, unsigned port, int64 timeo
    }
 
    //printd(5, "AQQueuePriv::startSubscription() this: %p dequeue: %p self: %p port: %zd timeout: %zd\n", this, m_dequeue, self, port, timeout);
+
+   {
+      pid_t listener_pid = aq_notification_pid.load(std::memory_order_relaxed);
+      if (listener_pid && listener_pid != getpid()) {
+         xsink->raiseException("AQQUEUE-FORK-ERROR", "AQQueue::startSubscription() cannot be called in a child "
+            "process created with fork() after process %d started a subscription: the Oracle client's notification "
+            "listener remains in that process", static_cast<int>(listener_pid));
+         return;
+      }
+   }
 
    // the callbacks of the subscription run under the sandbox of the code that starts it; it is set before the
    // subscription is registered, so that it is there for the first notification
@@ -891,6 +1097,12 @@ void AQQueuePriv::startSubscription(QoreObject* self, unsigned port, int64 timeo
       if (!*xsink)
          xsink->raiseException("AQQUEUE-ERROR", "unknown error starting the subscription");
       return;
+   }
+
+   // the Oracle client's notification listener now serves this process
+   {
+      pid_t none = 0;
+      aq_notification_pid.compare_exchange_strong(none, getpid(), std::memory_order_relaxed);
    }
 
    m_hasSubscription = true;
@@ -929,6 +1141,9 @@ int AQQueuePriv::stopSubscriptionUnlocked(ExceptionSink *xsink, bool release_cal
 }
 
 int AQQueuePriv::stopSubscription(ExceptionSink *xsink) {
+   // checked before the lock, which the parent's watchdog thread can have held when the process was created
+   if (checkProcess("stopSubscription", xsink))
+      return -1;
    AutoLocker al(l);
    if (checkValidUnlocked("stopSubscription", xsink))
       return false;
@@ -1040,6 +1255,11 @@ static void aqqueue_constructor_hash(const QoreStringNode* queueName, const Qore
  * subscription.  These threads serve the subscriptions of all objects; each callback, and each
  * reconnection made for a subscription, runs under the sandbox (\c Qore::SandboxManager) of the code that called
  * @ref AQQueue::startSubscription(), so it can never do more than that code.
+ *
+ * An AQQueue object cannot be used in a child process created with \c fork() after it was created: its session and
+ * subscription belong to the parent, and every method raises \c AQQUEUE-FORK-ERROR in the child; when the child
+ * destroys the object, the session and the subscription are abandoned without changing the parent's (see
+ * @ref fork_issues).
  */
 qclass AQQueue [dom=DATABASE; arg=AQQueuePriv* priv; ns=Qore::Oracle];
 
@@ -1099,6 +1319,9 @@ AQQueue::copy() {
 
 //! Post the AQMessage into the queue.
 /** @param msg a AQMessage instance
+ *
+ * @throw AQQUEUE-FORK-ERROR the object was created by another process (this is a child process created with
+ * \c fork())
  */
 nothing AQQueue::post(AQMessage[AQMessagePriv] msg) {
     priv->post(*msg, xsink);
@@ -1109,6 +1332,9 @@ nothing AQQueue::post(AQMessage[AQMessagePriv] msg) {
  *
  * The hash/object will use default message properties. Use post() with an
  * AQMessage instance if you need to modify the message defaults.
+ *
+ * @throw AQQUEUE-FORK-ERROR the object was created by another process (this is a child process created with
+ * \c fork())
  */
 nothing AQQueue::post(hash msg) {
    priv->post(msg, xsink);
@@ -1118,6 +1344,9 @@ nothing AQQueue::post(hash msg) {
 /** @param timeout the timeout in seconds; 0 = no timeout
 
     @retval AQMessage or NOTHING if no message was available in the timeout period
+
+    @throw AQQUEUE-FORK-ERROR the object was created by another process (this is a child process created with
+    \c fork())
  */
 *AQMessage AQQueue::getMessage(softint timeout = 0) {
    return priv->getMessage(self, timeout, xsink);
@@ -1131,6 +1360,10 @@ nothing AQQueue::post(hash msg) {
     @param timeout an optional timeout value in seconds; any positive value in seconds is valid. The value 0 is accepted and means that it does not wait for messages and returns immediately if no messages are available.  The value -1 is accepted and means it waits for ever (until a message is available in the queue)
 
     @throw AQQUEUE-ERROR port or timeout value invalid; subscription already active for this object
+    @throw AQQUEUE-FORK-ERROR this is a child process created with \c fork() after its parent or an ancestor started
+    a subscription (see @ref fork_issues)
+    @throw AQQUEUE-FORK-ERROR the object was created by another process (this is a child process created with
+    \c fork())
  */
 nothing AQQueue::startSubscription(int port = 0, int timeout = 0) {
    if (port < 0) {
@@ -1150,6 +1383,8 @@ nothing AQQueue::startSubscription(int port = 0, int timeout = 0) {
 /** If no subscription is active, no action is taken
 
     @throw AQQUEUE-ERROR oracle error stopping the subscription
+    @throw AQQUEUE-FORK-ERROR the object was created by another process (this is a child process created with
+    \c fork())
  */
 nothing AQQueue::stopSubscription() {
    priv->stopSubscription(xsink);
@@ -1157,6 +1392,9 @@ nothing AQQueue::stopSubscription() {
 
 //! Commit the transaction.
 /** Confirm all posted or fetched messages.
+
+    @throw AQQUEUE-FORK-ERROR the object was created by another process (this is a child process created with
+    \c fork())
  */
 bool AQQueue::commit() {
     return priv->commit(xsink);
@@ -1164,6 +1402,9 @@ bool AQQueue::commit() {
 
 //! Rollback the transaction.
 /** Rollback all posted or fetched messages.
+
+    @throw AQQUEUE-FORK-ERROR the object was created by another process (this is a child process created with
+    \c fork())
  */
 bool AQQueue::rollback() {
     return priv->rollback(xsink);

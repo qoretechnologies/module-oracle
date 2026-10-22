@@ -78,6 +78,11 @@ struct QoreOracleSimpleStatement {
         return stmthp;
     }
 
+    //! Returns true in a child process created with fork() after the statement's connection was created
+    DLLLOCAL bool isForkedChild() const {
+        return conn.isForkedChild();
+    }
+
     DLLLOCAL int prepare(const char* sql, unsigned len, ExceptionSink* xsink) {
         return conn.checkerr(OCIStmtPrepare(stmthp, conn.errhp, (text*)sql, len, OCI_NTV_SYNTAX, OCI_DEFAULT),
             "QoreOracleSimpleStatement::prepare()", xsink);
