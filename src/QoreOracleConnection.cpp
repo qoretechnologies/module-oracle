@@ -190,6 +190,9 @@ QoreOracleConnection::QoreOracleConnection(Datasource &n_ds, ExceptionSink *xsin
     number_support(OPT_NUM_DEFAULT) {
    // locking is done on the level above with the Datasource class
 
+   // the connection uses the Oracle client (see oracle_client_init())
+   oracle_client_init();
+
    int port = ds.getPort();
 
    if (port)

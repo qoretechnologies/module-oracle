@@ -31,6 +31,7 @@
 #include "oracle-module.h"
 #include "oracleobject.h"
 
+#include <atomic>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -48,6 +49,30 @@ QoreClass* initAQMessageClass(QoreNamespace& ns);
 QoreClass* initAQQueueClass(QoreNamespace& ns);
 DLLLOCAL void aq_module_delete();
 DLLLOCAL int aq_register_fork_handlers();
+
+#ifdef _QORE_HAS_FORK_CHILD_QUICK_EXIT
+//! true once the Oracle client has been used in the process (or in the parent of a child created with fork())
+static std::atomic<bool> oracle_client_used{false};
+
+//! the registration of oracle_fork_child()
+static QoreForkHandlerRegistration* oracle_fork_reg = nullptr;
+
+// runs in the child of fork(): once the Oracle client has been used, its exit-time code (the atexit() handler of
+// libnnz, which frees the client's OpenSSL state) takes locks that a thread of the client in the parent can hold when
+// the process is copied, so such a child ends without running exit-time handlers (see QoreForkHandler.h).  Takes no
+// lock and allocates nothing.
+static void oracle_fork_child(void*) {
+   if (oracle_client_used.load(std::memory_order_relaxed)) {
+      qore_fork_child_exit_quickly();
+   }
+}
+#endif
+
+void oracle_client_init() {
+#ifdef _QORE_HAS_FORK_CHILD_QUICK_EXIT
+   oracle_client_used.store(true, std::memory_order_relaxed);
+#endif
+}
 
 static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink);
 static void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink);
@@ -455,6 +480,15 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
       xsink.outOfMemory();
       return;
    }
+#ifdef _QORE_HAS_FORK_CHILD_QUICK_EXIT
+   oracle_fork_reg = qore_register_fork_handler(QFR_MODULE_LEAF, "oracle_exit", nullptr, nullptr, oracle_fork_child,
+      nullptr);
+   if (!oracle_fork_reg) {
+      aq_module_delete();
+      xsink.outOfMemory();
+      return;
+   }
+#endif
 
    hashdeclOracleSessionInfo = init_hashdecl_OracleSessionInfo(OraNS);
    init_oracle_functions(OraNS);
@@ -534,6 +568,10 @@ static void oracle_module_delete() {
    QORE_TRACE("oracle_module_delete()");
    // stop the AQ subscription watchdog thread
    aq_module_delete();
+#ifdef _QORE_HAS_FORK_CHILD_QUICK_EXIT
+   qore_unregister_fork_handler(oracle_fork_reg);
+   oracle_fork_reg = nullptr;
+#endif
    // free the session information of the thread deleting the module; the thread cleanup function is
    // deliberately not removed with tclist.pop(): that removes the most recently pushed function, which
    // can belong to another module, and binary modules are never unloaded, so the function stays valid

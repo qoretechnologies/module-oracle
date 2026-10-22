@@ -171,6 +171,9 @@ class QorePreparedStatement;
 class QoreOracleBulkLoadState;
 #endif
 
+//! Records that the Oracle client is used in this process (see oracle.cpp)
+DLLLOCAL void oracle_client_init();
+
 class QoreOracleConnection {
 public:
     QoreOracleEnvironment env;

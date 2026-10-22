@@ -26,6 +26,8 @@
       the child now abandons the parent's sessions, and the methods of an AQ queue of the parent raise
       \c AQQUEUE-FORK-ERROR in the child, as does starting a subscription in a child whose parent started one, which
       the Oracle client would never notify (see @ref fork_issues)
+    - a child process created with \c fork() after the Oracle client was used ends without running exit-time handlers,
+      as the client's exit-time code can wait forever in such a child (see @ref fork_issues)
     - preserved Qore cancellation after server attachment and session creation, and registered session-login cancellation
     - fixed cancellation callbacks outliving their helper and accessing freed OCI handles
     - documented Oracle Net connection timeouts and raised the build language requirement to C++17

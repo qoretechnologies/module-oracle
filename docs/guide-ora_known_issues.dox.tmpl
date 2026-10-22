@@ -100,6 +100,11 @@ kpcest_err_handler: Max errors exceeded..Closing connection
     - other uses of the parent's sessions in the child (ex: a query with a \c Datasource of the parent) are not
       detected and must be avoided: they share the session with the parent
 
+    Such a child ends without running the exit-time handlers of the libraries in the process (with %Qore 3.0 or
+    later, see \c qore_fork_child_exit_quickly()): the exit-time code of the Oracle client frees the state of the
+    OpenSSL library that the client embeds under locks that a thread of the client in the parent can have held when
+    the process was created.
+
     The child can open its own connections.  It can start its own AQ subscriptions only if no subscription was
     started in its parent (or in an ancestor) before \c fork(): the first subscription of a process starts the Oracle
     client's notification listener, which then remains in that process, and a subscription started in the child
