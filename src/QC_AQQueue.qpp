@@ -35,6 +35,33 @@
 #include <string>
 #include <vector>
 
+// joins a thread when it goes out of scope; declared before the lock that is held when the thread is chosen, so that the
+// thread is joined after that lock is released
+/** The threads of the module deregister from the library after they have released the lock of their manager, which
+    takes the library's thread list lock; fork() takes that lock before the managers' locks (see
+    aq_register_fork_handlers()), so a thread that held a manager's lock while it joined such a thread could wait for
+    the forking thread, which waits for the manager's lock.
+*/
+class AQThreadJoiner {
+public:
+   DLLLOCAL ~AQThreadJoiner() {
+      if (set) {
+         pthread_join(thread, nullptr);
+      }
+   }
+
+   //! the thread to join
+   DLLLOCAL void join(pthread_t t) {
+      assert(!set);
+      thread = t;
+      set = true;
+   }
+
+private:
+   pthread_t thread;
+   bool set = false;
+};
+
 // handle external (oracle) threads for qore/aq
 class AQCallbackThreadManager {
 protected:
@@ -143,6 +170,7 @@ public:
       // the stack size is read before the lock is taken: reading it takes a lock of the library, which fork() takes
       // before the lock of the manager (see aq_register_fork_handlers())
       size_t stack_size = q_thread_get_stack_size();
+      AQThreadJoiner finished;
       AutoLocker al(l);
       objects.insert(o);
       // a watchdog thread that is about to leave its loop because the last subscription was removed keeps running
@@ -150,8 +178,8 @@ public:
       if (running) {
          return 0;
       }
-      // the previous watchdog thread has left its loop: reap it before starting a new one
-      joinUnlocked();
+      // the previous watchdog thread has left its loop: it is joined once the lock is released
+      reapUnlocked(finished);
       // the thread runs Qore code (onSubscriptionLost()) and Oracle client calls, so it gets the stack size of a Qore
       // thread rather than the system default, which is only 128 KiB with musl
       pthread_attr_t attr;
@@ -187,15 +215,15 @@ public:
 
    //! Stops the watchdog thread and waits for it to end; called when the module is deleted
    DLLLOCAL void stop() {
+      // the watchdog thread needs the lock to leave its loop: it is joined once the lock is released
+      AQThreadJoiner finished;
       AutoLocker al(l);
       quit = true;
       c.signal();
       if (started) {
-         // the watchdog thread needs the lock to leave its loop
-         AutoUnlocker aul(l);
-         pthread_join(checkThread, nullptr);
+         finished.join(checkThread);
+         started = false;
       }
-      started = false;
    }
 
    DLLLOCAL void run() {
@@ -267,12 +295,12 @@ public:
    }
 
 private:
-   //! joins a watchdog thread that has left its loop; the lock must be held
-   DLLLOCAL void joinUnlocked() {
+   //! hands a watchdog thread that has left its loop to the joiner, which joins it without the lock; the lock must be
+   //! held
+   DLLLOCAL void reapUnlocked(AQThreadJoiner& joiner) {
       assert(!running);
       if (started) {
-         // the thread has left its loop and released the lock, so it ends without it
-         pthread_join(checkThread, nullptr);
+         joiner.join(checkThread);
          started = false;
       }
    }
@@ -305,6 +333,7 @@ public:
       // the stack size is read before the lock is taken: reading it takes a lock of the library, which fork() takes
       // before the lock of the notifier (see aq_register_fork_handlers())
       size_t stack_size = q_thread_get_stack_size();
+      AQThreadJoiner finished;
       AutoLocker al(l);
       try {
          queue.push_back(priv);
@@ -314,8 +343,8 @@ public:
       if (running) {
          return 0;
       }
-      // the previous thread has left its loop: reap it before starting a new one
-      joinUnlocked();
+      // the previous thread has left its loop: it is joined once the lock is released
+      reapUnlocked(finished);
       // the thread runs Qore code and Oracle client calls, so it gets the stack size of a Qore thread
       pthread_attr_t attr;
       pthread_attr_init(&attr);
@@ -333,13 +362,13 @@ public:
 
    //! Waits for the queued notifications to be made and joins the thread; called when the module is deleted
    DLLLOCAL void stop() {
+      // the thread needs the lock to leave its loop: it is joined once the lock is released
+      AQThreadJoiner finished;
       AutoLocker al(l);
       if (started) {
-         // the thread needs the lock to leave its loop
-         AutoUnlocker aul(l);
-         pthread_join(thread, nullptr);
+         finished.join(thread);
+         started = false;
       }
-      started = false;
    }
 
 private:
@@ -370,12 +399,11 @@ private:
       running = false;
    }
 
-   //! joins a thread that has left its loop; the lock must be held
-   DLLLOCAL void joinUnlocked() {
+   //! hands a thread that has left its loop to the joiner, which joins it without the lock; the lock must be held
+   DLLLOCAL void reapUnlocked(AQThreadJoiner& joiner) {
       assert(!running);
       if (started) {
-         // the thread has left its loop and released the lock, so it ends without it
-         pthread_join(thread, nullptr);
+         joiner.join(thread);
          started = false;
       }
    }
