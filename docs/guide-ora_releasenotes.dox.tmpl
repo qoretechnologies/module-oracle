@@ -19,6 +19,13 @@
     - @ref Qore::Oracle::AQQueue::onSubscriptionLost() "AQQueue::onSubscriptionLost()" is called on a separate
       thread, so a subscription that it restarts is registered with the server on every platform (on Alpine Linux, a
       subscription restarted on the thread that had just failed to restore the connection was not)
+    - fixed a deadlock of AQ subscriptions: @ref Qore::Oracle::AQQueue::onAsyncMessage() "AQQueue::onAsyncMessage()"
+      was called on the Oracle client's notification thread while the client held a lock that it also takes to start
+      a subscription, so a callback that waited for its queue (as in
+      @ref Qore::Oracle::AQQueue::getMessage() "AQQueue::getMessage()") while another thread using the queue started a
+      subscription waited forever; both callbacks are now called on a callback thread of the module, one at a time,
+      and no notification of a subscription is delivered once
+      @ref Qore::Oracle::AQQueue::stopSubscription() "AQQueue::stopSubscription()" has stopped it
     - fixed \c Datasource::getClientVersion() and the \c OCILobWrite2() LOB
       path being compiled out of builds with \c configure on Alpine Linux
     - fixed a child process created with \c fork() ending its parent's sessions and subscriptions, or waiting

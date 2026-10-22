@@ -62,7 +62,9 @@ private:
    bool set = false;
 };
 
-// handle external (oracle) threads for qore/aq
+// reserves the thread ID that the Oracle client's notification thread uses when it must make a callback itself, as it
+// does when the module's callback thread cannot be started (see AQQueuePriv::postAsyncMessage()); the ID is reserved
+// while subscriptions are active
 class AQCallbackThreadManager {
 protected:
    pthread_t ora_thread;
@@ -308,35 +310,61 @@ private:
 
 AQSubscriptionManager aqSubscriptionManager;
 
-// calls AQQueue::onSubscriptionLost() for the subscriptions that the watchdog cannot restore, on its own thread
-/** The watchdog reports a lost subscription right after it failed to ping its connection and to restore it, and
+// calls the AQQueue callbacks of every subscription, one at a time, on a thread of the module
+/** The Oracle client delivers a subscription's notification on its notification thread while that thread holds a
+    lock of the client's notification listener, which registering a subscription takes too (OCISubscriptionRegister()
+    -> kpceinit()), and the client's connection locks are taken under it by the client calls of the callback:
+    onAsyncMessage() typically calls getMessage(), which takes the queue's lock, while another thread can hold a
+    queue's lock as it starts a subscription in the Oracle client, so a callback made on the notification thread could
+    deadlock with it (the two threads take the two locks in the opposite order).  The notification thread
+    therefore only queues the notification here, and onAsyncMessage() is called on this thread, with no lock of the
+    Oracle client held.
+
+    The watchdog reports a lost subscription right after it failed to ping its connection and to restore it, and
     onSubscriptionLost() typically restarts the subscription; started there, on the thread whose Oracle client calls
     on the lost connection just failed, a subscription is not registered with the server by the Oracle Instant Client
-    on musl (Alpine) although OCISubscriptionRegister() succeeds, while it is registered from any other thread.  So the
-    callbacks run on this thread, outside the watchdog's OCI processing, on every platform; each runs under the sandbox
-    of the code that started the subscription (see AQQueuePriv::notifySubscriptionLost()).
+    on musl (Alpine) although OCISubscriptionRegister() succeeds, while it is registered from any other thread.  So
+    onSubscriptionLost() is called on this thread too, outside the watchdog's OCI processing, on every platform.
 
-    The thread runs while notifications are queued; a finished thread is joined when the next notification starts a
-    new one and when the module is deleted.
+    Each callback runs under the sandbox of the code that started the subscription (see
+    AQQueuePriv::deliverAsyncMessage() and AQQueuePriv::notifySubscriptionLost()).  The thread runs while callbacks
+    are queued; a finished thread is joined when the next callback starts a new one and when the module is deleted.
 */
-class AQLostSubscriptionNotifier {
+class AQCallbackDispatcher {
 public:
-   DLLLOCAL ~AQLostSubscriptionNotifier() {
+   //! the callbacks that the thread makes
+   enum class Kind {
+      //! AQQueue::onAsyncMessage(), for a notification of a subscription
+      AsyncMessage,
+      //! AQQueue::onSubscriptionLost(), for a subscription that the watchdog could not restore
+      SubscriptionLost,
+   };
+
+   DLLLOCAL ~AQCallbackDispatcher() {
       assert(queue.empty());
       assert(!running);
    }
 
-   //! Queues the notification for the given subscription; takes over the reference to the private data
-   /** @return 0 if the notification was queued, -1 if it could not be (then the caller must make it itself)
+   //! Queues a callback for the given queue
+   /** Takes over the reference to the private data and, for Kind::AsyncMessage, the weak reference to the object.
+       Can be called on a thread that %Qore did not start, as it calls no %Qore code.
+
+       @param kind the callback
+       @param priv the private data of the queue (referenced)
+       @param obj for Kind::AsyncMessage: the object of the queue (weakly referenced)
+       @param subscription for Kind::AsyncMessage: the subscription that the notification is for (see
+       AQQueuePriv::deliverAsyncMessage())
+
+       @return 0 if the callback was queued, -1 if it could not be (then the caller must make it itself)
    */
-   DLLLOCAL int post(AQQueuePriv* priv) {
+   DLLLOCAL int post(Kind kind, AQQueuePriv* priv, QoreObject* obj = nullptr, uint64_t subscription = 0) {
       // the stack size is read before the lock is taken: reading it takes a lock of the library, which fork() takes
-      // before the lock of the notifier (see aq_register_fork_handlers())
+      // before the lock of the dispatcher (see aq_register_fork_handlers())
       size_t stack_size = q_thread_get_stack_size();
       AQThreadJoiner finished;
       AutoLocker al(l);
       try {
-         queue.push_back(priv);
+         queue.push_back(Callback{kind, priv, obj, subscription});
       } catch (std::bad_alloc&) {
          return -1;
       }
@@ -349,7 +377,7 @@ public:
       pthread_attr_t attr;
       pthread_attr_init(&attr);
       pthread_attr_setstacksize(&attr, stack_size);
-      int rc = pthread_create(&thread, &attr, &AQLostSubscriptionNotifier::thread_helper, this);
+      int rc = pthread_create(&thread, &attr, &AQCallbackDispatcher::thread_helper, this);
       pthread_attr_destroy(&attr);
       if (rc) {
          queue.pop_back();
@@ -360,7 +388,7 @@ public:
       return 0;
    }
 
-   //! Waits for the queued notifications to be made and joins the thread; called when the module is deleted
+   //! Waits for the queued callbacks to be made and joins the thread; called when the module is deleted
    DLLLOCAL void stop() {
       // the thread needs the lock to leave its loop: it is joined once the lock is released
       AQThreadJoiner finished;
@@ -372,13 +400,24 @@ public:
    }
 
 private:
+   //! a queued callback
+   struct Callback {
+      Kind kind;
+      //! the private data of the queue (referenced)
+      AQQueuePriv* priv;
+      //! for Kind::AsyncMessage: the object of the queue (weakly referenced)
+      QoreObject* obj;
+      //! for Kind::AsyncMessage: the subscription that the notification is for
+      uint64_t subscription;
+   };
+
    QoreThreadLock l;
-   //! the private data of the lost subscriptions (referenced)
-   std::list<AQQueuePriv*> queue;
-   //! in a child process created with fork(): the losses that the parent reports
+   //! the queued callbacks
+   std::list<Callback> queue;
+   //! in a child process created with fork(): the callbacks that the parent makes
    /** Their references belong to the parent; they are never released in the child
    */
-   std::list<AQQueuePriv*> inherited;
+   std::list<Callback> inherited;
    //! the thread, if started and not joined
    pthread_t thread;
    //! true if the thread must be joined
@@ -390,11 +429,16 @@ private:
       QoreForeignThreadHelper qfth;
       AutoLocker al(l);
       while (!queue.empty()) {
-         AQQueuePriv* priv = queue.front();
+         Callback cb = queue.front();
          queue.pop_front();
          AutoUnlocker aul(l);
-         priv->notifySubscriptionLost();
-         priv->deref();
+         if (cb.kind == Kind::AsyncMessage) {
+            cb.priv->deliverAsyncMessage(cb.obj, cb.subscription);
+            cb.obj->tDeref();
+         } else {
+            cb.priv->notifySubscriptionLost();
+         }
+         cb.priv->deref();
       }
       running = false;
    }
@@ -409,35 +453,38 @@ private:
    }
 
    DLLLOCAL static void* thread_helper(void* context) {
-      static_cast<AQLostSubscriptionNotifier*>(context)->run();
+      static_cast<AQCallbackDispatcher*>(context)->run();
       return nullptr;
    }
 
 public:
    //! the fork handlers of the lock (see aq_register_fork_handlers())
-   /** The lock's holders change the queue and start the notifier thread, holding no other lock.
+   /** The lock's holders change the queue and start the thread, holding no other lock.
    */
    DLLLOCAL static void forkPrepare(void* arg) {
-      qore_fork_prepare_thread_lock(&static_cast<AQLostSubscriptionNotifier*>(arg)->l);
+      qore_fork_prepare_thread_lock(&static_cast<AQCallbackDispatcher*>(arg)->l);
    }
 
    DLLLOCAL static void forkParent(void* arg) {
-      qore_fork_parent_thread_lock(&static_cast<AQLostSubscriptionNotifier*>(arg)->l);
+      qore_fork_parent_thread_lock(&static_cast<AQCallbackDispatcher*>(arg)->l);
    }
 
-   //! in the child, the notifier thread does not exist, and the parent reports the queued losses
-   /** Nothing is allocated or freed (see QoreForkHandler.h): the queued entries move to the inherited list.
+   //! in the child, the thread does not exist, and the parent makes the queued callbacks
+   /** Nothing is allocated or freed (see QoreForkHandler.h): the queued callbacks move to the inherited list.
    */
    DLLLOCAL static void forkChild(void* arg) {
-      AQLostSubscriptionNotifier* n = static_cast<AQLostSubscriptionNotifier*>(arg);
-      n->inherited.splice(n->inherited.end(), n->queue);
-      n->started = false;
-      n->running = false;
-      qore_fork_child_thread_lock(&n->l);
+      AQCallbackDispatcher* d = static_cast<AQCallbackDispatcher*>(arg);
+      d->inherited.splice(d->inherited.end(), d->queue);
+      d->started = false;
+      d->running = false;
+      qore_fork_child_thread_lock(&d->l);
    }
 };
 
-AQLostSubscriptionNotifier aqLostSubscriptionNotifier;
+AQCallbackDispatcher aqCallbackDispatcher;
+
+// the last subscription identifier that was assigned; see AQQueuePriv::startSubscription()
+static std::atomic<uint64_t> aq_last_subscription{0};
 
 // the process whose Oracle client started its notification listener, or 0 if no subscription was started: the first
 // subscription of a process starts the Oracle client's notification listener, which serves the process from then
@@ -449,12 +496,12 @@ static std::atomic<pid_t> aq_notification_pid{0};
 // the fork handlers of the module's process-wide locks (see QoreForkHandler.h)
 static QoreForkHandlerRegistration* aq_callback_thread_fork_reg = nullptr;
 static QoreForkHandlerRegistration* aq_subscription_fork_reg = nullptr;
-static QoreForkHandlerRegistration* aq_lost_subscription_fork_reg = nullptr;
+static QoreForkHandlerRegistration* aq_callback_dispatcher_fork_reg = nullptr;
 
 DLLLOCAL void aq_unregister_fork_handlers();
 void aq_unregister_fork_handlers() {
-   qore_unregister_fork_handler(aq_lost_subscription_fork_reg);
-   aq_lost_subscription_fork_reg = nullptr;
+   qore_unregister_fork_handler(aq_callback_dispatcher_fork_reg);
+   aq_callback_dispatcher_fork_reg = nullptr;
    qore_unregister_fork_handler(aq_subscription_fork_reg);
    aq_subscription_fork_reg = nullptr;
    qore_unregister_fork_handler(aq_callback_thread_fork_reg);
@@ -463,11 +510,11 @@ void aq_unregister_fork_handlers() {
 
 // registers the fork handlers of the module's process-wide locks; called in the module's initialization function
 /** A child process created with fork() runs only the forking thread: a lock that another thread held then would
-    stay held in the child, and the watchdog and notifier threads exist only in the parent.  The locks are acquired
+    stay held in the child, and the watchdog and dispatch threads exist only in the parent.  The locks are acquired
     before fork(), so that the managers' data are consistent in the child, which resets their thread state.
 
-    The holders of the subscription and notifier locks take no lock of the library (they read the thread stack size
-    before they take their lock), so they are leaves; the holders of the callback thread lock reserve and release
+    The holders of the subscription and dispatcher locks take no lock of the library (they read the thread stack
+    size before they take their lock), so they are leaves; the holders of the callback thread lock reserve and release
     thread IDs, which takes the library's thread list lock.
 
     @return 0 if the handlers were registered, -1 if there was no memory for a registration
@@ -480,10 +527,10 @@ int aq_register_fork_handlers() {
    aq_subscription_fork_reg = qore_register_fork_handler(QFR_MODULE_LEAF, "oracle_aq_subscriptions",
       AQSubscriptionManager::forkPrepare, AQSubscriptionManager::forkParent, AQSubscriptionManager::forkChild,
       &aqSubscriptionManager);
-   aq_lost_subscription_fork_reg = qore_register_fork_handler(QFR_MODULE_LEAF, "oracle_aq_lost_subscriptions",
-      AQLostSubscriptionNotifier::forkPrepare, AQLostSubscriptionNotifier::forkParent,
-      AQLostSubscriptionNotifier::forkChild, &aqLostSubscriptionNotifier);
-   if (!aq_callback_thread_fork_reg || !aq_subscription_fork_reg || !aq_lost_subscription_fork_reg) {
+   aq_callback_dispatcher_fork_reg = qore_register_fork_handler(QFR_MODULE_LEAF, "oracle_aq_callbacks",
+      AQCallbackDispatcher::forkPrepare, AQCallbackDispatcher::forkParent, AQCallbackDispatcher::forkChild,
+      &aqCallbackDispatcher);
+   if (!aq_callback_thread_fork_reg || !aq_subscription_fork_reg || !aq_callback_dispatcher_fork_reg) {
       aq_unregister_fork_handlers();
       return -1;
    }
@@ -494,26 +541,14 @@ DLLLOCAL void aq_module_delete();
 void aq_module_delete() {
    // no subscription is reported lost once the watchdog is stopped
    aqSubscriptionManager.stop();
-   aqLostSubscriptionNotifier.stop();
+   aqCallbackDispatcher.stop();
    aq_unregister_fork_handlers();
 }
 
+// called on the Oracle client's notification thread, which holds a lock of the client's notification listener: the
+// notification is queued for the dispatch thread (see AQCallbackDispatcher)
 void on_async_message(OCI_Dequeue* deq) {
-   QoreForeignThreadHelper qfth(aqCallbackThreadManager.getTid());
-
-   AQQueuePriv* priv = reinterpret_cast<AQQueuePriv*>(deq->user_ctx);
-   //printd(5, "on_async_message() DEBUG> message arrived deq: %p priv: %p\n", deq, priv);
-   // the sandbox is set before the subscription is started
-   std::shared_ptr<const QoreSandboxCapture> sandbox = priv->getSandbox();
-   assert(sandbox);
-   if (!sandbox) {
-      return;
-   }
-   // the OCI notification thread serves every subscription: the callback runs under the sandbox of the code that
-   // started this one
-   QoreSandboxCaptureHelper sch(*sandbox);
-   ExceptionSink xsink;
-   priv->qoreObject()->evalMethod("onAsyncMessage", 0, &xsink);
+   reinterpret_cast<AQQueuePriv*>(deq->user_ctx)->postAsyncMessage();
 }
 
 bool check_hash_key(const QoreHashNode* h, const char* key, const char* err, std::string& value,
@@ -624,7 +659,7 @@ void AQQueuePriv::destructorUnlocked(ExceptionSink *xsink) {
 int AQQueuePriv::reconnectUnlocked(ExceptionSink* xsink) {
    if (m_hasSubscription) {
       if (reconnectSubscriptionUnlocked(xsink)) {
-         aqCallbackThreadManager.dec();
+         endSubscriptionUnlocked();
          aqSubscriptionManager.remove(this);
          return -1;
       }
@@ -1040,7 +1075,7 @@ void AQQueuePriv::checkSubscription() {
 
       // the subscription cannot be restored: it is no longer watched
       aqSubscriptionManager.remove(this);
-      aqCallbackThreadManager.dec();
+      endSubscriptionUnlocked();
       // the object is called later without the lock; a weak reference keeps it valid until then
       m_self->tRef();
       QoreObject* prev = m_lost.exchange(m_self);
@@ -1050,11 +1085,11 @@ void AQQueuePriv::checkSubscription() {
       }
    }
 
-   // the subscription is reported lost on the notifier thread, outside this thread's OCI processing (see
-   // AQLostSubscriptionNotifier), without any lock held, so that onSubscriptionLost() can restart it
+   // the subscription is reported lost on the dispatch thread, outside this thread's OCI processing (see
+   // AQCallbackDispatcher), without any lock held, so that onSubscriptionLost() can restart it
    ref();
-   if (aqLostSubscriptionNotifier.post(this)) {
-      // the notifier thread cannot be started: the loss is reported here
+   if (aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::SubscriptionLost, this)) {
+      // the dispatch thread cannot be started: the loss is reported here
       notifySubscriptionLost();
       deref();
    }
@@ -1079,6 +1114,73 @@ void AQQueuePriv::notifySubscriptionLost() {
    obj->tDeref();
 }
 
+void AQQueuePriv::postAsyncMessage() {
+   QoreObject* obj;
+   uint64_t subscription;
+   {
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      obj = m_self;
+      subscription = m_subscription;
+   }
+   if (!subscription) {
+      // the subscription has been stopped
+      return;
+   }
+   assert(obj);
+   ref();
+   obj->tRef();
+   if (aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::AsyncMessage, this, obj, subscription)) {
+      // the dispatch thread cannot be started: the callback is made here, on the notification thread
+      QoreForeignThreadHelper qfth(aqCallbackThreadManager.getTid());
+      deliverAsyncMessage(obj, subscription);
+      obj->tDeref();
+      deref();
+   }
+}
+
+void AQQueuePriv::deliverAsyncMessage(QoreObject* obj, uint64_t subscription) {
+   std::shared_ptr<const QoreSandboxCapture> sandbox;
+   {
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      if (m_subscription != subscription) {
+         // the subscription was stopped after the notification was queued
+         return;
+      }
+      sandbox = m_sandbox;
+   }
+   assert(sandbox);
+   // the callback runs under the sandbox of the code that started the subscription
+   QoreSandboxCaptureHelper sch(*sandbox);
+   // an exception that the method raises is reported when the sink goes out of scope
+   ExceptionSink xsink;
+   obj->evalMethod("onAsyncMessage", 0, &xsink);
+}
+
+void AQQueuePriv::endSubscriptionUnlocked() {
+   {
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      m_subscription = 0;
+   }
+   aqCallbackThreadManager.dec();
+}
+
+#ifdef DEBUG
+QoreValue AQQueuePriv::dbgWithLock(const ResolvedCallReferenceNode* code, ExceptionSink* xsink) {
+   AutoLocker al(l);
+   return code->execValue(nullptr, xsink);
+}
+
+QoreValue aq_dbg_with_queue_lock(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   QoreObject* obj = get_param_value(args, 0).get<QoreObject>();
+   const ResolvedCallReferenceNode* code = get_param_value(args, 1).get<const ResolvedCallReferenceNode>();
+   PrivateDataRefHolder<AQQueuePriv> priv(obj, CID_AQQUEUE, xsink);
+   if (!priv) {
+      return QoreValue();
+   }
+   return priv->dbgWithLock(code, xsink);
+}
+#endif
+
 void AQQueuePriv::startSubscription(QoreObject* self, unsigned port, int64 timeout, ExceptionSink *xsink) {
    // checked before the lock, which the parent's watchdog thread can have held when the process was created
    if (checkProcess("startSubscription", xsink))
@@ -1087,7 +1189,11 @@ void AQQueuePriv::startSubscription(QoreObject* self, unsigned port, int64 timeo
    if (checkValidUnlocked("startSubscription", xsink))
       return;
 
-   m_self = self;
+   {
+      // m_self is read by the Oracle client's notification thread with the subscription (see postAsyncMessage())
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      m_self = self;
+   }
 
    if (!checkDequeueUnlocked(self, xsink))
       return;
@@ -1109,19 +1215,20 @@ void AQQueuePriv::startSubscription(QoreObject* self, unsigned port, int64 timeo
       }
    }
 
-   // the callbacks of the subscription run under the sandbox of the code that starts it; it is set before the
-   // subscription is registered, so that it is there for the first notification
-   {
-      std::lock_guard<std::mutex> sl(m_sandbox_lock);
-      m_sandbox = std::make_shared<const QoreSandboxCapture>();
-   }
-
    // increment "oracle-thread active" count
    aqCallbackThreadManager.inc();
 
+   // the callbacks of the subscription run under the sandbox of the code that starts it, and the notifications are
+   // delivered for its identifier; both are set before the subscription is registered, so that they are there for the
+   // first notification
+   {
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      m_sandbox = std::make_shared<const QoreSandboxCapture>();
+      m_subscription = ++aq_last_subscription;
+   }
+
    if (!OCI_DequeueSubscribe(&m_conn->ocilib, m_dequeue, port, timeout, on_async_message, xsink)) {
-      // decrement "oracle-thread active" count
-      aqCallbackThreadManager.dec();
+      endSubscriptionUnlocked();
       if (!*xsink)
          xsink->raiseException("AQQUEUE-ERROR", "unknown error starting the subscription");
       return;
@@ -1152,6 +1259,11 @@ int AQQueuePriv::stopSubscriptionUnlocked(ExceptionSink *xsink, bool release_cal
    assert(m_dequeue);
    assert(m_hasSubscription);
 
+   if (release_callback_thread) {
+      // no notification that has not been delivered yet is delivered from now on (see deliverAsyncMessage())
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      m_subscription = 0;
+   }
    bool b = OCI_DequeueUnsubscribe(&m_conn->ocilib, m_dequeue, xsink);
    if (release_callback_thread) {
       aqCallbackThreadManager.dec();
@@ -1277,12 +1389,15 @@ static void aqqueue_constructor_hash(const QoreStringNode* queueName, const Qore
  * AQ messages notification with Oracle Client 10gR2 or above
  *
  * When a subscription is active (see @ref AQQueue::startSubscription()), @ref AQQueue::onAsyncMessage() is called
- * by the Oracle client's notification thread, and a background watchdog thread checks the connection of every
+ * for each notification of the Oracle client, and a background watchdog thread checks the connection of every
  * subscription every 25 seconds and restores lost subscriptions; when a subscription cannot be restored,
- * @ref AQQueue::onSubscriptionLost() is called on another background thread, so that it can restart the
- * subscription.  These threads serve the subscriptions of all objects; each callback, and each
- * reconnection made for a subscription, runs under the sandbox (\c Qore::SandboxManager) of the code that called
- * @ref AQQueue::startSubscription(), so it can never do more than that code.
+ * @ref AQQueue::onSubscriptionLost() is called, so that it can restart the subscription.  Both callbacks are called
+ * on a background callback thread of the module, one at a time: the Oracle client's notification thread only hands
+ * each notification to that thread, so that no lock of the Oracle client is held while
+ * @ref AQQueue::onAsyncMessage() runs (the client takes the same lock to start a subscription).  These
+ * threads serve the subscriptions of all objects; each callback, and each reconnection made for a subscription, runs
+ * under the sandbox (\c Qore::SandboxManager) of the code that called @ref AQQueue::startSubscription(), so it can
+ * never do more than that code.
  *
  * An AQQueue object cannot be used in a child process created with \c fork() after it was created: its session and
  * subscription belong to the parent, and every method raises \c AQQUEUE-FORK-ERROR in the child; when the child
@@ -1381,8 +1496,8 @@ nothing AQQueue::post(hash msg) {
 }
 
 //! Subscribe for asynchronous messages notifications
-/** @ref AQQueue::onAsyncMessage() and @ref AQQueue::onSubscriptionLost() are called for the subscription under the
-    sandbox of the code that calls this method, although they are called on threads that %Qore does not start
+/** @ref AQQueue::onAsyncMessage() and @ref AQQueue::onSubscriptionLost() are called for the subscription on the
+    module's callback thread, under the sandbox of the code that calls this method
 
     @param port an optional non-negative port number (0 = use the default port)
     @param timeout an optional timeout value in seconds; any positive value in seconds is valid. The value 0 is accepted and means that it does not wait for messages and returns immediately if no messages are available.  The value -1 is accepted and means it waits for ever (until a message is available in the queue)
@@ -1408,7 +1523,11 @@ nothing AQQueue::startSubscription(int port = 0, int timeout = 0) {
 }
 
 //! Unsubscribe for asynchronous messages notifications.
-/** If no subscription is active, no action is taken
+/** If no subscription is active, no action is taken.
+
+    No notification of the subscription that has not been delivered yet is delivered once the subscription is
+    stopped; a call of @ref AQQueue::onAsyncMessage() that is already running on the module's callback thread is not
+    interrupted.
 
     @throw AQQUEUE-ERROR oracle error stopping the subscription
     @throw AQQUEUE-FORK-ERROR the object was created by another process (this is a child process created with
@@ -1439,7 +1558,9 @@ bool AQQueue::rollback() {
 }
 
 //! Automatically called when a new message is received on the queue when there is an active subscription
-/** A method which is called when there is a new message in the queue.
+/** A method which is called when there is a new message in the queue.  It is called on the module's callback thread,
+    which makes the callbacks of all subscriptions one at a time, under the sandbox of the code that started the
+    subscription.
 
     The default implementation throws an exception; this method must be overridden in subclasses to receive messages;
     use the @ref AQQueue::getMessage() method to receive the message
@@ -1452,8 +1573,8 @@ nothing AQQueue::onAsyncMessage() {
 
 //! Automatically called when the connection is externally disconnected
 /** A method which is called when there is a subscription but the periodical check for a live connection fails and
-    the subscription cannot be restored.  It is called on a background thread of the module, after the subscription
-    has been removed from the periodical check.
+    the subscription cannot be restored.  It is called on the module's callback thread, after the subscription has
+    been removed from the periodical check.
 
     The default implementation does nothing; override this method in subclasses to be notified; the method can call
     @ref AQQueue::startSubscription() to restore the subscription, for example

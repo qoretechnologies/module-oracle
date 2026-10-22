@@ -2,9 +2,10 @@
 # -*- mode: qore; indent-tabs-mode: nil -*-
 # Copyright (C) 2026 Qore Technologies, s.r.o.
 
-# The callbacks of an AQ subscription are called on threads that Qore did not start: AQQueue::onAsyncMessage() on
-# the Oracle client's notification thread, AQQueue::onSubscriptionLost() on the subscription watchdog thread, which
-# both serve every subscription.
+# The callbacks of an AQ subscription, AQQueue::onAsyncMessage() and AQQueue::onSubscriptionLost(), are called on
+# the module's callback thread, which serves every subscription: the Oracle client's notification thread hands each
+# notification to it, as the client holds a lock of its notification listener while it delivers a notification, and
+# takes that lock to start a subscription.
 #
 # The watchdog checks the subscriptions periodically: a subscription whose connection was lost is restored, or, if
 # it cannot be restored, reported with onSubscriptionLost(), which can restart it.  Each callback must run under the
@@ -25,6 +26,38 @@
 %requires oracle
 
 %exec-class AqSubscriptionTest
+
+#! a subscriber that reports its notifications
+class EventSubscriber inherits Oracle::AQQueue {
+    private {
+        Queue events;
+        #! if true, onAsyncMessage() stops the subscription
+        bool stop_in_callback;
+    }
+
+    constructor(string queue, string type, string conn, Queue events, bool stop_in_callback = False)
+            : Oracle::AQQueue(queue, type, conn) {
+        self.events = events;
+        self.stop_in_callback = stop_in_callback;
+    }
+
+    nothing onAsyncMessage() {
+        events.push("message");
+        # consume the messages that are available
+        {
+            on_success commit();
+            on_error rollback();
+            while (getMessage(0)) {
+            }
+        }
+        if (stop_in_callback) {
+            stopSubscription();
+            events.push("stopped");
+        } else {
+            events.push("dequeued");
+        }
+    }
+}
 
 class AqSubscriptionTest inherits QUnit::Test {
     private {
@@ -135,6 +168,9 @@ auto sub run(code c, ...) {
         addTestCase("a lost subscription is reported and can be restarted from onSubscriptionLost()",
             \testLostUnsandboxed());
         addTestCase("onSubscriptionLost() runs under the sandbox of the subscription's starter", \testLost());
+        addTestCase("a subscription is started while onAsyncMessage() waits for the lock of its queue",
+            \testStartWhileCallbackWaits());
+        addTestCase("onAsyncMessage() stops its own subscription", \testStopInCallback());
         set_return_value(main());
     }
 
@@ -267,6 +303,52 @@ auto sub run(code c, ...) {
         assertEq("FILESYSTEM-ACCESS-DENIED", getResult(results, "message"));
         q.stopSubscription();
         delete q;
+    }
+
+    # another thread holds the lock of a queue (with the debug hook) while a notification of the queue's subscription
+    # is delivered, so that onAsyncMessage() waits for that lock in getMessage(), and starts and stops a subscription
+    # for another queue meanwhile: the callback, waiting, holds nothing that the subscription needs
+    testStartWhileCallbackWaits() {
+        checkQueue();
+        Queue events();
+        EventSubscriber q(QueueName, TypeName, connstr, events);
+        on_exit delete q;
+        try {
+            call_function("Qore::Oracle::dbg_aq_with_queue_lock", q, sub () {});
+        } catch (hash<ExceptionInfo> ex) {
+            if (ex.err == "NO-FUNCTION") {
+                testSkip("the test needs a debug build of the module");
+            }
+            rethrow;
+        }
+        q.startSubscription();
+        on_exit q.stopSubscription();
+        EventSubscriber other(QueueName, TypeName, connstr, new Queue());
+        on_exit delete other;
+        call_function("Qore::Oracle::dbg_aq_with_queue_lock", q, sub () {
+            post();
+            # onAsyncMessage() is called and waits for the lock of the queue in getMessage()
+            assertEq("message", events.get(CallbackTimeout));
+            # the subscription is started while onAsyncMessage() waits
+            other.startSubscription();
+            other.stopSubscription();
+        });
+        # onAsyncMessage() gets the lock and returns
+        assertEq("dequeued", events.get(CallbackTimeout));
+    }
+
+    # onAsyncMessage() stops the subscription that it was called for, on the callback thread
+    testStopInCallback() {
+        checkQueue();
+        Queue events();
+        EventSubscriber q(QueueName, TypeName, connstr, events, True);
+        on_exit delete q;
+        q.startSubscription();
+        post();
+        assertEq("message", events.get(CallbackTimeout));
+        assertEq("stopped", events.get(CallbackTimeout));
+        # the subscription is stopped: stopping it again does nothing
+        q.stopSubscription();
     }
 
     testLostUnsandboxed() {

@@ -47,6 +47,12 @@ TypedHashDecl* init_hashdecl_OracleSessionInfo(QoreNamespace& ns);
 const TypedHashDecl* hashdeclOracleSessionInfo = nullptr;
 QoreClass* initAQMessageClass(QoreNamespace& ns);
 QoreClass* initAQQueueClass(QoreNamespace& ns);
+#ifdef DEBUG
+DLLLOCAL extern QoreClass* QC_AQQUEUE;
+//! Qore::Oracle::dbg_aq_with_queue_lock(AQQueue queue, code code): calls the code while the calling thread holds the
+//! lock of the queue (see AQQueuePriv::dbgWithLock()); DEBUG builds only
+DLLLOCAL QoreValue aq_dbg_with_queue_lock(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
+#endif
 DLLLOCAL void aq_module_delete();
 DLLLOCAL int aq_register_fork_handlers();
 
@@ -494,6 +500,10 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
    init_oracle_functions(OraNS);
    OraNS.addSystemClass(initAQMessageClass(OraNS));
    OraNS.addSystemClass(initAQQueueClass(OraNS));
+#ifdef DEBUG
+   OraNS.addBuiltinVariant("dbg_aq_with_queue_lock", aq_dbg_with_queue_lock, QCF_NO_FLAGS, QDOM_THREAD_CONTROL,
+      autoTypeInfo, 2, QC_AQQUEUE->getTypeInfo(), QORE_PARAM_NO_ARG, "queue", codeTypeInfo, QORE_PARAM_NO_ARG, "code");
+#endif
 
    // register driver with DBI subsystem
    qore_dbi_method_list methods;

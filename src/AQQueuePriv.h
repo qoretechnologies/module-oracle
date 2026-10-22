@@ -29,6 +29,7 @@
 #include "ocilib_internal.h"
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 
@@ -88,6 +89,26 @@ public:
    */
    DLLLOCAL void notifySubscriptionLost();
 
+   //! Called by the Oracle client's notification thread for a notification of the subscription
+   /** Queues the notification for the module's dispatch thread, which calls deliverAsyncMessage(): the notification
+       thread holds a lock of the Oracle client while it runs, which the client also takes when a subscription is
+       started or stopped, so it calls no %Qore code and takes no lock of the queue.
+   */
+   DLLLOCAL void postAsyncMessage();
+
+   //! Calls AQQueue::onAsyncMessage() on the given object for a notification of the given subscription
+   /** Called on the module's dispatch thread with no lock held; runs under the sandbox of the code that started the
+       subscription.  Nothing is called if the subscription was stopped after the notification was queued.
+   */
+   DLLLOCAL void deliverAsyncMessage(QoreObject* obj, uint64_t subscription);
+
+#ifdef DEBUG
+   //! Calls the code while the calling thread holds the queue's lock; DEBUG builds only
+   /** Lets the tests hold the queue's lock while a notification of its subscription is delivered.
+   */
+   DLLLOCAL QoreValue dbgWithLock(const ResolvedCallReferenceNode* code, ExceptionSink* xsink);
+#endif
+
    //! Returns true in a child process created with fork() after the object was created
    /** The queue's session and subscription belong to the parent: the child shares the session's network connection
        with the parent, and the threads that serve the subscription (the Oracle client's notification thread and the
@@ -118,13 +139,20 @@ private:
 
    bool m_hasSubscription, valid;
 
+   //! the object; written under m_sandbox_lock too, as the Oracle client's notification thread reads it
    QoreObject *m_self = nullptr;
    //! the object of a subscription that could not be restored, weakly referenced until the loss is reported
    std::atomic<QoreObject*> m_lost{nullptr};
 
    //! the sandbox of the code that started the current subscription; see getSandbox()
    std::shared_ptr<const QoreSandboxCapture> m_sandbox;
-   //! protects m_sandbox only, so that a callback can read it while another thread holds the object lock
+   //! the identifier of the active subscription, 0 if none; see deliverAsyncMessage()
+   /** Kept when the watchdog restores the subscription, as the subscription continues; a new identifier is assigned
+       by every call of startSubscription()
+   */
+   uint64_t m_subscription = 0;
+   //! protects m_sandbox, m_subscription and the reads of m_self that are made without the object lock, so that the
+   //! callback threads can read them while another thread holds the object lock
    mutable std::mutex m_sandbox_lock;
 
    DLLLOCAL bool pingUnlocked();
@@ -137,7 +165,13 @@ private:
    DLLLOCAL int reconnectUnlocked(ExceptionSink* xsink);
    DLLLOCAL int reconnectSubscriptionUnlocked(ExceptionSink* xsink);
    //! Stops the subscription; releases the subscription's callback thread ID if release_callback_thread is true
+   /** If release_callback_thread is true, the subscription ends (see endSubscriptionUnlocked()); otherwise it is
+       restored by the caller.
+   */
    DLLLOCAL int stopSubscriptionUnlocked(ExceptionSink *xsink, bool release_callback_thread);
+   //! Ends the subscription after it was stopped or lost: its notifications are no longer delivered, and the
+   //! subscription's callback thread ID is released
+   DLLLOCAL void endSubscriptionUnlocked();
    DLLLOCAL int connectUnlocked(ExceptionSink *xsink);
    DLLLOCAL void disconnectUnlocked(ExceptionSink *xsink);
    DLLLOCAL bool checkDequeueUnlocked(QoreObject* self, ExceptionSink *xsink);

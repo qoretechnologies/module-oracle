@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Qore Technologies, s.r.o.
 
 # Child processes created with fork() while Oracle sessions and AQ subscriptions exist.  Only the forking thread
-# exists in a child: the Oracle client's threads and the module's subscription watchdog and notifier threads remain
+# exists in a child: the Oracle client's threads and the module's subscription watchdog and callback threads remain
 # in the parent, and the child shares the network connection of each of the parent's sessions.  The child must
 # neither wait for those threads nor end or change the parent's sessions and subscriptions.
 #
@@ -300,8 +300,7 @@ class OracleForkTest inherits QUnit::Test {
         if (!Option::HAVE_LIBRARY_DEBUGGING) {
             testSkip("the test needs a debug build of the library");
         }
-        foreach string name in ("oracle_aq_callback_thread", "oracle_aq_subscriptions",
-                "oracle_aq_lost_subscriptions") {
+        foreach string name in ("oracle_aq_callback_thread", "oracle_aq_subscriptions", "oracle_aq_callbacks") {
             hash<auto> r = call_function("dbg_fork_while_handler_held", name);
             assertTrue(r.waited, name + ": fork() waited for the thread holding the lock");
             assertEq(0, r.status, name + ": the child took the lock");
