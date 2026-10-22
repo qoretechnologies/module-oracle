@@ -7,9 +7,11 @@
 # both serve every subscription.
 #
 # The watchdog checks the subscriptions periodically: a subscription whose connection was lost is restored, or, if
-# it cannot be restored, reported with onSubscriptionLost(), which can restart it.
+# it cannot be restored, reported with onSubscriptionLost(), which can restart it.  Each callback must run under the
+# sandbox of the code that started the subscription, so that it can never do more than that code.
 #
-# The subscriptions are started by the code of another Program, whose callbacks read a file.
+# The trusted code is modeled by a Program with no sandbox (like a module Program) whose callbacks read a file; the
+# sandboxed code by a Program with a SandboxManager that allows the network but denies the filesystem.
 #
 # Needs an Oracle database: QORE_DB_CONNSTR_ORACLE gives the connection of a user that can create types and use
 # DBMS_AQADM and DBMS_AQ; the lost-subscription cases also need SYS_OMQ_DB_STRING, the connection of a user that
@@ -63,7 +65,7 @@ class AqSubscriptionTest inherits QUnit::Test {
     */
     const CallbackTimeout = 120s;
 
-    #! the code that starts the subscriptions: subscription callbacks that read a file
+    #! the trusted code: subscription callbacks that read a file on their registrant's behalf
     const TrustedSource = "
 %requires oracle
 
@@ -126,12 +128,21 @@ code sub get_subscribe() {
 }
 ";
 
+    #! the sandboxed code: it calls the trusted code
+    const SandboxedSource = "
+auto sub run(code c, ...) {
+    return call_function_args(c, argv);
+}
+";
+
     constructor() : QUnit::Test("AqSubscriptionTest", "1.0", \ARGV) {
         connstr = ENV.QORE_DB_CONNSTR_ORACLE;
         sysconnstr = ENV.SYS_OMQ_DB_STRING;
-        addTestCase("a subscription's callback reads the file", \testUnsandboxed());
+        addTestCase("an unsandboxed subscription's callback reads the file", \testUnsandboxed());
+        addTestCase("onAsyncMessage() runs under the sandbox of the subscription's starter", \testMessage());
         addTestCase("a lost subscription is reported and can be restarted from onSubscriptionLost()",
             \testLostUnsandboxed());
+        addTestCase("onSubscriptionLost() runs under the sandbox of the subscription's starter", \testLost());
         set_return_value(main());
     }
 
@@ -213,6 +224,17 @@ code sub get_subscribe() {
         return u;
     }
 
+    #! returns a sandboxed Program whose manager allows the network but denies the filesystem
+    private Program getSandboxed() {
+        Program p(PO_NEW_STYLE);
+        p.parse(SandboxedSource, "sandboxed");
+        SandboxManager sm();
+        sm.setFilesystemDefaultPolicy(False);
+        sm.setNetworkDefaultPolicy(True);
+        p.setSandboxManager(sm);
+        return p;
+    }
+
     #! posts a message to the queue
     private post() {
         ds.exec(sprintf("declare enq dbms_aq.enqueue_options_t; props dbms_aq.message_properties_t; id raw(16); "
@@ -242,14 +264,32 @@ code sub get_subscribe() {
         delete q;
     }
 
+    testMessage() {
+        checkQueue();
+        Program u = getTrusted();
+        Program p = getSandboxed();
+        Queue results();
+        AQQueue q = p.callFunction("run", u.callFunction("get_subscribe"), QueueName, TypeName, connstr, secret,
+            results);
+        post();
+        assertEq("FILESYSTEM-ACCESS-DENIED", getResult(results, "message"));
+        q.stopSubscription();
+        delete q;
+    }
+
     testLostUnsandboxed() {
-        lostTest(SecretContent);
+        lostTest(NOTHING, SecretContent);
+    }
+
+    testLost() {
+        lostTest(getSandboxed(), "FILESYSTEM-ACCESS-DENIED");
     }
 
     #! the subscription's session is killed, and the account is locked so that the subscription cannot be restored
-    /** @param expected the result of reading the file in the subscription's callbacks
+    /** @param p the sandboxed Program that starts the subscription, if any
+        @param expected the result of reading the file in the subscription's callbacks
     */
-    private lostTest(string expected) {
+    private lostTest(*Program p, string expected) {
         checkQueue();
         if (!sysconnstr) {
             testSkip("SYS_OMQ_DB_STRING is not set");
@@ -261,7 +301,13 @@ code sub get_subscribe() {
         Program u = getTrusted();
         Queue results();
         Queue gate();
-        AQQueue q = u.callFunction("subscribe", QueueName, TypeName, connstr, secret, results, gate);
+        AQQueue q;
+        if (p) {
+            q = p.callFunction("run", u.callFunction("get_subscribe"), QueueName, TypeName, connstr, secret,
+                results, gate);
+        } else {
+            q = u.callFunction("subscribe", QueueName, TypeName, connstr, secret, results, gate);
+        }
         on_exit {
             sys.exec("alter user " + user + " account unlock");
             # the callback may still be waiting for the gate
@@ -295,7 +341,7 @@ code sub get_subscribe() {
             return;
         }
 
-        # the restarted subscription delivers messages
+        # the restarted subscription delivers messages under the sandbox of the code that started it first
         post();
         assertEq(expected, getResult(results, "message"), "onAsyncMessage() after the restart");
     }

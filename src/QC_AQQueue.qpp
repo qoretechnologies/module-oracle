@@ -27,6 +27,7 @@
 #include "AQQueuePriv.h"
 
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -79,8 +80,10 @@ public:
 AQCallbackThreadManager aqCallbackThreadManager;
 
 // periodically pings the connections of the registered subscriptions and restores lost subscriptions
-/** The lock is not held while a subscription is checked (see AQQueuePriv::checkSubscription()): a check blocks on
-    the connection, and onSubscriptionLost() can start and stop subscriptions.
+/** The watchdog thread serves the subscriptions of every caller, so no caller's sandbox governs it: each
+    subscription is checked, restored and reported lost under the sandbox of the code that started it (see
+    AQQueuePriv::checkSubscription()).  The lock is not held while a subscription is checked: a check blocks on the
+    connection, and onSubscriptionLost() can start and stop subscriptions.
 */
 class AQSubscriptionManager {
 protected:
@@ -224,9 +227,19 @@ void aq_module_delete() {
 void on_async_message(OCI_Dequeue* deq) {
    QoreForeignThreadHelper qfth(aqCallbackThreadManager.getTid());
 
-   //printd(5, "on_async_message() DEBUG> message arrived deq: %p obj: %p\n", deq, deq->user_ctx);
+   AQQueuePriv* priv = reinterpret_cast<AQQueuePriv*>(deq->user_ctx);
+   //printd(5, "on_async_message() DEBUG> message arrived deq: %p priv: %p\n", deq, priv);
+   // the sandbox is set before the subscription is started
+   std::shared_ptr<const QoreSandboxCapture> sandbox = priv->getSandbox();
+   assert(sandbox);
+   if (!sandbox) {
+      return;
+   }
+   // the OCI notification thread serves every subscription: the callback runs under the sandbox of the code that
+   // started this one
+   QoreSandboxCaptureHelper sch(*sandbox);
    ExceptionSink xsink;
-   reinterpret_cast<QoreObject*>(deq->user_ctx)->evalMethod("onAsyncMessage", 0, &xsink);
+   priv->qoreObject()->evalMethod("onAsyncMessage", 0, &xsink);
 }
 
 bool check_hash_key(const QoreHashNode* h, const char* key, const char* err, std::string& value,
@@ -658,7 +671,8 @@ bool AQQueuePriv::checkDequeueUnlocked(QoreObject* self, ExceptionSink *xsink) {
             xsink->raiseException("AQQUEUE-ERROR", "failed to initialize queue");
          return false;
       }
-      m_dequeue->user_ctx = (void*)self;
+      // the subscription callback finds the object and its sandbox through the private data
+      m_dequeue->user_ctx = (void*)this;
       //printd(5, "AQQueuePriv::checkDequeueUnlocked() this: %p DEQUEUE ptr: %p msg: %p m_typeInfo: %p msg->typinfo: %p (%s)\n", this, m_dequeue, m_dequeue->msg, m_typeInfo, m_dequeue->msg->typinf, m_dequeue->msg->typinf->name);
    }
    return true;
@@ -666,7 +680,20 @@ bool AQQueuePriv::checkDequeueUnlocked(QoreObject* self, ExceptionSink *xsink) {
    //OCI_DequeueSetConsumer for list
 }
 
+std::shared_ptr<const QoreSandboxCapture> AQQueuePriv::getSandbox() const {
+   std::lock_guard<std::mutex> sl(m_sandbox_lock);
+   return m_sandbox;
+}
+
 void AQQueuePriv::checkSubscription() {
+   std::shared_ptr<const QoreSandboxCapture> sandbox = getSandbox();
+   if (!sandbox) {
+      return;
+   }
+   // the check, the reconnection and onSubscriptionLost() run under the sandbox of the code that started the
+   // subscription
+   QoreSandboxCaptureHelper sch(*sandbox);
+
    // errors restoring the subscription are reported when the sink goes out of scope
    ExceptionSink xsink;
    QoreObject* lost = nullptr;
@@ -718,6 +745,13 @@ void AQQueuePriv::startSubscription(QoreObject* self, unsigned port, int64 timeo
    }
 
    //printd(5, "AQQueuePriv::startSubscription() this: %p dequeue: %p self: %p port: %zd timeout: %zd\n", this, m_dequeue, self, port, timeout);
+
+   // the callbacks of the subscription run under the sandbox of the code that starts it; it is set before the
+   // subscription is registered, so that it is there for the first notification
+   {
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      m_sandbox = std::make_shared<const QoreSandboxCapture>();
+   }
 
    // increment "oracle-thread active" count
    aqCallbackThreadManager.inc();
@@ -873,7 +907,9 @@ static void aqqueue_constructor_hash(const QoreStringNode* queueName, const Qore
  * When a subscription is active (see @ref AQQueue::startSubscription()), @ref AQQueue::onAsyncMessage() is called
  * by the Oracle client's notification thread, and a background watchdog thread checks the connection of every
  * subscription every 25 seconds, restores lost subscriptions, and calls @ref AQQueue::onSubscriptionLost() when a
- * subscription cannot be restored.
+ * subscription cannot be restored.  Both threads serve the subscriptions of all objects; each callback, and each
+ * reconnection made for a subscription, runs under the sandbox (\c Qore::SandboxManager) of the code that called
+ * @ref AQQueue::startSubscription(), so it can never do more than that code.
  */
 qclass AQQueue [dom=DATABASE; arg=AQQueuePriv* priv; ns=Qore::Oracle];
 
@@ -958,7 +994,10 @@ nothing AQQueue::post(hash msg) {
 }
 
 //! Subscribe for asynchronous messages notifications
-/** @param port an optional non-negative port number (0 = use the default port)
+/** @ref AQQueue::onAsyncMessage() and @ref AQQueue::onSubscriptionLost() are called for the subscription under the
+    sandbox of the code that calls this method, although they are called on threads that %Qore does not start
+
+    @param port an optional non-negative port number (0 = use the default port)
     @param timeout an optional timeout value in seconds; any positive value in seconds is valid. The value 0 is accepted and means that it does not wait for messages and returns immediately if no messages are available.  The value -1 is accepted and means it waits for ever (until a message is available in the queue)
 
     @throw AQQUEUE-ERROR port or timeout value invalid; subscription already active for this object

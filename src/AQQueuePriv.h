@@ -28,6 +28,9 @@
 #include "oracle.h"
 #include "ocilib_internal.h"
 
+#include <memory>
+#include <mutex>
+
 class AQMessagePriv;
 
 DLLLOCAL extern qore_classid_t CID_AQQUEUE;
@@ -63,10 +66,16 @@ public:
 
    DLLLOCAL QoreObject* qoreObject() { return m_self; }
 
+   //! Returns the sandbox of the code that started the current subscription, or nullptr if none was started
+   /** The subscription's callbacks are called on threads that Qore did not start (the OCI notification thread
+       and the subscription watchdog thread) and must run under this sandbox.
+   */
+   DLLLOCAL std::shared_ptr<const QoreSandboxCapture> getSandbox() const;
+
    //! Called by the subscription watchdog thread: restores a subscription whose connection was lost
-   /** If the subscription cannot be restored, the object is removed from the watchdog and
-       AQQueue::onSubscriptionLost() is called.  No lock is held when onSubscriptionLost() is called, so it can
-       restart the subscription.
+   /** Runs under the sandbox of the code that started the subscription; if the subscription cannot be restored,
+       the object is removed from the watchdog and AQQueue::onSubscriptionLost() is called.  No lock is held when
+       onSubscriptionLost() is called, so it can restart the subscription.
    */
    DLLLOCAL void checkSubscription();
 
@@ -90,6 +99,11 @@ private:
    bool m_hasSubscription, valid;
 
    QoreObject *m_self = nullptr;
+
+   //! the sandbox of the code that started the current subscription; see getSandbox()
+   std::shared_ptr<const QoreSandboxCapture> m_sandbox;
+   //! protects m_sandbox only, so that a callback can read it while another thread holds the object lock
+   mutable std::mutex m_sandbox_lock;
 
    DLLLOCAL bool pingUnlocked();
    DLLLOCAL void destructorUnlocked(ExceptionSink *xsink);

@@ -5,6 +5,11 @@
     @tableofcontents
 
     @section oracle3_4_1 oracle Driver Version 3.4.1
+    - <b>Security</b>: @ref Qore::Oracle::AQQueue::onAsyncMessage() "AQQueue::onAsyncMessage()" and
+      @ref Qore::Oracle::AQQueue::onSubscriptionLost() "AQQueue::onSubscriptionLost()" now run under the sandbox
+      of the code that started the subscription; previously they ran with no sandbox on the Oracle notification
+      and subscription watchdog threads, so a subscription started on behalf of sandboxed code could do more in
+      its callbacks than that code could
     - fixed the AQ subscription watchdog: subscriptions started after all earlier subscriptions had been stopped were
       no longer watched, so that a lost connection was never restored or reported; a lost connection raised an
       internal OCILIB error instead of being restored;
