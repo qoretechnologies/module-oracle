@@ -557,6 +557,12 @@ AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
 #include <oci.h>
     ]],[[
     ]])], with_oracle=yes, AC_MSG_ERROR(file 'oci.h' not found in '$ORACLE_INCLUDES'))
+# the checks link a test executable against the client library only to learn whether it defines the function; the
+# Instant Client is built against glibc, so on musl (Alpine) the executable link fails on the library's own
+# glibc-versioned references, which gcompat resolves at runtime, and every check would fail (as in CMakeLists.txt)
+case "${host_os}" in
+    *linux*) LDFLAGS="$LDFLAGS -Wl,--allow-shlib-undefined" ;;
+esac
 AC_CHECK_FUNC([OCIClientVersion], [have_ociclientversion=yes], [have_ociclientversion=no])
 if test "$have_ociclientversion" = "yes"; then
     AC_DEFINE(HAVE_OCICLIENTVERSION, 1, [define if OCIClientVersion is available])

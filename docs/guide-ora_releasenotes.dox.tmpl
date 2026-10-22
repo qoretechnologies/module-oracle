@@ -19,6 +19,8 @@
     - @ref Qore::Oracle::AQQueue::onSubscriptionLost() "AQQueue::onSubscriptionLost()" is called on a separate
       thread, so a subscription that it restarts is registered with the server on every platform (on Alpine Linux, a
       subscription restarted on the thread that had just failed to restore the connection was not)
+    - fixed \c Datasource::getClientVersion() and the \c OCILobWrite2() LOB
+      path being compiled out of builds with \c configure on Alpine Linux
     - preserved Qore cancellation after server attachment and session creation, and registered session-login cancellation
     - fixed cancellation callbacks outliving their helper and accessing freed OCI handles
     - documented Oracle Net connection timeouts and raised the build language requirement to C++17
