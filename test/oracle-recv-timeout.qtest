@@ -1,0 +1,215 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+/*  oracle-recv-timeout.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
+
+    Tests the "recv-timeout" DBI option: the Oracle Net receive timeout of a connection.
+
+    Database tests need QORE_DB_CONNSTR_ORACLE (or the connection string as the first argument); the server must be
+    Oracle 18c or later for DBMS_SESSION.SLEEP.
+*/
+
+%modern
+
+%requires QUnit
+%requires oracle
+
+%exec-class OracleRecvTimeoutTest
+
+class OracleRecvTimeoutTest inherits QUnit::Test {
+    private {
+        *string connstr;
+    }
+
+    #! the receive timeout of the tests in milliseconds
+    const TimeoutMs = 1000;
+
+    #! a statement that waits on the server far longer than the timeout; it can only end early by the timeout
+    const LongSleep = "begin dbms_session.sleep(60); end;";
+
+    #! the session of the current connection
+    #! (the audit session ID: a SID is reused by later sessions)
+    const SidSql = "select sys_context('userenv', 'sessionid') sid from dual";
+
+    constructor() : QUnit::Test("OracleRecvTimeoutTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE ?? shift ARGV;
+
+        addTestCase("recv-timeout values are validated", \testValidation());
+        if (!connstr) {
+            addTestCase("No database connection configured", \testNoDatabaseConfigured());
+        } else {
+            addTestCase("recv-timeout set on an open connection", \testSetOnOpenConnection());
+            addTestCase("recv-timeout in the connection string", \testConnectionString());
+            addTestCase("a call that ends within the timeout is not affected", \testWithinTimeout());
+            addTestCase("a call that waits longer than the timeout ends with ORA-12609", \testTimeout());
+            addTestCase("the timed-out connection is closed and the next use makes a new one", \testNextUse());
+            addTestCase("a timed-out call in a transaction loses the transaction", \testTimeoutInTransaction());
+            addTestCase("recv-timeout 0 removes the timeout", \testRemoveTimeout());
+            addTestCase("a DatasourcePool connection with recv-timeout", \testPool());
+        }
+
+        set_return_value(main());
+    }
+
+    testNoDatabaseConfigured() {
+        testSkip("QORE_DB_CONNSTR_ORACLE not set; skipping the recv-timeout tests that need a database");
+    }
+
+    #! returns the connection string with the given options added
+    private string getConnStr(string opts) {
+        return connstr =~ /}$/ ? (connstr.substr(0, -1) + "," + opts + "}") : (connstr + "{" + opts + "}");
+    }
+
+    #! the option takes an integer; the driver checks its range when it sets it on a connection
+    testValidation() {
+        Datasource ds("oracle", "user", "pass", "db");
+        # without a connection, the value is kept for the next connection
+        ds.setOption("recv-timeout", 2500);
+        assertEq(2500, ds.getOptionHash()."recv-timeout");
+        ds.setOption("recv-timeout", 0);
+        assertEq(0, ds.getOptionHash()."recv-timeout");
+        ds.setOption("recv-timeout", 4294967295);
+        assertEq(4294967295, ds.getOptionHash()."recv-timeout");
+
+        if (connstr) {
+            # a value out of range is refused when the connection is made, and the connection is not made
+            foreach auto v in ((-1, 4294967296, "-1", "4294967296")) {
+                Datasource bad(connstr);
+                bad.setOption("recv-timeout", v);
+                assertThrows("ORACLE-OPTION-ERROR", "invalid value", \bad.open(), NOTHING, sprintf("value %y", v));
+            }
+            # text that is not an integer is refused; in a connection string as well
+            foreach string v in (("x", "10s", "", "1.5")) {
+                Datasource bad(connstr);
+                bad.setOption("recv-timeout", v);
+                assertThrows("ORACLE-OPTION-ERROR", "invalid value", \bad.open(), NOTHING, sprintf("value %y", v));
+            }
+            {
+                Datasource bad(getConnStr("recv-timeout=abc"));
+                assertThrows("ORACLE-OPTION-ERROR", "invalid value 'abc'", \bad.open());
+            }
+            # a value that is neither an integer nor text is refused
+            {
+                Datasource bad(connstr);
+                bad.setOption("recv-timeout", 1.5);
+                assertThrows("ORACLE-OPTION-ERROR", "type 'float'", \bad.open());
+            }
+        }
+    }
+
+    #! the option can be set and read on an open connection
+    testSetOnOpenConnection() {
+        Datasource ds(connstr);
+        ds.open();
+        assertEq(0, ds.getOption("recv-timeout"), "no timeout by default");
+        ds.setOption("recv-timeout", TimeoutMs);
+        on_exit ds.rollback();
+        assertEq(TimeoutMs, ds.getOption("recv-timeout"));
+        # an invalid value is refused and the current one is kept
+        assertThrows("ORACLE-OPTION-ERROR", \ds.setOption(), ("recv-timeout", -5));
+        assertEq(TimeoutMs, ds.getOption("recv-timeout"));
+        # the timeout applies to the open connection
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-12609", \ds.exec(), LongSleep);
+    }
+
+    #! the option can be given in the connection string
+    testConnectionString() {
+        Datasource ds(getConnStr("recv-timeout=" + TimeoutMs));
+        on_exit ds.rollback();
+        ds.open();
+        assertEq(TimeoutMs, ds.getOption("recv-timeout"));
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-12609", \ds.exec(), LongSleep);
+    }
+
+    #! a call that gets its answer within the timeout succeeds
+    testWithinTimeout() {
+        Datasource ds(connstr);
+        ds.setOption("recv-timeout", 10000);
+        on_exit ds.rollback();
+        ds.exec("begin dbms_session.sleep(0.2); end;");
+        assertEq(1, ds.selectRow("select 1 n from dual").n);
+    }
+
+    #! a call that waits for the server longer than the timeout ends with ORA-12609
+    testTimeout() {
+        Datasource ds(connstr);
+        ds.setOption("recv-timeout", TimeoutMs);
+        on_exit ds.rollback();
+        ds.open();
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-12609", \ds.exec(), LongSleep);
+    }
+
+    #! after a timeout, the connection is made again at once, with the same timeout; the statement is not executed
+    #! again
+    testNextUse() {
+        Datasource ds(connstr);
+        ds.setOption("recv-timeout", TimeoutMs);
+        on_exit ds.rollback();
+        ds.open();
+        auto sid = ds.selectRow(SidSql).sid;
+        date start = now_us();
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-12609", \ds.exec(), LongSleep);
+        # the call ends with the timeout, and the statement is not executed again (which would take another timeout)
+        assertLt(2 * TimeoutMs, (now_us() - start).durationMilliseconds(), "the statement is not executed again");
+        # an error in a transaction leaves the transaction to the caller, as for any statement error
+        ds.rollback();
+        # a new session
+        auto new_sid = ds.selectRow(SidSql).sid;
+        assertNeq(sid, new_sid, "the next use has a new session");
+        # the new connection has the timeout
+        assertEq(TimeoutMs, ds.getOption("recv-timeout"));
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-12609", \ds.exec(), LongSleep);
+        ds.rollback();
+        # and works afterwards
+        assertEq(1, ds.selectRow("select 1 n from dual").n);
+    }
+
+    #! a call that times out in a transaction loses the transaction: its session is ended
+    testTimeoutInTransaction() {
+        Datasource ds(connstr);
+        ds.setOption("recv-timeout", TimeoutMs);
+        on_exit ds.rollback();
+        ds.open();
+        ds.beginTransaction();
+        ds.select("select dummy from dual for update");
+        assertTrue(ds.inTransaction());
+        hash<ExceptionInfo> ex;
+        try {
+            ds.exec(LongSleep);
+        } catch (hash<ExceptionInfo> ex1) {
+            ex = ex1;
+        }
+        assertEq("DBI:ORACLE:OCI-ERROR", ex.err);
+        assertRegex("ORA-12609", ex.desc);
+        assertEq("DBI:ORACLE:TRANSACTION-ERROR", ex.next.err, "the lost transaction is reported");
+        ds.rollback();
+        assertFalse(ds.inTransaction());
+        # the row lock of the lost transaction was released with its session: another session can take it at once
+        Datasource other(connstr);
+        on_exit other.rollback();
+        other.select("select dummy from dual for update nowait");
+        other.rollback();
+        assertEq(1, ds.selectRow("select 1 n from dual").n);
+    }
+
+    #! setting 0 removes the timeout from an open connection
+    testRemoveTimeout() {
+        Datasource ds(connstr);
+        ds.setOption("recv-timeout", TimeoutMs);
+        ds.open();
+        ds.setOption("recv-timeout", 0);
+        assertEq(0, ds.getOption("recv-timeout"));
+        on_exit ds.rollback();
+        # a call longer than the old timeout succeeds
+        ds.exec("begin dbms_session.sleep(2); end;");
+        assertEq(1, ds.selectRow("select 1 n from dual").n);
+    }
+
+    #! the option works for a pool connection; the pool replaces the closed connection
+    testPool() {
+        DatasourcePool dsp(getConnStr("recv-timeout=" + TimeoutMs + ",min=1,max=1"));
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-12609", \dsp.exec(), LongSleep);
+        dsp.rollback();
+        assertEq(1, dsp.selectRow("select 1 n from dual").n);
+    }
+}

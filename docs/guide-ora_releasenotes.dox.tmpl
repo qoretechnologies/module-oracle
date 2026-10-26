@@ -39,8 +39,11 @@
     - fixed cancellation callbacks outliving their helper and accessing freed OCI handles
     - documented Oracle Net connection timeouts and raised the build language requirement to C++17
     - documented that cancelling a statement that waits on the server (for a lock, in \c DBMS_SESSION.SLEEP) needs
-      Oracle Net's out-of-band break, which a server with \c DISABLE_OOB=ON or a network path that removes TCP urgent
-      data does not have (see @ref oracle_cancellation)
+      Oracle Net's out-of-band break, which a server with \c DISABLE_OOB=ON does not have, and that through a network
+      path that does not deliver TCP urgent data the cancelled call does not return (see @ref oracle_cancellation)
+    - added the \c "recv-timeout" option, the Oracle Net receive timeout of a connection: a call that waits longer
+      for the server ends with \c ORA-12609, and the connection is made again without executing the statement again
+      (see @ref oracleora_optionsguide)
 
     - fixed an infinite loop when counting UTF-8 characters in nonempty LOB buffers
     - added @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()" and

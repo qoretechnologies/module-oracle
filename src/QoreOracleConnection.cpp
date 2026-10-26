@@ -444,6 +444,61 @@ int QoreOracleConnection::checkerr(sword status, const char* query_name, Excepti
     return -1;
 }
 
+int QoreOracleConnection::setRecvTimeout(const QoreValue val, ExceptionSink* xsink) {
+    int64 ms;
+    if (val.getType() == NT_STRING) {
+        // a value from a connection string: it must be an integer, as any other text would silently mean 0
+        QoreStringValueHelper str(val);
+        const char* p = str->c_str();
+        const char* digits = (*p == '-') ? p + 1 : p;
+        bool ok = *digits;
+        for (const char* c = digits; *c; ++c) {
+            if (*c < '0' || *c > '9') {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok || strlen(digits) > 19) {
+            xsink->raiseException("ORACLE-OPTION-ERROR", "invalid value '%s' for the '" ORACLE_OPT_RECV_TIMEOUT
+                "' option; the receive timeout must be an integer number of milliseconds", p);
+            return -1;
+        }
+        ms = strtoll(p, nullptr, 10);
+    } else if (val.isNothing() || val.getType() == NT_INT) {
+        // no value means no timeout
+        ms = val.getAsBigInt();
+    } else {
+        xsink->raiseException("ORACLE-OPTION-ERROR", "invalid value of type '%s' for the '" ORACLE_OPT_RECV_TIMEOUT
+            "' option; the receive timeout must be an integer number of milliseconds", val.getFullTypeName());
+        return -1;
+    }
+    if (ms < 0 || ms > ORACLE_RECV_TIMEOUT_MAX) {
+        xsink->raiseException("ORACLE-OPTION-ERROR", "invalid value " QLLD " for the '" ORACLE_OPT_RECV_TIMEOUT
+            "' option; the receive timeout must be a number of milliseconds from 1 to " QLLD ", or 0 for no timeout",
+            ms, ORACLE_RECV_TIMEOUT_MAX);
+        return -1;
+    }
+    if (server_attached && applyRecvTimeout((ub4)ms, xsink)) {
+        return -1;
+    }
+    recv_timeout_ms = (ub4)ms;
+    return 0;
+}
+
+int QoreOracleConnection::applyRecvTimeout(ub4 ms, ExceptionSink* xsink) {
+#ifdef OCI_ATTR_RECEIVE_TIMEOUT
+    return checkerr(OCIAttrSet(srvhp, OCI_HTYPE_SERVER, &ms, 0, OCI_ATTR_RECEIVE_TIMEOUT, errhp),
+        "QoreOracleConnection::applyRecvTimeout() set the receive timeout", xsink);
+#else
+    if (!ms) {
+        return 0;
+    }
+    xsink->raiseException("ORACLE-OPTION-ERROR", "the '" ORACLE_OPT_RECV_TIMEOUT "' option cannot be set: the module "
+        "was built with Oracle client headers that do not define OCI_ATTR_RECEIVE_TIMEOUT");
+    return -1;
+#endif
+}
+
 bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bool can_retry) {
     // see if we have a lost connection from the error code
     int ping = -1;
@@ -456,6 +511,38 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
     // issue #802: ORA-01041 is only raised due to a bug in Oracle pre 12c
     if (errcode == 3113 || errcode == 3114 || errcode == 1041)
         ping = 0;
+
+    // ORA-12609: the connection's receive timeout (the "recv-timeout" option) ended the call; the client and the
+    // server are no longer in step on the connection (the server can still be running the statement, or the client
+    // can be waiting for the answer to a break that the server never got), so the session cannot be used again: the
+    // timeout is reported, and the connection is made again, so that the datasource can be used; the statement is
+    // not executed again, as it can have run on the server, and a transaction in progress is lost
+    if (errcode == 12609) {
+        doException(who, errbuf, errcode, xsink);
+        if (ds.activeTransaction()) {
+            xsink->raiseException("DBI:ORACLE:TRANSACTION-ERROR", "the receive timeout of the connection to Oracle "
+                "database server %s@%s ended a call while in a transaction; transaction has been lost",
+                ds.getUsername(), ds.getDBName());
+        }
+        for (auto& i : stmt_set) {
+            i->clear(xsink);
+        }
+        ds.connectionLost(xsink);
+        // the session is ended with the connection, which the server sees as a lost connection; the statement
+        // handle of the call is kept, as it belongs to the environment, and is freed by its caller
+        logoff();
+        if (logon(xsink)) {
+            for (auto& i : stmt_set) {
+                i->reset(xsink);
+            }
+            ds.connectionAborted(xsink);
+            return false;
+        }
+        clearWarnings();
+        // close all statements and remove private data but leave datasource open
+        ds.connectionRecovered(xsink);
+        return false;
+    }
 
     //dbg();
     // see if server is connected
@@ -581,6 +668,12 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
        return -1;
    }
    if (checkerr(rc, "QoreOracleConnection::logon() server attach", xsink)) {
+       return -1;
+   }
+   server_attached = true;
+
+   // a connection made again after it was lost has the receive timeout that was set on it
+   if (recv_timeout_ms && applyRecvTimeout(recv_timeout_ms, xsink)) {
        return -1;
    }
 

@@ -107,6 +107,12 @@ public:
 // return optimal numeric values if options are supported
 #define OPT_NUM_DEFAULT OPT_NUM_OPTIMAL
 
+//! the DBI option that sets the Oracle Net receive timeout of the connection in milliseconds
+#define ORACLE_OPT_RECV_TIMEOUT "recv-timeout"
+
+//! the largest receive timeout in milliseconds that the Oracle client accepts (a ub4 value)
+#define ORACLE_RECV_TIMEOUT_MAX 4294967295LL
+
 //! Oracle session attributes reported in V$SESSION that can be set per thread
 /** @see QoreOracleConnection::applyThreadSessionInfo()
 */
@@ -200,6 +206,12 @@ public:
     QoreString cstr; // connection string
     int number_support;
 
+    //! the Oracle Net receive timeout of the connection in milliseconds; 0 = no timeout
+    /** set with the \c "recv-timeout" option, and on the server handle again after every server attach, so that a
+        connection made again after it was lost has the same timeout
+    */
+    ub4 recv_timeout_ms = 0;
+
 private:
     //! the process that created the connection; see isForkedChild()
     const pid_t pid = getpid();
@@ -222,6 +234,9 @@ public:
     DLLLOCAL int checkerr(sword status, const char *query_name, ExceptionSink* xsink, bool* retry = nullptr);
 
     DLLLOCAL bool handleError(ExceptionSink* xsink, const char* who, bool can_retry);
+
+    //! true while the server handle is attached (between OCIServerAttach() and OCIServerDetach())
+    bool server_attached = false;
 
     DLLLOCAL int doException(const char *query_name, text errbuf[], sb4 errcode, ExceptionSink *xsink);
 
@@ -281,6 +296,7 @@ public:
 
         int rc = OCISessionEnd(svchp, errhp, usrhp, 0);
         OCIServerDetach(srvhp, errhp, OCI_DEFAULT);
+        server_attached = false;
         return rc;
     }
 
@@ -398,6 +414,9 @@ public:
             number_support = OPT_NUM_NUMERIC;
             return 0;
         }
+        if (!strcasecmp(opt, ORACLE_OPT_RECV_TIMEOUT)) {
+            return setRecvTimeout(val, xsink);
+        }
         if (!strcasecmp(opt, DBI_OPT_TIMEZONE)) {
             assert(val.getType() == NT_STRING);
             QoreStringValueHelper str(val);
@@ -421,9 +440,25 @@ public:
         if (!strcasecmp(opt, DBI_OPT_NUMBER_NUMERIC))
             return number_support == OPT_NUM_NUMERIC;
 
+        if (!strcasecmp(opt, ORACLE_OPT_RECV_TIMEOUT))
+            return (int64)recv_timeout_ms;
+
         assert(!strcasecmp(opt, DBI_OPT_TIMEZONE));
         return new QoreStringNode(tz_get_region_name(server_tz));
     }
+
+    //! sets the Oracle Net receive timeout of the connection from the value of the \c "recv-timeout" option
+    /** @param val the timeout in milliseconds: a positive integer, or 0 (or no value) for no timeout
+
+        @return 0 for OK, -1 if an exception was raised: the value is not valid, or the client cannot set it; the
+        current timeout is unchanged then
+    */
+    DLLLOCAL int setRecvTimeout(const QoreValue val, ExceptionSink* xsink);
+
+    //! sets the receive timeout on the attached server handle
+    /** @return 0 for OK, -1 if an exception was raised
+    */
+    DLLLOCAL int applyRecvTimeout(ub4 ms, ExceptionSink* xsink);
 
     DLLLOCAL const AbstractQoreZoneInfo* getTZ() const {
         return server_tz;

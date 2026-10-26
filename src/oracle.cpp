@@ -563,6 +563,8 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
    methods.registerOption(DBI_OPT_NUMBER_NUMERIC, "when set, number values are returned as arbitrary-precision number values; the argument is ignored; setting this option turns it on and turns off 'string-numbers' and 'optimal-numbers'");
    methods.registerOption(DBI_OPT_TIMEZONE, "set the server-side timezone, value must be a string in the format accepted by Timezone::constructor() on the client (ie either a region name or a UTC offset like \"+01:00\"), if not set the server's time zone will be assumed to be the same as the client's", stringTypeInfo);
 
+   methods.registerOption(ORACLE_OPT_RECV_TIMEOUT, "the Oracle Net receive timeout of the connection in milliseconds: a call that waits longer than this for data from the server ends with ORA-12609, and the connection is closed; 0 (the default) means no timeout; see the oracle_cancellation section of the driver documentation", bigIntTypeInfo);
+
    DBID_ORACLE = DBI.registerDriver("oracle", methods, dbi_oracle_caps);
 
    // free per-thread session information when each Qore thread terminates

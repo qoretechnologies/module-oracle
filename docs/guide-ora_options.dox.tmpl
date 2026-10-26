@@ -24,16 +24,27 @@
     @section oracle_cancellation Cancelling statements: out-of-band break
 
     When the thread running a statement is cancelled, or its %Program or sandbox is interrupted, the driver
-    cancels the statement with \c OCIBreak(), and the call raises \c ORA-01013.  How soon the server sees the
-    break depends on Oracle Net's break mode:
-    - <b>out-of-band break</b> (Oracle's default): the break is sent as TCP urgent data, which the server process
-      gets at once, so every statement is cancelled at once, including one that waits on the server: for a row lock
-      or another lock, in \c DBMS_SESSION.SLEEP, or for any other event
-    - <b>in-band break</b>, used when the server's \c sqlnet.ora sets \c DISABLE_OOB=ON, or when the network path
-      does not deliver TCP urgent data (some NAT devices, load balancers and firewalls remove it): the server sees
-      the break only at its next break check or when it next reads the connection; a statement that is working is
-      still cancelled promptly, but <b>a statement waiting on the server is not cancelled until its wait ends</b>,
-      which for a lock held by another session may be never
+    cancels the statement with \c OCIBreak(), and the call raises \c ORA-01013.  What happens then depends on
+    Oracle Net's break mode and on the network between the client and the server:
+    - <b>out-of-band break</b> (Oracle's default, when the client and the server both support it): the break is
+      sent as TCP urgent data, which the server process gets at once, so every statement is cancelled at once,
+      including one that waits on the server: for a row lock or another lock, in \c DBMS_SESSION.SLEEP, or for any
+      other event
+    - <b>in-band break</b>, used when the server's or the client's \c sqlnet.ora sets \c DISABLE_OOB=ON: the break
+      is sent as an ordinary packet, which the server sees only at its next break check or when it next reads the
+      connection; a statement that is working is still cancelled promptly, but <b>a statement waiting on the server
+      is not cancelled until its wait ends</b>, which for a lock held by another session may be never
+    - <b>out-of-band break through a network path that does not deliver TCP urgent data</b> (a proxy or port
+      forwarder that relays the connection's data but not its urgent data, such as an SSH tunnel or the user-mode
+      port forwarding of rootless containers, and some NAT devices, load balancers and firewalls): the server never
+      sees the break, so the statement runs until it ends by itself; the Oracle client then waits for the server to
+      answer the break, which never happens, so <b>the cancelled call does not return at all</b>.  This is in the
+      Oracle client itself, inside \c OCIStmtExecute(), and \c OCIReset() does not end it.  Only a receive timeout
+      of the connection (\c SQLNET.RECV_TIMEOUT in the client's \c sqlnet.ora, or \c RECV_TIMEOUT in its connect
+      descriptor or EZConnect parameters, or the driver's \c "recv-timeout" option for a single connection) ends
+      the call, with \c ORA-12609; the session cannot be used afterwards, and the driver connects again; note that a
+      receive timeout also ends any statement that runs longer than it.  Setting
+      \c DISABLE_OOB=ON in the client's \c sqlnet.ora for such a path turns this case into in-band break.
 
     So that a blocked statement can always be cancelled (and an interface using it does not stay blocked when it
     is stopped), the database server must not set \c DISABLE_OOB=ON, and the network between the client and the
@@ -41,7 +52,8 @@
     \c sqlnet.ora (for example \c gvenzl/oracle-free); remove the setting from the server's \c sqlnet.ora to restore
     it.  To check a connection, run a statement that waits (for example
     <tt>begin dbms_session.sleep(30); end;</tt>) and cancel it: with out-of-band break it ends at once with
-    \c ORA-01013, with in-band break only after the 30 seconds.
+    \c ORA-01013; with in-band break it ends with \c ORA-01013 only after the 30 seconds; through a path that does
+    not deliver urgent data it does not end.
 
 
     When compiled again Qore 0.8.6+ the oracle driver support the following DBI options on each connection:
@@ -53,6 +65,15 @@
       offset (ex: \c "+01:00") to set the server's time zone rules; this is useful if connecting to a database server
       in a different time zone.  If this option is not set then the server's time zone is assumed to be the same as
       the client's time zone; see @ref timezone.
+    - \c "recv-timeout": the Oracle Net receive timeout of the connection in milliseconds (a positive integer up
+      to 4294967295; 0, the default, means no timeout): a call that waits longer than this for data from the server
+      ends with \c ORA-12609, and the driver makes the connection again at once, with the same timeout; the statement
+      is not executed again, as it can have run on the server, and a transaction in progress is lost with the
+      session (\c DBI:ORACLE:TRANSACTION-ERROR is raised after the \c ORA-12609 error; end the transaction with
+      \c rollback() as after any error in a transaction).  The timeout also ends a statement that simply runs longer
+      than it, so it is meant for connections whose calls are known to be short; see @ref oracle_cancellation.
+      The module must be built with Oracle client headers that define \c OCI_ATTR_RECEIVE_TIMEOUT; otherwise
+      setting a timeout raises \c ORACLE-OPTION-ERROR
 
     Options can be set in the \c Datasource or \c DatasourcePool constructors as in the following examples:
     @code{.py}
