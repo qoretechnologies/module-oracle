@@ -25,6 +25,9 @@ echo "export QORE_GID=999" >> ${ENV_FILE}
 
 export MAKE_JOBS=4
 
+# every file that this job installs is newer than this one
+build_start=$(mktemp)
+
 # build module and install
 echo && echo "-- building module --"
 cd ${MODULE_SRC_DIR}
@@ -47,6 +50,14 @@ cd ${MODULE_SRC_DIR}
 set +e
 rc=0
 failed=
+# the tests must load the module that this job built and installed, not one that the image already has
+loaded=$(gosu qore:qore qore -l oracle -e 'printf("%s", get_module_hash().oracle.filename);')
+if [ ! "${loaded}" -nt "${build_start}" ]; then
+    echo "ERROR: the tests would load '${loaded}', which this job did not install" >&2
+    exit 1
+fi
+echo "-- the tests load ${loaded}"
+
 for test in test/*.qtest; do
     gosu qore:qore qore $test -vv
     if [ $? != 0 ]; then
