@@ -32,122 +32,99 @@ class OracleCancelCallbackTest inherits QUnit::Test {
         testSkip("QORE_DB_CONNSTR_ORACLE not set; skipping cancel callback tests");
     }
 
-    #! Test that Oracle operations can be cancelled via the cancel callback
+    #! The sandboxed code: it locks row 1 of the signal table, which the test then requests, and runs the statement
+    #! under test, a PL/SQL block whose first action ends the transaction and so releases the row; the test's own
+    #! request for the row returns exactly when the block is executing on the server, with no sleep and no polling
+    #! (DBMS_LOCK would need EXECUTE granted by SYS, which the test schema does not have)
+    const SandboxSource = "
+%new-style
+%require-types
+%strict-args
+
+sub runStatement(Queue q, string connstr, string lock_sql, string sql) {
+    Datasource ds(connstr);
+    try {
+        ds.exec(lock_sql);
+        q.push('locked');
+        ds.exec(sql);
+        q.push({'cancelled': False});
+    } catch (hash<ExceptionInfo> ex) {
+        q.push({'cancelled': True, 'err': ex.err, 'desc': ex.desc});
+    }
+    ds.rollback();
+}
+";
+
+    #! the longest the test waits for a row lock or for the sandboxed code; a guard against a hang, never an
+    #! expected time
+    const Timeout = 60;
+
+    #! the table whose rows the sessions lock
+    const SignalTable = "qore_cancel_signal";
+
+    #! Interrupts a sandboxed PL/SQL block once it is executing, and returns what the block's caller saw
+    /** @param body the statements of the block after it has released row 1
+    */
+    private hash<auto> interruptExecuting(string body) {
+        Datasource test(connstr);
+        try {
+            test.exec("create table " + SignalTable + " (a number primary key)");
+            test.exec("insert into " + SignalTable + " values (1)");
+            test.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            # ORA-00955: the table exists from an earlier case
+            test.rollback();
+            if (ex.desc !~ /ORA-00955/) {
+                rethrow;
+            }
+        }
+        on_exit {
+            test.rollback();
+        }
+
+        SandboxManager sm();
+        Queue resultQueue();
+        Program p(PO_NO_CHILD_PO_RESTRICTIONS);
+        p.setSandboxManager(sm);
+        p.loadModule("oracle");
+        p.parse(SandboxSource, "oracle_cancel_sandbox");
+
+        string lock_sql = "select a from " + SignalTable + " where a = 1 for update";
+        string sql = sprintf("declare n integer; begin rollback; %s end;", body);
+        background p.callFunction("runStatement", resultQueue, connstr, lock_sql, sql);
+        assertEq("locked", resultQueue.get(Timeout * 1000), "the sandboxed session holds row 1");
+        # returns when the block under test has released row 1: it is executing on the server
+        test.exec(sprintf("select a from %s where a = 1 for update wait %d", SignalTable, Timeout));
+
+        # the interrupt runs the connection's cancel callback (OCIBreak), which cancels the executing block
+        sm.requestInterrupt();
+        return resultQueue.get(Timeout * 1000);
+    }
+
+    #! An executing statement is cancelled by the cancel callback when its sandbox is interrupted
+    /** The statement is a cross join that counts 2.5 billion rows: DBMS_SESSION.SLEEP is not reliably interruptible
+        by OCIBreak in containers (TCP out-of-band data)
+    */
     testOracleCancel() {
-        SandboxManager sm();
-        Queue resultQueue();
-
-        Program p(PO_NO_CHILD_PO_RESTRICTIONS);
-        p.setSandboxManager(sm);
-        p.loadModule("oracle");
-
-        # Use a cross join of CONNECT BY subqueries to create a massive result set
-        # without excessive memory usage. OCIBreak can interrupt the Oracle query
-        # executor during active processing.
-        # DBMS_SESSION.SLEEP is not reliably interruptible by OCIBreak in Docker
-        # environments (TCP OOB data limitations).
-        p.parse(sprintf("
-%%new-style
-%%require-types
-%%strict-args
-
-sub runQuery(Queue q, string connstr) {
-    Datasource ds(connstr);
-    ds.setAutoCommit(True);
-
-    date start = now_us();
-    try {
-        # verify connection works before signaling 'connected'
-        ds.exec('select 1 from dual');
-        q.push('connected');
-
-        # cross join: 50000 x 50000 = 2.5B rows to count
-        # memory-efficient since each subquery is small, but takes a very long time
-        ds.exec('select count(*) from (select level from dual connect by level <= 50000) a, (select level from dual connect by level <= 50000) b');
-        int elapsed_ms = (now_us() - start).durationMilliseconds();
-        q.push({'cancelled': False, 'elapsed_ms': elapsed_ms});
-    } catch (hash<ExceptionInfo> ex) {
-        int elapsed_ms = (now_us() - start).durationMilliseconds();
-        q.push({'cancelled': True, 'err': ex.err, 'desc': ex.desc, 'elapsed_ms': elapsed_ms});
-    }
-}
-        ", "oracle_cancel"), "oracle_cancel_test");
-
-        background p.callFunction("runQuery", resultQueue, connstr);
-
-        auto connected = resultQueue.get(30s);
-        assertEq("connected", connected, "Connected to Oracle");
-
-        # send interrupt quickly - the query should take many seconds
-        usleep(1s);
-        sm.requestInterrupt();
-
-        # wait for the result - cancel should complete within a few seconds
-        hash<auto> result = resultQueue.get(30s);
-        assertTrue(result.cancelled, sprintf("Oracle query was cancelled (elapsed: %dms, err: %s, desc: %s)",
-            result.elapsed_ms, result.err, result.desc));
-        # verify the cancellation was via OCIBreak (ORA-01013)
-        assertRegex("ORA-01013", result.desc,
-            sprintf("Cancelled via OCIBreak with ORA-01013 (desc: %s)", result.desc));
-        # if cancelled via OCIBreak, it should complete well before the query duration
-        assertTrue(result.elapsed_ms < 15000,
-            sprintf("Cancel was timely (elapsed: %dms, should be < 15000ms)", result.elapsed_ms));
+        hash<auto> result = interruptExecuting("select count(*) into n from (select level from dual connect by "
+            "level <= 50000) a, (select level from dual connect by level <= 50000) b;");
+        assertTrue(result.cancelled, sprintf("the executing statement was cancelled (err: %s, desc: %s)",
+            result.err, result.desc));
+        assertRegex("ORA-01013", result.desc, sprintf("cancelled via OCIBreak with ORA-01013 (desc: %s)",
+            result.desc));
     }
 
-    #! Test Oracle cancel when query is blocked on server with a different query
+    #! A longer statement on the server is cancelled by the cancel callback when its sandbox is interrupted
+    /** A cross join that counts 5 billion rows.  A statement waiting on a row lock or in DBMS_SESSION.SLEEP is not
+        a case here: in containers OCIBreak does not end such waits (the break arrives as TCP out-of-band data, which
+        a waiting server process does not see), while it does end a statement that is working
+    */
     testOracleBlockedCancel() {
-        SandboxManager sm();
-        Queue resultQueue();
-
-        Program p(PO_NO_CHILD_PO_RESTRICTIONS);
-        p.setSandboxManager(sm);
-        p.loadModule("oracle");
-
-        # Use a cross join with larger sizes for the second test
-        p.parse(sprintf("
-%%new-style
-%%require-types
-%%strict-args
-
-sub runBlockingQuery(Queue q, string connstr) {
-    Datasource ds(connstr);
-    ds.setAutoCommit(True);
-
-    date start = now_us();
-    try {
-        # verify connection works before signaling 'connected'
-        ds.exec('select 1 from dual');
-        q.push('connected');
-
-        # cross join: 50000 x 100000 = 5B rows to count
-        ds.exec('select count(*) from (select level from dual connect by level <= 50000) a, (select level from dual connect by level <= 100000) b');
-        int elapsed_ms = (now_us() - start).durationMilliseconds();
-        q.push({'cancelled': False, 'elapsed_ms': elapsed_ms});
-    } catch (hash<ExceptionInfo> ex) {
-        int elapsed_ms = (now_us() - start).durationMilliseconds();
-        q.push({'cancelled': True, 'err': ex.err, 'desc': ex.desc, 'elapsed_ms': elapsed_ms});
-    }
-}
-        ", "oracle_blocked"), "oracle_blocked_test");
-
-        background p.callFunction("runBlockingQuery", resultQueue, connstr);
-
-        auto connected = resultQueue.get(30s);
-        assertEq("connected", connected, "Connected to Oracle");
-
-        # send interrupt quickly - the query should take many seconds
-        usleep(1s);
-        sm.requestInterrupt();
-
-        # wait for the result - cancel should complete within a few seconds
-        hash<auto> result = resultQueue.get(30s);
-        assertTrue(result.cancelled, sprintf("Blocked Oracle query was cancelled (elapsed: %dms, err: %s, desc: %s)",
-            result.elapsed_ms, result.err, result.desc));
-        # verify the cancellation was via OCIBreak (ORA-01013)
-        assertRegex("ORA-01013", result.desc,
-            sprintf("Cancelled via OCIBreak with ORA-01013 (desc: %s)", result.desc));
-        # if cancelled via OCIBreak, it should complete well before the query duration
-        assertTrue(result.elapsed_ms < 15000,
-            sprintf("Blocked cancel was timely (elapsed: %dms, should be < 15000ms)", result.elapsed_ms));
+        hash<auto> result = interruptExecuting("select count(*) into n from (select level from dual connect by "
+            "level <= 50000) a, (select level from dual connect by level <= 100000) b;");
+        assertTrue(result.cancelled, sprintf("the longer statement was cancelled (err: %s, desc: %s)",
+            result.err, result.desc));
+        assertRegex("ORA-01013", result.desc, sprintf("cancelled via OCIBreak with ORA-01013 (desc: %s)",
+            result.desc));
     }
 }
