@@ -38,6 +38,9 @@
     - preserved Qore cancellation after server attachment and session creation, and registered session-login cancellation
     - fixed cancellation callbacks outliving their helper and accessing freed OCI handles
     - documented Oracle Net connection timeouts and raised the build language requirement to C++17
+    - documented that cancelling a statement that waits on the server (for a lock, in \c DBMS_SESSION.SLEEP) needs
+      Oracle Net's out-of-band break, which a server with \c DISABLE_OOB=ON or a network path that removes TCP urgent
+      data does not have (see @ref oracle_cancellation)
 
     - fixed an infinite loop when counting UTF-8 characters in nonempty LOB buffers
     - added @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()" and

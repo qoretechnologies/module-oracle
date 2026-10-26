@@ -21,6 +21,28 @@
     after server attachment and session creation. Session creation registers an OCIBreak callback, and
     cancellation callbacks cannot access OCI handles after their helper has been destroyed.
 
+    @section oracle_cancellation Cancelling statements: out-of-band break
+
+    When the thread running a statement is cancelled, or its %Program or sandbox is interrupted, the driver
+    cancels the statement with \c OCIBreak(), and the call raises \c ORA-01013.  How soon the server sees the
+    break depends on Oracle Net's break mode:
+    - <b>out-of-band break</b> (Oracle's default): the break is sent as TCP urgent data, which the server process
+      gets at once, so every statement is cancelled at once, including one that waits on the server: for a row lock
+      or another lock, in \c DBMS_SESSION.SLEEP, or for any other event
+    - <b>in-band break</b>, used when the server's \c sqlnet.ora sets \c DISABLE_OOB=ON, or when the network path
+      does not deliver TCP urgent data (some NAT devices, load balancers and firewalls remove it): the server sees
+      the break only at its next break check or when it next reads the connection; a statement that is working is
+      still cancelled promptly, but <b>a statement waiting on the server is not cancelled until its wait ends</b>,
+      which for a lock held by another session may be never
+
+    So that a blocked statement can always be cancelled (and an interface using it does not stay blocked when it
+    is stopped), the database server must not set \c DISABLE_OOB=ON, and the network between the client and the
+    server must pass TCP urgent data.  Some container images of Oracle Database disable out-of-band break in their
+    \c sqlnet.ora (for example \c gvenzl/oracle-free); remove the setting from the server's \c sqlnet.ora to restore
+    it.  To check a connection, run a statement that waits (for example
+    <tt>begin dbms_session.sleep(30); end;</tt>) and cancel it: with out-of-band break it ends at once with
+    \c ORA-01013, with in-band break only after the 30 seconds.
+
 
     When compiled again Qore 0.8.6+ the oracle driver support the following DBI options on each connection:
     - \c "optimal-numbers": return <tt>NUMBER</tt> types as an integer if possible, if not as an arbitrary-precision
