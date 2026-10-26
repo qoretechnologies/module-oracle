@@ -23,6 +23,8 @@ class OracleCancelCallbackTest inherits QUnit::Test {
         } else {
             addTestCase("Oracle cancel callback test", \testOracleCancel());
             addTestCase("Oracle blocked cancel test", \testOracleBlockedCancel());
+            addTestCase("Oracle cancel of a statement waiting on a row lock", \testOracleRowLockCancel());
+            addTestCase("Oracle cancel of DBMS_SESSION.SLEEP", \testOracleSleepCancel());
         }
 
         set_return_value(main());
@@ -64,12 +66,14 @@ sub runStatement(Queue q, string connstr, string lock_sql, string sql) {
 
     #! Interrupts a sandboxed PL/SQL block once it is executing, and returns what the block's caller saw
     /** @param body the statements of the block after it has released row 1
+        @param holdRow2 True if the test locks row 2 while the block runs
     */
-    private hash<auto> interruptExecuting(string body) {
+    private hash<auto> interruptExecuting(string body, bool holdRow2 = False) {
         Datasource test(connstr);
         try {
             test.exec("create table " + SignalTable + " (a number primary key)");
             test.exec("insert into " + SignalTable + " values (1)");
+            test.exec("insert into " + SignalTable + " values (2)");
             test.commit();
         } catch (hash<ExceptionInfo> ex) {
             # ORA-00955: the table exists from an earlier case
@@ -80,6 +84,9 @@ sub runStatement(Queue q, string connstr, string lock_sql, string sql) {
         }
         on_exit {
             test.rollback();
+        }
+        if (holdRow2) {
+            test.exec("select a from " + SignalTable + " where a = 2 for update");
         }
 
         SandboxManager sm();
@@ -102,8 +109,8 @@ sub runStatement(Queue q, string connstr, string lock_sql, string sql) {
     }
 
     #! An executing statement is cancelled by the cancel callback when its sandbox is interrupted
-    /** The statement is a cross join that counts 2.5 billion rows: DBMS_SESSION.SLEEP is not reliably interruptible
-        by OCIBreak in containers (TCP out-of-band data)
+    /** A cross join that counts 2.5 billion rows: a server that is working sees a break even when it gets it in
+        band, at its next check
     */
     testOracleCancel() {
         hash<auto> result = interruptExecuting("select count(*) into n from (select level from dual connect by "
@@ -115,14 +122,36 @@ sub runStatement(Queue q, string connstr, string lock_sql, string sql) {
     }
 
     #! A longer statement on the server is cancelled by the cancel callback when its sandbox is interrupted
-    /** A cross join that counts 5 billion rows.  A statement waiting on a row lock or in DBMS_SESSION.SLEEP is not
-        a case here: in containers OCIBreak does not end such waits (the break arrives as TCP out-of-band data, which
-        a waiting server process does not see), while it does end a statement that is working
+    /** A cross join that counts 5 billion rows
     */
     testOracleBlockedCancel() {
         hash<auto> result = interruptExecuting("select count(*) into n from (select level from dual connect by "
             "level <= 50000) a, (select level from dual connect by level <= 100000) b;");
         assertTrue(result.cancelled, sprintf("the longer statement was cancelled (err: %s, desc: %s)",
+            result.err, result.desc));
+        assertRegex("ORA-01013", result.desc, sprintf("cancelled via OCIBreak with ORA-01013 (desc: %s)",
+            result.desc));
+    }
+
+    #! A statement waiting on the server for a row lock is cancelled by the cancel callback
+    /** A waiting server sees the break only out of band: with DISABLE_OOB=ON on the server, the wait would end only
+        when the lock is released
+    */
+    testOracleRowLockCancel() {
+        hash<auto> result = interruptExecuting("select a into n from " + SignalTable + " where a = 2 for update;",
+            True);
+        assertTrue(result.cancelled, sprintf("the statement waiting on a row lock was cancelled (err: %s, desc: %s)",
+            result.err, result.desc));
+        assertRegex("ORA-01013", result.desc, sprintf("cancelled via OCIBreak with ORA-01013 (desc: %s)",
+            result.desc));
+    }
+
+    #! A statement waiting on the server in DBMS_SESSION.SLEEP is cancelled by the cancel callback
+    /** The sleep is longer than the bound of the result wait, so it cannot end by itself before the test fails
+    */
+    testOracleSleepCancel() {
+        hash<auto> result = interruptExecuting("dbms_session.sleep(" + (Timeout * 5) + ");");
+        assertTrue(result.cancelled, sprintf("the sleeping statement was cancelled (err: %s, desc: %s)",
             result.err, result.desc));
         assertRegex("ORA-01013", result.desc, sprintf("cancelled via OCIBreak with ORA-01013 (desc: %s)",
             result.desc));

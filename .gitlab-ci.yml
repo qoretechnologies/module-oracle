@@ -18,6 +18,19 @@ variables:
     - name: gvenzl/oracle-free:slim
       alias: oracle
       pull_policy: always
+      # The image's sqlnet.ora sets DISABLE_OOB=ON (gvenzl/oci-oracle-xe issue 43), so the server sees a break
+      # (OCIBreak) only when it next reads the connection: a statement waiting on the server (a row lock,
+      # DBMS_SESSION.SLEEP) cannot be cancelled.  The setting is removed from every server sqlnet.ora of the image
+      # before the image's own entrypoint runs, so the server gets Oracle's default out-of-band break.  Should the
+      # file move in a later image, the setting stays and the cancel tests of waiting statements fail, which shows
+      # it.  (The command has no "$": GitLab expands variables in it.)
+      entrypoint:
+        - sh
+        - -c
+        - >-
+          sed -i -E '/^[[:space:]]*DISABLE_OOB[[:space:]]*=/Id' /opt/oracle/product/*/*/network/admin/sqlnet.ora;
+          grep -H -i -E 'oob|break' /opt/oracle/product/*/*/network/admin/sqlnet.ora;
+          exec container-entrypoint.sh
   variables:
     ORACLE_PASSWORD: omq
     DOCKER_ORACLE: "1"
