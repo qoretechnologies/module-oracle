@@ -507,6 +507,13 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
     sb4 errcode;
     text errbuf[512];
     OCIErrorGet((dvoid*)errhp, (ub4)1, (text*)nullptr, &errcode, errbuf, (ub4)sizeof(errbuf), OCI_HTYPE_ERROR);
+
+    // an error while logging on is the logon's own: the session being made is not a lost connection (a ping on it
+    // fails), so it is not handled again here, which closed the connection without reporting the error
+    if (in_logon) {
+        doException(who, errbuf, errcode, xsink);
+        return false;
+    }
     // ORA-03113 and ORA-03114 are lost connections
     // issue #802: ORA-01041 is only raised due to a bug in Oracle pre 12c
     if (errcode == 3113 || errcode == 3114 || errcode == 1041)
@@ -528,14 +535,17 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
             i->clear(xsink);
         }
         ds.connectionLost(xsink);
-        // the session is ended with the connection, which the server sees as a lost connection; the statement
-        // handle of the call is kept, as it belongs to the environment, and is freed by its caller
-        logoff();
+        // the connection is closed without ending the session: ending it (OCISessionEnd()) asks the server to end the
+        // session, which commits its transaction once the server gets to it, and the server would commit the lost
+        // transaction when its statement ends; a closed connection is a lost connection to the server, which rolls
+        // the transaction back; the statement handle of the call is kept, as it belongs to the environment, and is
+        // freed by its caller
+        abandonSession();
         if (logon(xsink)) {
             for (auto& i : stmt_set) {
                 i->reset(xsink);
             }
-            ds.connectionAborted(xsink);
+            abortConnection(xsink);
             return false;
         }
         clearWarnings();
@@ -581,7 +591,7 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
                     i->reset(xsink);
                 }
                 // close datasource and remove private data
-                ds.connectionAborted(xsink);
+                abortConnection(xsink);
                 return false;
             }
 
@@ -604,11 +614,13 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
             return true;
         }
 
+        // the call's own error says that the connection was lost
+        doException(who, errbuf, errcode, xsink);
         for (auto& i : stmt_set) {
             i->reset(xsink);
         }
         // close datasource and remove private data
-        ds.connectionAborted(xsink);
+        abortConnection(xsink);
         return false;
     }
 
@@ -631,6 +643,16 @@ int QoreOracleConnection::doException(const char *query_name, text errbuf[], sb4
 int QoreOracleConnection::logon(ExceptionSink *xsink) {
    // a new session starts without the attributes set on a previous session; set all of them again
    session_info_known = false;
+
+   // errors here are the logon's own (see handleError())
+   assert(!in_logon);
+   in_logon = true;
+   struct LogonFlagHelper {
+       bool& flag;
+       ~LogonFlagHelper() {
+           flag = false;
+       }
+   } logon_flag_helper{in_logon};
 
    const std::string &user = ds.getUsernameStr();
    const std::string &pass = ds.getPasswordStr();

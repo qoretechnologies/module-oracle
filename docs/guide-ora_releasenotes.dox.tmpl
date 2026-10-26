@@ -44,6 +44,9 @@
     - added the \c "recv-timeout" option, the Oracle Net receive timeout of a connection: a call that waits longer
       for the server ends with \c ORA-12609, and the connection is made again without executing the statement again
       (see @ref oracleora_optionsguide)
+    - fixed a lost connection that could not be made again (for example, the server refused the new session): the
+      error of the new session was not reported, and the driver used memory it had already freed, which could crash
+      the process; the error is now raised, and the connection is closed once the call has freed its statement
 
     - fixed an infinite loop when counting UTF-8 characters in nonempty LOB buffers
     - added @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()" and

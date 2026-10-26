@@ -212,6 +212,13 @@ public:
     */
     ub4 recv_timeout_ms = 0;
 
+    //! how many driver calls holding statements on the stack are in progress (see QoreOracleCallGuard)
+    int call_depth = 0;
+    //! true if the connection was lost and could not be made again during a call: it is closed when the call ends
+    bool abort_pending = false;
+    //! true while logon() runs: an error then is the logon's own, never a connection lost by a call
+    bool in_logon = false;
+
 private:
     //! the process that created the connection; see isForkedChild()
     const pid_t pid = getpid();
@@ -234,6 +241,19 @@ public:
     DLLLOCAL int checkerr(sword status, const char *query_name, ExceptionSink* xsink, bool* retry = nullptr);
 
     DLLLOCAL bool handleError(ExceptionSink* xsink, const char* who, bool can_retry);
+
+    //! closes the datasource of a lost connection that could not be made again
+    /** In a driver call that holds statements on the stack (see QoreOracleCallGuard), the connection is closed when
+        the call ends, after the statements have freed their handles: closing it deletes this object and frees the
+        handles' environment, which the statements would then use.
+    */
+    DLLLOCAL void abortConnection(ExceptionSink* xsink) {
+        if (call_depth) {
+            abort_pending = true;
+            return;
+        }
+        ds.connectionAborted(xsink);
+    }
 
     //! true while the server handle is attached (between OCIServerAttach() and OCIServerDetach())
     bool server_attached = false;
@@ -298,6 +318,17 @@ public:
         OCIServerDetach(srvhp, errhp, OCI_DEFAULT);
         server_attached = false;
         return rc;
+    }
+
+    //! closes the connection without ending its session, for a session that cannot be used any more
+    /** The server sees a lost connection, ends the session and rolls its transaction back.
+    */
+    DLLLOCAL void abandonSession() {
+        assert(svchp);
+        if (ocilib_cn)
+            clearCache();
+        OCIServerDetach(srvhp, errhp, OCI_DEFAULT);
+        server_attached = false;
     }
 
     // clear cached objects
@@ -566,6 +597,35 @@ protected:
         ((BinaryNode*)bp)->append((char*)bufp, len);
         return OCI_CONTINUE;
     }
+};
+
+//! Marks a driver call that holds statements on the stack; declare it before them, so that it ends after them
+/** A connection lost during the call that cannot be made again is closed when the outermost such call ends (see
+    QoreOracleConnection::abortConnection()).
+*/
+class QoreOracleCallGuard {
+public:
+    DLLLOCAL QoreOracleCallGuard(Datasource* ds, ExceptionSink* xsink) : ds(ds), xsink(xsink),
+            conn(&ds->getPrivateDataRef<QoreOracleConnection>()) {
+        ++conn->call_depth;
+    }
+
+    DLLLOCAL ~QoreOracleCallGuard() {
+        assert(conn->call_depth > 0);
+        if (!--conn->call_depth && conn->abort_pending) {
+            conn->abort_pending = false;
+            // deletes the connection
+            ds->connectionAborted(xsink);
+        }
+    }
+
+    QoreOracleCallGuard(const QoreOracleCallGuard&) = delete;
+    QoreOracleCallGuard& operator=(const QoreOracleCallGuard&) = delete;
+
+private:
+    Datasource* ds;
+    ExceptionSink* xsink;
+    QoreOracleConnection* conn;
 };
 
 #endif

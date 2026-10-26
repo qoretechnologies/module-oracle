@@ -27,6 +27,9 @@ class OracleRecvTimeoutTest inherits QUnit::Test {
     #! a statement that waits on the server far longer than the timeout; it can only end early by the timeout
     const LongSleep = "begin dbms_session.sleep(60); end;";
 
+    #! the table of the tests that need one
+    const Table = "qore_recv_timeout_t";
+
     #! the session of the current connection
     #! (the audit session ID: a SID is reused by later sessions)
     const SidSql = "select sys_context('userenv', 'sessionid') sid from dual";
@@ -139,20 +142,35 @@ class OracleRecvTimeoutTest inherits QUnit::Test {
         assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-12609", \ds.exec(), LongSleep);
     }
 
+    #! returns a connection with the timeout of the tests and an empty table of the tests
+    private Datasource getTableConnection() {
+        Datasource ds(connstr);
+        try {
+            ds.exec("create table " + Table + " (a number)");
+        } catch (hash<ExceptionInfo> ex) {
+            # ORA-00955: the table exists from an earlier case or run
+            if (ex.desc !~ /ORA-00955/) {
+                rethrow;
+            }
+        }
+        ds.exec("delete from " + Table);
+        ds.commit();
+        ds.setOption("recv-timeout", TimeoutMs);
+        return ds;
+    }
+
     #! after a timeout, the connection is made again at once, with the same timeout; the statement is not executed
     #! again
     testNextUse() {
-        Datasource ds(connstr);
-        ds.setOption("recv-timeout", TimeoutMs);
+        Datasource ds = getTableConnection();
         on_exit ds.rollback();
-        ds.open();
         auto sid = ds.selectRow(SidSql).sid;
-        date start = now_us();
-        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-12609", \ds.exec(), LongSleep);
-        # the call ends with the timeout, and the statement is not executed again (which would take another timeout)
-        assertLt(2 * TimeoutMs, (now_us() - start).durationMilliseconds(), "the statement is not executed again");
+        # the block commits a row before it waits: executed again, it would commit a second one
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-12609", \ds.exec(), sprintf("begin insert into %s values (1); "
+            "commit; dbms_session.sleep(60); end;", Table));
         # an error in a transaction leaves the transaction to the caller, as for any statement error
         ds.rollback();
+        assertEq(1, ds.selectRow("select count(1) c from " + Table).c, "the statement is not executed again");
         # a new session
         auto new_sid = ds.selectRow(SidSql).sid;
         assertNeq(sid, new_sid, "the next use has a new session");
@@ -164,18 +182,23 @@ class OracleRecvTimeoutTest inherits QUnit::Test {
         assertEq(1, ds.selectRow("select 1 n from dual").n);
     }
 
-    #! a call that times out in a transaction loses the transaction: its session is ended
+    #! a call that times out in a transaction loses the transaction: it is rolled back, never committed
+    /** The server session of the call ends only when its statement does; the test then waits for the transaction's
+        row lock, which is released exactly when that session's transaction ends, and reads what it left
+    */
     testTimeoutInTransaction() {
-        Datasource ds(connstr);
-        ds.setOption("recv-timeout", TimeoutMs);
+        Datasource ds = getTableConnection();
         on_exit ds.rollback();
-        ds.open();
+        ds.exec("insert into " + Table + " values (5)");
+        ds.commit();
+
         ds.beginTransaction();
-        ds.select("select dummy from dual for update");
+        ds.exec("update " + Table + " set a = 6 where a = 5");
         assertTrue(ds.inTransaction());
         hash<ExceptionInfo> ex;
         try {
-            ds.exec(LongSleep);
+            # longer than the timeout, short enough for the old session to end soon after it
+            ds.exec("begin dbms_session.sleep(3); end;");
         } catch (hash<ExceptionInfo> ex1) {
             ex = ex1;
         }
@@ -184,12 +207,14 @@ class OracleRecvTimeoutTest inherits QUnit::Test {
         assertEq("DBI:ORACLE:TRANSACTION-ERROR", ex.next.err, "the lost transaction is reported");
         ds.rollback();
         assertFalse(ds.inTransaction());
-        # the row lock of the lost transaction was released with its session: another session can take it at once
+
+        # returns when the old session's transaction has ended
         Datasource other(connstr);
         on_exit other.rollback();
-        other.select("select dummy from dual for update nowait");
+        assertEq(5, other.selectRow("select a from " + Table + " for update wait 60").a,
+            "the lost transaction was rolled back, not committed");
         other.rollback();
-        assertEq(1, ds.selectRow("select 1 n from dual").n);
+        assertEq(5, ds.selectRow("select a from " + Table).a);
     }
 
     #! setting 0 removes the timeout from an open connection

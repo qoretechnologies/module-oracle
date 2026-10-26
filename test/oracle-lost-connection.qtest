@@ -1,0 +1,163 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+/*  oracle-lost-connection.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
+
+    Tests a connection that is lost during a call and cannot be made again: the driver closes the connection, and
+    the call's statement is freed before the connection is (valgrind showed it read freed handles).
+
+    Needs QORE_DB_CONNSTR_ORACLE for the server, and a privileged connection in SYS_OMQ_DB_STRING (for example
+    "oracle:system/pass@db") to create the test user, end its session and lock it.
+*/
+
+%modern
+
+%requires QUnit
+%requires oracle
+
+%exec-class OracleLostConnectionTest
+
+class OracleLostConnectionTest inherits QUnit::Test {
+    private {
+        *string connstr;
+        *string sys_connstr;
+    }
+
+    #! the user whose session is ended and whose account is locked so that no new session can be made
+    const TestUser = "qore_lost_conn";
+    const TestPass = "qore_lost_conn";
+
+    constructor() : QUnit::Test("OracleLostConnectionTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE;
+        sys_connstr = ENV.SYS_OMQ_DB_STRING;
+
+        if (!connstr || !sys_connstr) {
+            addTestCase("No database connection configured", \testNoDatabaseConfigured());
+        } else {
+            addTestCase("a call whose connection is lost and cannot be made again", \testReconnectFails());
+            addTestCase("the same in a transaction", \testReconnectFailsInTransaction());
+            addTestCase("a lost connection in a pool that cannot be made again", \testPoolReconnectFails());
+        }
+
+        set_return_value(main());
+    }
+
+    testNoDatabaseConfigured() {
+        testSkip("QORE_DB_CONNSTR_ORACLE or SYS_OMQ_DB_STRING not set; skipping the lost connection tests");
+    }
+
+    #! returns the connection string of the test user on the server of the test connection
+    private string getUserConnStr() {
+        hash<auto> h = parse_datasource(connstr);
+        string rv = sprintf("oracle:%s/%s@%s", TestUser, TestPass, h.db);
+        if (h.host) {
+            rv += sprintf("%%%s:%d", h.host, h.port);
+        }
+        return rv;
+    }
+
+    #! creates the test user if it does not exist, and unlocks it; the user is kept, as a session that was ended
+    #! goes away only some time later, and a user with sessions cannot be dropped
+    private createUser(Datasource sys) {
+        on_exit sys.rollback();
+        try {
+            sys.exec(sprintf("create user %s identified by %s", TestUser, TestPass));
+            sys.exec(sprintf("grant create session to %s", TestUser));
+        } catch (hash<ExceptionInfo> ex) {
+            # ORA-01920: the user exists from an earlier case or run
+            if (ex.desc !~ /ORA-01920/) {
+                rethrow;
+            }
+        }
+        unlock(sys);
+    }
+
+    #! ends every session of the test user and locks its account, so that the next call loses its connection and
+    #! cannot make a new one
+    private loseConnection(Datasource sys) {
+        sys.exec(sprintf("alter user %s account lock", TestUser));
+        killSessions(sys);
+        sys.commit();
+    }
+
+    #! ends every session of the test user
+    private killSessions(Datasource sys) {
+        foreach hash<auto> s in (sys.select("select sid, serial# serial from v$session where username = %v",
+                TestUser.upr()).contextIterator()) {
+            try {
+                sys.exec(sprintf("alter system kill session '%d,%d' immediate", s.sid, s.serial));
+            } catch (hash<ExceptionInfo> ex) {
+                # ORA-00030: the session has ended in the meantime
+                if (ex.desc !~ /ORA-00030/) {
+                    rethrow;
+                }
+            }
+        }
+    }
+
+    private unlock(Datasource sys) {
+        sys.exec(sprintf("alter user %s account unlock", TestUser));
+        sys.commit();
+    }
+
+    #! the call fails with an error, the connection is closed, and the next use connects again once it can
+    testReconnectFails() {
+        Datasource sys(sys_connstr);
+        createUser(sys);
+        on_exit unlock(sys);
+
+        Datasource ds(getUserConnStr());
+        assertEq(1, ds.selectRow("select 1 n from dual").n);
+        loseConnection(sys);
+
+        # the connection is lost, and making it again is refused: the locked account
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-28000", \ds.selectRow(), "select 1 n from dual");
+        # an exec as well (another entry point of the driver); the closed datasource connects again and is refused
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-28000", \ds.exec(), "begin null; end;");
+
+        # once the account can log in again, the datasource connects again
+        unlock(sys);
+        assertEq(1, ds.selectRow("select 1 n from dual").n);
+        ds.rollback();
+    }
+
+    #! a lost transaction is reported, and the datasource can be used after the rollback
+    testReconnectFailsInTransaction() {
+        Datasource sys(sys_connstr);
+        createUser(sys);
+        on_exit unlock(sys);
+
+        Datasource ds(getUserConnStr());
+        ds.beginTransaction();
+        assertEq(1, ds.selectRow("select 1 n from dual").n);
+        loseConnection(sys);
+
+        hash<ExceptionInfo> ex;
+        try {
+            ds.exec("begin null; end;");
+        } catch (hash<ExceptionInfo> ex1) {
+            ex = ex1;
+        }
+        assertEq("DBI:ORACLE:TRANSACTION-ERROR", ex.err, "the lost transaction is reported first");
+        assertFalse(ds.inTransaction(), "the transaction ended with the connection");
+
+        unlock(sys);
+        assertEq(1, ds.selectRow("select 1 n from dual").n);
+        ds.rollback();
+    }
+
+    #! a pool connection that is lost and cannot be made again is closed; the pool connects again
+    testPoolReconnectFails() {
+        Datasource sys(sys_connstr);
+        createUser(sys);
+        on_exit unlock(sys);
+
+        DatasourcePool dsp(getUserConnStr() + "{min=1,max=1}");
+        assertEq(1, dsp.selectRow("select 1 n from dual").n);
+        loseConnection(sys);
+        assertThrows("DBI:ORACLE:OCI-ERROR", "ORA-28000", \dsp.selectRow(), "select 1 n from dual");
+
+        unlock(sys);
+        assertEq(1, dsp.selectRow("select 1 n from dual").n);
+    }
+}

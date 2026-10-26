@@ -137,6 +137,7 @@ static int oracle_rollback(Datasource* ds, ExceptionSink* xsink) {
 }
 
 static QoreValue oracle_exec(Datasource* ds, const QoreString* qstr, const QoreListNode* args, ExceptionSink* xsink) {
+    QoreOracleCallGuard cg(ds, xsink);
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
@@ -146,6 +147,7 @@ static QoreValue oracle_exec(Datasource* ds, const QoreString* qstr, const QoreL
 }
 
 static QoreValue oracle_select(Datasource* ds, const QoreString* qstr, const QoreListNode* args, ExceptionSink* xsink) {
+    QoreOracleCallGuard cg(ds, xsink);
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
@@ -157,6 +159,7 @@ static QoreValue oracle_select(Datasource* ds, const QoreString* qstr, const Qor
 #ifdef QDBI_METHOD_SELECT_TYPED
 static QoreValue oracle_select_typed(Datasource* ds, const QoreString* qstr, const QoreListNode* args,
         ExceptionSink* xsink) {
+    QoreOracleCallGuard cg(ds, xsink);
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink)) {
@@ -170,6 +173,7 @@ static QoreValue oracle_select_typed(Datasource* ds, const QoreString* qstr, con
 #ifdef QDBI_METHOD_SELECT_COLUMNAR
 static QoreColumnarResult* oracle_select_columnar(Datasource* ds, const QoreString* qstr, const QoreListNode* args,
         ExceptionSink* xsink) {
+    QoreOracleCallGuard cg(ds, xsink);
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink)) {
@@ -181,6 +185,7 @@ static QoreColumnarResult* oracle_select_columnar(Datasource* ds, const QoreStri
 #endif
 
 static QoreValue oracle_exec_raw(Datasource* ds, const QoreString* qstr, ExceptionSink* xsink) {
+    QoreOracleCallGuard cg(ds, xsink);
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, 0, false, xsink))
@@ -208,6 +213,7 @@ static int oracle_bulk_load_end(Datasource* ds, bool success, ExceptionSink* xsi
 #endif
 
 static QoreHashNode* oracle_select_row(Datasource* ds, const QoreString* qstr, const QoreListNode* args, ExceptionSink* xsink) {
+    QoreOracleCallGuard cg(ds, xsink);
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
@@ -217,6 +223,7 @@ static QoreHashNode* oracle_select_row(Datasource* ds, const QoreString* qstr, c
 }
 
 static QoreValue oracle_exec_rows(Datasource* ds, const QoreString* qstr, const QoreListNode* args, ExceptionSink* xsink) {
+    QoreOracleCallGuard cg(ds, xsink);
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
@@ -228,6 +235,7 @@ static QoreValue oracle_exec_rows(Datasource* ds, const QoreString* qstr, const 
 #ifdef QDBI_METHOD_SELECT_TYPED
 static QoreValue oracle_exec_rows_typed(Datasource* ds, const QoreString* qstr, const QoreListNode* args,
         ExceptionSink* xsink) {
+    QoreOracleCallGuard cg(ds, xsink);
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink)) {
