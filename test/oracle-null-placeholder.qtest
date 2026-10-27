@@ -1,0 +1,137 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+
+# Tests placeholder hashes with NULL as the value of the "value" and "type" keys: the outcome is the same in every
+# execution mode, as in the AST interpreter.  The AST interpreter and the IR and JIT engines pass a literal NULL to a
+# builtin differently, so the placeholders are given from code parsed in each execution mode: from functions and
+# methods, with a literal NULL and NULL from a variable.
+# Database tests need QORE_DB_CONNSTR_ORACLE (or the connection string as the first argument).
+
+%modern
+
+%requires QUnit
+%requires oracle
+
+%exec-class OracleNullPlaceholderTest
+
+class OracleNullPlaceholderTest inherits QUnit::Test {
+    public {
+        #! the execution modes that the placeholders are given in
+        const Modes = {"ast": EM_AST, "ir": EM_IR, "jit": EM_JIT, "tiered": EM_TIERED};
+
+        #! the outcome of a placeholder whose "type" key is NULL
+        const NullTypeError = "BIND-ERROR: expecting type name as value of 'type' key, got 'NULL'";
+
+        #! the outcome of a placeholder whose "value" key is NULL and that has no "type" key
+        const NullValueError = "BIND-ERROR: type 'NULL' is not supported for SQL binding";
+
+        #! the code run in each execution mode; each function returns the output or the exception as "err: desc"
+        const Code = "%modern
+auto sub outcome(code c) {
+    try {
+        return c();
+    } catch (hash<ExceptionInfo> ex) {
+        return ex.err + \": \" + ex.desc;
+    }
+}
+auto sub run(Datasource ds, hash<auto> ph) {
+    on_exit ds.rollback();
+    return outcome(auto sub () { return ds.exec(\"begin :v := 'x'; end;\", ph); });
+}
+
+auto sub type_literal(Datasource ds) {
+    on_exit ds.rollback();
+    return outcome(auto sub () { return ds.exec(\"begin :v := 'x'; end;\", {\"type\": NULL}); });
+}
+auto sub type_variable(Datasource ds) {
+    auto n = NULL;
+    return run(ds, {\"type\": n});
+}
+auto sub value_literal(Datasource ds) {
+    on_exit ds.rollback();
+    return outcome(auto sub () { return ds.exec(\"begin :v := 'x'; end;\", {\"value\": NULL}); });
+}
+auto sub value_variable(Datasource ds) {
+    auto n = NULL;
+    return run(ds, {\"value\": n});
+}
+
+class NullPlaceholder {
+    auto typeLiteral(Datasource ds) {
+        on_exit ds.rollback();
+        return outcome(auto sub () { return ds.exec(\"begin :v := 'x'; end;\", {\"type\": NULL}); });
+    }
+    auto valueLiteral(Datasource ds) {
+        on_exit ds.rollback();
+        return outcome(auto sub () { return ds.exec(\"begin :v := 'x'; end;\", {\"value\": NULL}); });
+    }
+}
+auto sub method_type_literal(Datasource ds) {
+    return (new NullPlaceholder()).typeLiteral(ds);
+}
+auto sub method_value_literal(Datasource ds) {
+    return (new NullPlaceholder()).valueLiteral(ds);
+}
+";
+    }
+
+    private {
+        *string connstr;
+        *Datasource ds;
+    }
+
+    constructor() : QUnit::Test("OracleNullPlaceholderTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE ?? shift ARGV;
+        addTestCase("a NULL placeholder type in each execution mode", \nullTypeTest());
+        addTestCase("a NULL placeholder value in each execution mode", \nullValueTest());
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        if (connstr) {
+            ds = new Datasource(connstr);
+            ds.open();
+        }
+    }
+
+    globalTearDown() {
+        if (ds) {
+            ds.close();
+        }
+    }
+
+    setUp() {
+        if (!ds) {
+            testSkip("no database connection: set QORE_DB_CONNSTR_ORACLE");
+        }
+    }
+
+    nullTypeTest() {
+        # the placeholder works with a type
+        assertEq({"v": "x"}, ds.exec("begin :v := 'x'; end;", {"type": "string"}));
+        ds.rollback();
+        foreach hash<auto> mode in (Modes.pairIterator()) {
+            Program pgm = getProgram(mode.key, mode.value);
+            foreach string func in ("type_literal", "type_variable", "method_type_literal") {
+                assertEq(NullTypeError, pgm.callFunction(func, ds), mode.key + " " + func);
+            }
+        }
+    }
+
+    nullValueTest() {
+        foreach hash<auto> mode in (Modes.pairIterator()) {
+            Program pgm = getProgram(mode.key, mode.value);
+            foreach string func in ("value_literal", "value_variable", "method_value_literal") {
+                assertEq(NullValueError, pgm.callFunction(func, ds), mode.key + " " + func);
+            }
+        }
+    }
+
+    private Program getProgram(string name, ExecMode mode) {
+        Program pgm();
+        pgm.setExecMode(mode);
+        pgm.parse(Code, "null-placeholder-" + name);
+        return pgm;
+    }
+}
