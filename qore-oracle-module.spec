@@ -116,7 +116,11 @@ spec = importlib.util.spec_from_file_location('aot', '%{qore_rpm_helper}')
 aot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(aot)
 binary = Path('%{buildroot}%{_libdir}/qore-modules/OracleExtensions.qmod')
-assert b'QAMD' in aot.read_trailers(binary), 'AOT metadata was lost during RPM processing'
+# the module metadata note that the loader requires: the record names the module
+record = aot.read_module_info(binary)
+assert record, 'AOT module metadata was lost during RPM processing'
+name = b'OracleExtensions'
+assert record[12:16 + len(name)] == len(name).to_bytes(4, 'little') + name, 'AOT module metadata names another module'
 sections = subprocess.check_output(['readelf', '-SW', str(binary)], text=True)
 assert '.gnu_debuglink' in sections, 'Separate AOT debug information is missing'
 assert '.debug_names' not in sections and '.debug_info' not in sections
