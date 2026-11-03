@@ -582,6 +582,8 @@ kpcest_err_handler: Max errors exceeded..Closing connection
       be freed while still in use and the error to be lost
     - fixed a bug where statements with values bound as temporary LOBs were executed again after a reconnection with
       LOBs created in the old session, causing \c OCI-INVALID-HANDLE errors
+    - fixed a bug where \c Datasource::exec(), \c Datasource::select() and related methods returned a value as well as
+      raising an exception when the connection was lost while binding the arguments
     - the \c DBI:ORACLE:TRANSACTION-ERROR exception now includes the original Oracle error that caused the
       connection to be lost
     - added documentation about @ref ora_lost_connections

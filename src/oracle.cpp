@@ -87,7 +87,7 @@ static QoreValue oracle_exec(Datasource* ds, const QoreString* qstr, const QoreL
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
-        return 0;
+        return QoreValue();
 
     return bg.execWithPrologue(xsink, false);
 }
@@ -96,7 +96,7 @@ static QoreValue oracle_select(Datasource* ds, const QoreString* qstr, const Qor
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
-        return 0;
+        return QoreValue();
 
     return bg.execWithPrologue(xsink, false, true);
 }
@@ -105,7 +105,7 @@ static QoreValue oracle_exec_raw(Datasource* ds, const QoreString* qstr, Excepti
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, 0, false, xsink))
-        return 0;
+        return QoreValue();
 
     return bg.execWithPrologue(xsink, false);
 }
@@ -114,7 +114,7 @@ static QoreHashNode* oracle_select_row(Datasource* ds, const QoreString* qstr, c
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
-        return 0;
+        return nullptr;
 
     return bg.selectRow(xsink);
 }
@@ -123,7 +123,7 @@ static QoreValue oracle_exec_rows(Datasource* ds, const QoreString* qstr, const 
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
-        return 0;
+        return QoreValue();
 
     return bg.execWithPrologue(xsink, true);
 }
