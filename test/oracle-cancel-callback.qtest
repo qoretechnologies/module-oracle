@@ -105,7 +105,22 @@ sub runStatement(Queue q, string connstr, string lock_sql, string sql) {
 
         # the interrupt runs the connection's cancel callback (OCIBreak), which cancels the executing block
         sm.requestInterrupt();
-        return resultQueue.get(Timeout * 1000);
+        try {
+            return resultQueue.get(Timeout * 1000);
+        } catch (hash<ExceptionInfo> ex) {
+            if (ex.err != "QUEUE-TIMEOUT") {
+                rethrow;
+            }
+            # a statement that is waiting on the server (a row lock, DBMS_SESSION.SLEEP) sees the break only out of
+            # band
+            return {
+                "cancelled": False,
+                "err": ex.err,
+                "desc": sprintf("the statement was not cancelled within %d seconds of the interrupt; a statement "
+                    "waiting on the server is cancelled only with out-of-band break: check that the server's "
+                    "sqlnet.ora does not set DISABLE_OOB=ON", Timeout),
+            };
+        }
     }
 
     #! An executing statement is cancelled by the cancel callback when its sandbox is interrupted
