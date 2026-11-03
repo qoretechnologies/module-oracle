@@ -957,7 +957,8 @@ protected:
     DLLLOCAL void clear() {
         for (size_t i = 0; i < lhvec.size(); ++i) {
             if (lhvec[i]) {
-                if (lavec[i]) {
+                // temporary LOBs of a lost session were released by the server and cannot be freed
+                if (lavec[i] && !conn->isLost()) {
                     OCILobFreeTemporary(conn->svchp, conn->errhp, lhvec[i]);
                 }
                 OCIDescriptorFree(lhvec[i], OCI_DTYPE_LOB);
@@ -1208,7 +1209,10 @@ public:
         if (loc) {
             if (lob_allocated) {
                 assert(conn);
-                OCILobFreeTemporary(conn->svchp, conn->errhp, loc);
+                // temporary LOBs of a lost session were released by the server and cannot be freed
+                if (!conn->isLost()) {
+                    OCILobFreeTemporary(conn->svchp, conn->errhp, loc);
+                }
             }
             OCIDescriptorFree(loc, OCI_DTYPE_LOB);
         }
@@ -2041,9 +2045,13 @@ void OraBindNode::resetValue(ExceptionSink* xsink) {
     if (strlob) {
         if (lob_allocated) {
             QoreOracleConnection* conn = stmt.getData();
-            //printd(5, "deallocating temporary clob\n");
-            conn->checkerr(OCILobFreeTemporary(conn->svchp, conn->errhp, strlob), "OraBindNode::resetValue() free "
-                "temporary LOB", xsink);
+            // temporary LOBs of a lost session were released by the server when the session ended and cannot be
+            // freed
+            if (!conn->isLost()) {
+                //printd(5, "deallocating temporary clob\n");
+                conn->checkerr(OCILobFreeTemporary(conn->svchp, conn->errhp, strlob), "OraBindNode::resetValue() "
+                    "free temporary LOB", xsink);
+            }
             lob_allocated = false;
         }
         //printd(5, "freeing lob descriptor\n");
@@ -2105,7 +2113,8 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
 
     //printd(5, "QoreOracleStatement::execute() stmthp: %p status: %d (OCI_ERROR: %d)\n", stmthp, status, OCI_ERROR);
     if (status == OCI_ERROR) {
-        if (!conn.handleError(xsink, who, true)) {
+        // if the connection was lost and has been made again, this statement is prepared and bound again
+        if (!conn.handleError(xsink, who, true, this)) {
             assert(*xsink);
             return -1;
         }

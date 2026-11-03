@@ -1,0 +1,515 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+/*  session-kill.qtest
+
+    Copyright (C) 2026 Qore Technologies, s.r.o.
+
+    tests the behavior of the driver when sessions are killed on the server, as happens for example during Oracle RAC
+    rolling patching, where all sessions connected to the node being patched are killed
+
+    requires a connection string for a user with the privileges to create users and kill sessions in the
+    QORE_DB_CONNSTR_ORACLE_SYS or SYS_OMQ_DB_STRING environment variable; a temporary user is created for the test, so
+    that sessions belonging to other users are not affected
+*/
+
+%modern
+
+%requires QUnit
+%requires oracle
+
+%exec-class SessionKillTest
+
+class SessionKillTest inherits QUnit::Test {
+    public {
+        #! regular expression for errors indicating a lost connection
+        const LostConnectionRegex = "ORA-(00028|01012|03113|03114|03135)";
+
+        #! a string large enough to be bound as a temporary CLOB
+        const BigString = strmul("x", 100000);
+
+        #! the maximum number of connections in the pool for the concurrent kill test
+        const PoolMax = 8;
+    }
+
+    private {
+        #! the privileged connection string
+        *string sys_connstr;
+
+        #! the test user's connection string
+        string connstr;
+
+        #! the test user's name
+        string user;
+
+        #! the test user's password
+        string pass;
+
+        #! the reason the test cannot be run, if any
+        *string skip_reason;
+    }
+
+    constructor() : QUnit::Test("SessionKillTest", "1.0", \ARGV) {
+        addTestCase("select after kill", \selectAfterKill());
+        addTestCase("exec after kill", \execAfterKill());
+        addTestCase("temporary LOB exec after kill", \lobExecAfterKill());
+        addTestCase("exec in transaction after kill", \execInTransactionAfterKill());
+        addTestCase("temporary LOB exec in transaction after kill", \lobExecInTransactionAfterKill());
+        addTestCase("commit after kill", \commitAfterKill());
+        addTestCase("rollback after kill", \rollbackAfterKill());
+        addTestCase("statement fetch after kill", \statementFetchAfterKill());
+        addTestCase("exec after kill with failed reconnect", \execAfterKillReconnectFails());
+        addTestCase("select after kill with failed reconnect", \selectAfterKillReconnectFails());
+        addTestCase("statement fetch after kill with failed reconnect", \statementAfterKillReconnectFails());
+        addTestCase("pool with concurrent kills", \poolConcurrentKills());
+
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        sys_connstr = ENV.QORE_DB_CONNSTR_ORACLE_SYS ?? ENV.SYS_OMQ_DB_STRING;
+        if (!sys_connstr) {
+            skip_reason = "no privileged connection string set in QORE_DB_CONNSTR_ORACLE_SYS or SYS_OMQ_DB_STRING";
+            return;
+        }
+
+        hash<auto> h = parse_datasource(sys_connstr);
+        user = sprintf("QORE_KILL_TEST_%d", getpid());
+        pass = sprintf("Kt%d_%d", getpid(), now_us().durationMicroseconds());
+        h.user = user;
+        h.pass = pass;
+        delete h.type;
+        connstr = sprintf("oracle:%s/%s@%s", user, pass, h.db);
+        if (h.charset) {
+            connstr += sprintf("(%s)", h.charset);
+        }
+        if (h.host) {
+            connstr += sprintf("%%%s", h.host);
+            if (h.port) {
+                connstr += sprintf(":%d", h.port);
+            }
+        }
+
+        try {
+            sysExec(sprintf("create user %s identified by \"%s\" quota unlimited on users", user, pass));
+            sysExec(sprintf("grant create session, create table to %s", user));
+        } catch (hash<ExceptionInfo> ex) {
+            skip_reason = sprintf("cannot create test user with the privileged connection: %s: %s", ex.err,
+                ex.desc);
+            return;
+        }
+
+        # verify that sessions can be killed
+        try {
+            Datasource ds(connstr);
+            ds.open();
+            killSession(getSid(ds));
+        } catch (hash<ExceptionInfo> ex) {
+            skip_reason = sprintf("cannot kill sessions with the privileged connection: %s: %s", ex.err, ex.desc);
+            dropUser();
+            return;
+        }
+
+        Datasource ds(connstr);
+        ds.exec("create table kt (id number primary key, c clob)");
+        ds.commit();
+    }
+
+    globalTearDown() {
+        if (skip_reason || !user) {
+            return;
+        }
+        dropUser();
+    }
+
+    private checkSkip() {
+        if (skip_reason) {
+            testSkip(skip_reason);
+        }
+    }
+
+    private dropUser() {
+        try {
+            sysExec(sprintf("alter user %s account unlock", user));
+        } catch (hash<ExceptionInfo> ex) {
+            if (m_options.verbose > 1) {
+                printf("unlock: %s: %s\n", ex.err, ex.desc);
+            }
+        }
+        # the user cannot be dropped while sessions are still being cleaned up after being killed
+        int i = 0;
+        while (True) {
+            try {
+                sysExec(sprintf("drop user %s cascade", user));
+                break;
+            } catch (hash<ExceptionInfo> ex) {
+                # ORA-01940: cannot drop a user that is currently connected
+                if (ex.desc !~ /ORA-01940/ || ++i == 60) {
+                    printf("WARNING: cannot drop test user %s: %s: %s\n", user, ex.err, ex.desc);
+                    break;
+                }
+                killUserSessions();
+                usleep(500ms);
+            }
+        }
+    }
+
+    private sysExec(string sql) {
+        Datasource sys(sys_connstr);
+        on_exit {
+            sys.rollback();
+            sys.close();
+        }
+        sys.exec(sql);
+        sys.commit();
+    }
+
+    private int getSid(AbstractDatasource ds) {
+        int sid = ds.selectRow("select sys_context('userenv', 'sid') sid from dual").sid.toInt();
+        ds.commit();
+        return sid;
+    }
+
+    private string getSessionId(AbstractDatasource ds) {
+        string rv = ds.selectRow("select sys_context('userenv', 'sessionid') sessionid from dual").sessionid;
+        ds.commit();
+        return rv;
+    }
+
+    #! kills the given session
+    private killSession(int sid) {
+        Datasource sys(sys_connstr);
+        on_exit {
+            sys.rollback();
+            sys.close();
+        }
+        hash<auto> row = sys.selectRow("select sid, serial# serial from v$session where sid = %v", sid);
+        try {
+            sys.exec(sprintf("alter system kill session '%d,%d' immediate", row.sid, row.serial));
+        } catch (hash<ExceptionInfo> ex) {
+            # ORA-00031: session marked for kill: the session is terminated asynchronously; the client receives
+            # ORA-00028 on its next call
+            if (ex.desc !~ /ORA-00031/) {
+                rethrow;
+            }
+        }
+    }
+
+    #! kills all sessions of the test user
+    private int killUserSessions() {
+        Datasource sys(sys_connstr);
+        on_exit {
+            sys.rollback();
+            sys.close();
+        }
+        int count = 0;
+        foreach hash<auto> row in (sys.select("select sid, serial# serial from v$session where username = %v",
+                user).contextIterator()) {
+            try {
+                sys.exec(sprintf("alter system kill session '%d,%d' immediate", row.sid, row.serial));
+                ++count;
+            } catch (hash<ExceptionInfo> ex) {
+                # ignore errors for sessions that have already been killed
+            }
+        }
+        return count;
+    }
+
+    #! returns a connected datasource and its session ID
+    private Datasource getDatasource(reference<int> sid) {
+        Datasource ds(connstr);
+        ds.open();
+        sid = getSid(ds);
+        return ds;
+    }
+
+    #! asserts that the exception indicates a lost connection
+    private assertLostConnection(hash<ExceptionInfo> ex, string err = "DBI:ORACLE:OCI-ERROR") {
+        assertEq(err, ex.err);
+        assertRegex(LostConnectionRegex, ex.desc);
+    }
+
+    #! asserts that the datasource is usable
+    private assertUsable(Datasource ds) {
+        assertEq(1, ds.selectRow("select 1 one from dual").one.toInt());
+        ds.commit();
+    }
+
+    private int getCount(Datasource ds, int id) {
+        int rv = ds.selectRow("select count(1) cnt from kt where id = %v", id).cnt.toInt();
+        ds.commit();
+        return rv;
+    }
+
+    selectAfterKill() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        string sessionid = getSessionId(ds);
+        killSession(sid);
+        # the driver reconnects transparently outside a transaction
+        assertEq(1, ds.selectRow("select 1 one from dual").one.toInt());
+        ds.commit();
+        # SIDs can be reused, but session IDs are unique
+        assertNeq(sessionid, getSessionId(ds));
+    }
+
+    execAfterKill() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        killSession(sid);
+        # the driver reconnects transparently outside a transaction
+        assertEq(1, ds.exec("insert into kt (id) values (1)"));
+        ds.commit();
+        assertEq(1, getCount(ds, 1));
+    }
+
+    lobExecAfterKill() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        killSession(sid);
+        # binding a temporary LOB requires the session, so the error is raised to the caller
+        try {
+            ds.exec("insert into kt (id, c) values (2, %v)", BigString);
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            assertLostConnection(ex);
+            ds.rollback();
+            assertEq(0, getCount(ds, 2));
+        }
+        # the datasource can be used again; temporary LOBs are bound in the new session
+        assertEq(1, ds.exec("insert into kt (id, c) values (2, %v)", BigString));
+        ds.commit();
+        assertEq(1, getCount(ds, 2));
+        hash<auto> row = ds.selectRow("select c from kt where id = 2");
+        ds.commit();
+        assertEq(BigString.size(), row.c.size());
+    }
+
+    execInTransactionAfterKill() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        ds.exec("insert into kt (id) values (3)");
+        killSession(sid);
+        assertThrows("DBI:ORACLE:TRANSACTION-ERROR", LostConnectionRegex, sub () {
+            ds.exec("insert into kt (id) values (4)");
+        });
+        ds.rollback();
+        assertEq(0, getCount(ds, 3));
+        assertEq(0, getCount(ds, 4));
+        assertUsable(ds);
+    }
+
+    lobExecInTransactionAfterKill() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        ds.exec("insert into kt (id) values (5)");
+        killSession(sid);
+        assertThrows("DBI:ORACLE:TRANSACTION-ERROR", LostConnectionRegex, sub () {
+            ds.exec("insert into kt (id, c) values (6, %v)", BigString);
+        });
+        ds.rollback();
+        assertEq(0, getCount(ds, 5));
+        assertEq(0, getCount(ds, 6));
+        assertUsable(ds);
+    }
+
+    commitAfterKill() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        ds.exec("insert into kt (id) values (7)");
+        killSession(sid);
+        # the commit must fail; the transaction has been lost
+        try {
+            ds.commit();
+            assertTrue(False, "commit after kill did not raise an exception");
+        } catch (hash<ExceptionInfo> ex) {
+            assertLostConnection(ex);
+        }
+        assertEq(0, getCount(ds, 7));
+        assertUsable(ds);
+    }
+
+    rollbackAfterKill() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        ds.exec("insert into kt (id) values (8)");
+        killSession(sid);
+        try {
+            ds.rollback();
+            assertTrue(False, "rollback after kill did not raise an exception");
+        } catch (hash<ExceptionInfo> ex) {
+            assertLostConnection(ex);
+        }
+        assertEq(0, getCount(ds, 8));
+        assertUsable(ds);
+    }
+
+    statementFetchAfterKill() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        SQLStatement stmt(ds);
+        stmt.prepare("select level l from dual connect by level <= 1000");
+        assertTrue(stmt.next());
+        killSession(sid);
+        assertThrows("DBI:ORACLE:TRANSACTION-ERROR", LostConnectionRegex, sub () {
+            while (stmt.next()) {
+            }
+        });
+        stmt.close();
+        ds.rollback();
+        assertUsable(ds);
+    }
+
+    execAfterKillReconnectFails() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        killSession(sid);
+        sysExec(sprintf("alter user %s account lock", user));
+        {
+            on_exit sysExec(sprintf("alter user %s account unlock", user));
+            # an exception must be raised; the operation must not succeed silently
+            try {
+                ds.exec("insert into kt (id) values (9)");
+                assertTrue(False, "exec after kill with a failed reconnect did not raise an exception");
+            } catch (hash<ExceptionInfo> ex) {
+                # the lost connection error is raised first
+                assertLostConnection(ex);
+                # followed by the logon error
+                assertEq(True, ex.next.typeCode() == NT_HASH);
+                assertRegex("ORA-28000", ex.next.desc);
+            }
+        }
+        assertEq(0, getCount(ds, 9));
+        assertUsable(ds);
+    }
+
+    selectAfterKillReconnectFails() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        killSession(sid);
+        sysExec(sprintf("alter user %s account lock", user));
+        {
+            on_exit sysExec(sprintf("alter user %s account unlock", user));
+            # an exception must be raised; the select must not return an empty result
+            try {
+                ds.select("select * from kt");
+                assertTrue(False, "select after kill with a failed reconnect did not raise an exception");
+            } catch (hash<ExceptionInfo> ex) {
+                assertLostConnection(ex);
+            }
+        }
+        assertUsable(ds);
+    }
+
+    statementAfterKillReconnectFails() {
+        checkSkip();
+        int sid;
+        Datasource ds = getDatasource(\sid);
+        SQLStatement stmt(ds);
+        stmt.prepare("select level l from dual connect by level <= 1000");
+        assertTrue(stmt.next());
+        killSession(sid);
+        sysExec(sprintf("alter user %s account lock", user));
+        {
+            on_exit sysExec(sprintf("alter user %s account unlock", user));
+            assertThrows("DBI:ORACLE:TRANSACTION-ERROR", LostConnectionRegex, sub () {
+                while (stmt.next()) {
+                }
+            });
+        }
+        stmt.close();
+        ds.rollback();
+        assertUsable(ds);
+    }
+
+    #! simulates Oracle RAC rolling patching: all sessions are killed repeatedly while threads use a pool
+    poolConcurrentKills() {
+        checkSkip();
+        DatasourcePool pool(connstr + sprintf("{min=2,max=%d}", PoolMax));
+        date until = now_us() + 10s;
+        # unexpected errors: error string -> count
+        hash<string, int> errs = {};
+        # lost connection errors: error string -> count
+        hash<string, int> lost = {};
+        Mutex m();
+        Counter c();
+        int ok = 0;
+        int base = 1000;
+        for (int t = 0; t < 8; ++t) {
+            c.inc();
+            int tbase = base + t * 1000000;
+            background sub () {
+                on_exit c.dec();
+                int i = 0;
+                while (now_us() < until) {
+                    ++i;
+                    try {
+                        on_error pool.rollback();
+                        on_success pool.commit();
+                        pool.exec("insert into kt (id, c) values (%v, %v)", tbase + i, (i % 2) ? BigString : "x");
+                        SQLStatement stmt(pool);
+                        stmt.prepare("select level l from dual connect by level <= 50");
+                        while (stmt.next()) {
+                        }
+                        stmt.close();
+                        m.lock();
+                        on_exit m.unlock();
+                        ++ok;
+                    } catch (hash<ExceptionInfo> ex) {
+                        string key = ex.err + ": " + ((ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? ex.desc);
+                        m.lock();
+                        on_exit m.unlock();
+                        if ((ex.err == "DBI:ORACLE:TRANSACTION-ERROR" || ex.err == "DBI:ORACLE:OCI-ERROR")
+                            && regex(ex.desc, LostConnectionRegex)) {
+                            ++lost{key};
+                        } else {
+                            ++errs{key};
+                        }
+                    }
+                }
+            }();
+        }
+
+        int kills = 0;
+        while (now_us() < until) {
+            usleep(500ms);
+            kills += killUserSessions();
+        }
+        c.waitForZero();
+
+        if (m_options.verbose > 1) {
+            printf("ok: %d kills: %d lost: %y unexpected: %y\n", ok, kills, lost, errs);
+        }
+        assertGt(0, kills);
+        assertGt(0, ok);
+        assertEq({}, errs);
+        # verify the pool is usable after the kills; each pool connection killed in the last round fails once with
+        # a lost connection error before it is reconnected, so the transaction must succeed in at most max + 1
+        # attempts
+        int attempts = 0;
+        while (True) {
+            ++attempts;
+            try {
+                on_error pool.rollback();
+                assertEq(1, pool.selectRow("select 1 one from dual").one.toInt());
+                pool.commit();
+                break;
+            } catch (hash<ExceptionInfo> ex) {
+                if (!regex(ex.desc, LostConnectionRegex) || attempts > PoolMax) {
+                    rethrow;
+                }
+            }
+        }
+        assertLe(PoolMax + 1, attempts);
+    }
+}

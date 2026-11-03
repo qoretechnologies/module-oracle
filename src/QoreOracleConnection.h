@@ -240,7 +240,27 @@ public:
 
     DLLLOCAL int checkerr(sword status, const char *query_name, ExceptionSink* xsink, bool* retry = nullptr);
 
-    DLLLOCAL bool handleError(ExceptionSink* xsink, const char* who, bool can_retry);
+    //! handles an OCI_ERROR status
+    /** @param xsink for exceptions
+        @param who the name of the operation that failed
+        @param can_retry if true, then the connection is made again if it has been lost, and the caller can retry the
+        operation if the return value is true
+        @param stmt the statement being executed, if any; if the connection is made again, the statement is prepared
+        and bound again on the new session, as are all registered statements
+
+        @return true if the connection was lost and has been made again, and the operation can be retried; false if
+        an exception has been raised
+    */
+    DLLLOCAL bool handleError(ExceptionSink* xsink, const char* who, bool can_retry,
+            QorePreparedStatement* stmt = nullptr);
+
+    //! returns true if the server connection has been lost and has not been made again
+    /** session resources (like temporary LOBs) cannot be freed in this state; the server released them when the
+        session ended
+    */
+    DLLLOCAL bool isLost() const {
+        return lost;
+    }
 
     //! closes the datasource of a lost connection that could not be made again
     /** In a driver call that holds statements on the stack (see QoreOracleCallGuard), the connection is closed when
@@ -248,6 +268,8 @@ public:
         handles' environment, which the statements would then use.
     */
     DLLLOCAL void abortConnection(ExceptionSink* xsink) {
+        // free the state of all registered statements while the session handles are still valid
+        resetStatements(xsink);
         if (call_depth) {
             abort_pending = true;
             return;
@@ -577,6 +599,18 @@ public:
 protected:
     typedef std::set<QorePreparedStatement*> stmt_set_t;
     stmt_set_t stmt_set;
+
+    //! true while the server connection is lost and has not been made again (see isLost())
+    bool lost = false;
+
+    //! frees the state of all registered statements; reset() deregisters each statement
+    DLLLOCAL void resetStatements(ExceptionSink* xsink);
+
+    //! frees the session state of all registered statements and of \a stmt, if it is not registered
+    /** the statements keep their SQL and bind values, so that they can be prepared again on a new session; the set is
+        copied, as a statement can change it
+    */
+    DLLLOCAL void clearStatements(QorePreparedStatement* stmt, ExceptionSink* xsink);
 
     //! the session attribute values (UTF-8) last set on this connection; only valid if session_info_known
     std::string session_attr[ORA_SA_COUNT];

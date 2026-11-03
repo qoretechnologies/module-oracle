@@ -39,6 +39,8 @@ EXTRA_DIST = COPYING.MIT COPYING.LGPL AUTHORS README \
 	test/sql-stmt-describe.q \
     test/oracle.qtest \
 	test/oracle-native-bulk-load.qtest \
+	test/oracle-lost-connection.qtest \
+	test/session-kill.qtest \
 	$(USER_MODULES) \
 	qore-oracle-module.spec
 
@@ -50,7 +52,7 @@ if COND_DOXYGEN
 DOX = oracle OracleExtensions
 DOXYGEN_OUTPUT = docs/oracle/html docs/OracleExtensions/html
 DOXYFILES = docs/doxyfile docs/mainpage.doxygen
-DOXYFILES += docs/guide-ora_releasenotes.dox docs/guide-ora_known_issues.dox docs/guide-aq.dox docs/guide-named_types.dox docs/guide-select_with_dup_col.dox docs/guide-bindings_and_types.dox docs/guide-ora_options.dox docs/guide-ora_native_bulk_load.dox docs/guide-ora_thread_session_info.dox
+DOXYFILES += docs/guide-ora_releasenotes.dox docs/guide-ora_known_issues.dox docs/guide-aq.dox docs/guide-named_types.dox docs/guide-select_with_dup_col.dox docs/guide-bindings_and_types.dox docs/guide-ora_options.dox docs/guide-ora_native_bulk_load.dox docs/guide-ora_thread_session_info.dox docs/guide-ora_lost_connections.dox
 DOXYFILES_SRC = docs/doxyfile.tmpl docs/footer_template.html docs/qlib/Doxyfile.tmpl
 QLIB_TMP_DOXYFILES = docs/qlib/OracleExtensions.qm.dox.h docs/qlib/Doxyfile.OracleExtensions
 QDX = qdx
@@ -100,6 +102,9 @@ docs/guide-bindings_and_types.dox: docs/guide-bindings_and_types.dox.tmpl
 docs/guide-ora_options.dox: docs/guide-ora_options.dox.tmpl
 	$(QDX) -d $< $@
 
+docs/guide-ora_lost_connections.dox: docs/guide-ora_lost_connections.dox.tmpl
+	$(QDX) -d $< $@
+
 docs/guide-ora_native_bulk_load.dox: docs/guide-ora_native_bulk_load.dox.tmpl
 	$(QDX) -d $< $@
 
@@ -146,4 +151,5 @@ EXTRA_DIST += docs/guide-ora_releasenotes.dox.tmpl \
 	docs/guide-bindings_and_types.dox.tmpl \
 	docs/guide-ora_options.dox.tmpl \
 	docs/guide-ora_native_bulk_load.dox.tmpl \
-	docs/guide-ora_thread_session_info.dox.tmpl
+	docs/guide-ora_thread_session_info.dox.tmpl \
+	docs/guide-ora_lost_connections.dox.tmpl

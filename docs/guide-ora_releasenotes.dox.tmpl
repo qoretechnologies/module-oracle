@@ -5,6 +5,20 @@
     @tableofcontents
 
     @section oracle3_4_1 oracle Driver Version 3.4.1
+    - fixed crashes and memory corruption when the connection to the server was lost while statements were active, for
+      example when sessions were killed during Oracle RAC rolling patching: fetching from an \c SQLStatement after its
+      connection was lost used freed memory, and the statements of a lost connection were freed while they were
+      being iterated
+    - fixed statements with values bound as temporary LOBs being executed again after a lost connection was made
+      again with the LOBs of the lost session, causing \c OCI-INVALID-HANDLE errors; the statement is now prepared
+      and bound again in the new session, and temporary LOBs of a lost session are no longer freed
+    - fixed \c Datasource::exec(), \c Datasource::select() and related methods returning a value as well as raising
+      an exception when the connection was lost while binding the arguments and could not be made again
+    - the \c DBI:ORACLE:TRANSACTION-ERROR exception now includes the original Oracle error that caused the
+      connection to be lost
+    - when a lost connection cannot be made again, the lost connection error is now raised first, followed by the
+      error raised when connecting again
+    - added documentation about @ref ora_lost_connections
     - <b>Security</b>: @ref Qore::Oracle::AQQueue::onAsyncMessage() "AQQueue::onAsyncMessage()" and
       @ref Qore::Oracle::AQQueue::onSubscriptionLost() "AQQueue::onSubscriptionLost()" now run under the sandbox
       of the code that started the subscription; previously they ran with no sandbox on the Oracle notification

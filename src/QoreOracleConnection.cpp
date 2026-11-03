@@ -499,7 +499,8 @@ int QoreOracleConnection::applyRecvTimeout(ub4 ms, ExceptionSink* xsink) {
 #endif
 }
 
-bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bool can_retry) {
+bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bool can_retry,
+        QorePreparedStatement* stmt) {
     // see if we have a lost connection from the error code
     int ping = -1;
 
@@ -531,9 +532,7 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
                 "database server %s@%s ended a call while in a transaction; transaction has been lost",
                 ds.getUsername(), ds.getDBName());
         }
-        for (auto& i : stmt_set) {
-            i->clear(xsink);
-        }
+        clearStatements(nullptr, xsink);
         ds.connectionLost(xsink);
         // the connection is closed without ending the session: ending it (OCISessionEnd()) asks the server to end the
         // session, which commits its transaction once the server gets to it, and the server would commit the lost
@@ -542,9 +541,6 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
         // freed by its caller
         abandonSession();
         if (logon(xsink)) {
-            for (auto& i : stmt_set) {
-                i->reset(xsink);
-            }
             abortConnection(xsink);
             return false;
         }
@@ -563,70 +559,107 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
         xsink2.clear();
     }
 
-    if (!ping) {
-        // if there is at least one SQLStatement active on the connection, there will be a transaction in place
-        // therefore in all cases all statements will be invalidated and closed when we lose a connection
-        // we can only recover a plain "exec" or "select" call
-        if (ds.activeTransaction()) {
-            xsink->raiseException("DBI:ORACLE:TRANSACTION-ERROR", "connection to Oracle database server %s@%s lost " \
-                "while in a transaction; transaction has been lost", ds.getUsername(), ds.getDBName());
-        }
-
-        // reset current statement state while the driver-specific context data is still present
-        for (auto& i : stmt_set) {
-            i->clear(xsink);
-        }
-        // free and reset statement states for all active statements while the driver-specific context data is still present
-        ds.connectionLost(xsink);
-
-        if (can_retry) {
-            // try to reconnect
-            logoff();
-
-            //printd(5, "QoreOracleStatement::execute() about to execute OCILogon() for reconnect (trans: %d)\n", ds->activeTransaction());
-            if (logon(xsink)) {
-                //printd(5, "QoreOracleStatement::execute() conn: %p reconnect failed, marking connection as closed\n", &conn);
-                // free state completely
-                for (auto& i : stmt_set) {
-                    i->reset(xsink);
-                }
-                // close datasource and remove private data
-                abortConnection(xsink);
-                return false;
-            }
-
-            // clear warnings
-            clearWarnings();
-
-            // don't execute again if any exceptions have occured, including if the connection was aborted while in a transaction
-            if (*xsink) {
-                // close all statements and remove private data but leave datasource open
-                ds.connectionRecovered(xsink);
-                return false;
-            }
-
-            for (auto& i : stmt_set) {
-                // try to recreate the statement context
-                if (i->rebindAbortedConnection(xsink))
-                    return false;
-            }
-
-            return true;
-        }
-
-        // the call's own error says that the connection was lost
+    if (ping) {
+        //printd(5, "QoreOracleConnection::handleError() error, but it's connected; who: %s\n", who);
         doException(who, errbuf, errcode, xsink);
-        for (auto& i : stmt_set) {
-            i->reset(xsink);
-        }
-        // close datasource and remove private data
-        abortConnection(xsink);
         return false;
     }
 
-    //printd(5, "QoreOracleStatement::execute() error, but it's connected; status: %d who: %s\n", status, who);
+    // the session is gone: its resources (ex: temporary LOBs) were released by the server and cannot be freed
+    lost = true;
+
+    // if there is at least one SQLStatement active on the connection, there will be a transaction in place
+    // therefore in all cases all statements will be invalidated and closed when we lose a connection
+    // we can only recover a plain "exec" or "select" call
+    if (ds.activeTransaction()) {
+        // the original error is included, so that callers can see why the transaction was lost
+        QoreHashNode* arg = new QoreHashNode(autoTypeInfo);
+        arg->setKeyValue("alterr", new QoreStringNodeMaker("OCI-%05d", (int)errcode), xsink);
+        xsink->raiseExceptionArg("DBI:ORACLE:TRANSACTION-ERROR", arg, "connection to Oracle database server %s@%s "
+            "lost while in a transaction; transaction has been lost: %s: %s", ds.getUsername(), ds.getDBName(),
+            who ? who : "<unknown>", remove_trailing_newlines((char*)errbuf));
+    }
+
+    // free the session state of the statements while the driver-specific context data is still present
+    clearStatements(stmt, xsink);
+    // free and reset statement states for all active statements while the driver-specific context data is still
+    // present
+    ds.connectionLost(xsink);
+
+    if (can_retry) {
+        // try to reconnect
+        logoff();
+
+        //printd(5, "QoreOracleConnection::handleError() about to execute OCILogon() for reconnect (trans: %d)\n",
+        //    ds.activeTransaction());
+        // logon errors are the logon's own (see in_logon); the call's error is raised first, so that the caller sees
+        // that the connection was lost
+        ExceptionSink logon_xsink;
+        if (logon(&logon_xsink)) {
+            //printd(5, "QoreOracleConnection::handleError() reconnect failed, marking connection as closed\n");
+            doException(who, errbuf, errcode, xsink);
+            xsink->assimilate(logon_xsink);
+            // free state completely and close the datasource
+            abortConnection(xsink);
+            return false;
+        }
+
+        lost = false;
+
+        // clear warnings
+        clearWarnings();
+
+        // don't execute again if any exceptions have occured, including if the connection was aborted while in a
+        // transaction
+        if (*xsink) {
+            // close all statements and remove private data but leave datasource open
+            ds.connectionRecovered(xsink);
+            return false;
+        }
+
+        // prepare and bind the statements again on the new session; the binds of the lost session (ex: temporary
+        // LOBs) cannot be used again; the set is copied, as a statement can change it
+        {
+            stmt_set_t tmp = stmt_set;
+            for (auto& i : tmp) {
+                if (i->rebindAbortedConnection(xsink)) {
+                    return false;
+                }
+            }
+        }
+        if (stmt && stmt_set.find(stmt) == stmt_set.end() && stmt->rebindAbortedConnection(xsink)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    // the call's own error says that the connection was lost
     doException(who, errbuf, errcode, xsink);
+    // free state completely and close the datasource
+    abortConnection(xsink);
     return false;
+}
+
+void QoreOracleConnection::resetStatements(ExceptionSink* xsink) {
+    while (!stmt_set.empty()) {
+        QorePreparedStatement* stmt = *stmt_set.begin();
+        stmt->reset(xsink);
+        // reset() deregisters the statement; ensure that the loop ends in any case
+        deregisterStatement(stmt);
+    }
+}
+
+void QoreOracleConnection::clearStatements(QorePreparedStatement* stmt, ExceptionSink* xsink) {
+    {
+        stmt_set_t tmp = stmt_set;
+        for (auto& i : tmp) {
+            i->clear(xsink);
+        }
+    }
+    if (stmt && stmt_set.find(stmt) == stmt_set.end()) {
+        stmt->clear(xsink);
+    }
 }
 
 int QoreOracleConnection::doException(const char *query_name, text errbuf[], sb4 errcode, ExceptionSink *xsink) {

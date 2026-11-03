@@ -127,11 +127,15 @@ static int dbi_oracle_caps = (
 );
 
 static int oracle_commit(Datasource* ds, ExceptionSink* xsink) {
+   // a lost connection that cannot be made again is closed after the call
+   QoreOracleCallGuard cg(ds, xsink);
    QoreOracleConnection& conn = ds->getPrivateDataRef<QoreOracleConnection>();
    return conn.commit(xsink);
 }
 
 static int oracle_rollback(Datasource* ds, ExceptionSink* xsink) {
+   // a lost connection that cannot be made again is closed after the call
+   QoreOracleCallGuard cg(ds, xsink);
    QoreOracleConnection& conn = ds->getPrivateDataRef<QoreOracleConnection>();
    return conn.rollback(xsink);
 }
@@ -141,7 +145,7 @@ static QoreValue oracle_exec(Datasource* ds, const QoreString* qstr, const QoreL
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
-        return 0;
+        return QoreValue();
 
     return bg.execWithPrologue(xsink, false);
 }
@@ -151,7 +155,7 @@ static QoreValue oracle_select(Datasource* ds, const QoreString* qstr, const Qor
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
-        return 0;
+        return QoreValue();
 
     return bg.execWithPrologue(xsink, false, true);
 }
@@ -189,7 +193,7 @@ static QoreValue oracle_exec_raw(Datasource* ds, const QoreString* qstr, Excepti
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, 0, false, xsink))
-        return 0;
+        return QoreValue();
 
     return bg.execWithPrologue(xsink, false);
 }
@@ -227,7 +231,7 @@ static QoreValue oracle_exec_rows(Datasource* ds, const QoreString* qstr, const 
     QorePreparedStatementHelper bg(ds, xsink);
 
     if (bg.prepare(qstr, args, true, xsink))
-        return 0;
+        return QoreValue();
 
     return bg.execWithPrologue(xsink, true);
 }
@@ -316,6 +320,8 @@ static QoreValue oracle_get_client_version(const Datasource* ds, ExceptionSink* 
 #endif
 
 static int oracle_stmt_prepare(SQLStatement* stmt, const QoreString &str, const QoreListNode* args, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    assert(!stmt->getPrivateData());
 
    QorePreparedStatement* bg = new QorePreparedStatement(stmt->getDatasource());
@@ -325,6 +331,8 @@ static int oracle_stmt_prepare(SQLStatement* stmt, const QoreString &str, const 
 }
 
 static int oracle_stmt_prepare_raw(SQLStatement* stmt, const QoreString &str, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    assert(!stmt->getPrivateData());
 
    QorePreparedStatement* bg = new QorePreparedStatement(stmt->getDatasource());
@@ -334,6 +342,8 @@ static int oracle_stmt_prepare_raw(SQLStatement* stmt, const QoreString &str, Ex
 }
 
 static int oracle_stmt_bind(SQLStatement* stmt, const QoreListNode& l, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -341,6 +351,8 @@ static int oracle_stmt_bind(SQLStatement* stmt, const QoreListNode& l, Exception
 }
 
 static int oracle_stmt_bind_placeholders(SQLStatement* stmt, const QoreListNode& l, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -348,6 +360,8 @@ static int oracle_stmt_bind_placeholders(SQLStatement* stmt, const QoreListNode&
 }
 
 static int oracle_stmt_bind_values(SQLStatement* stmt, const QoreListNode& l, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -355,6 +369,8 @@ static int oracle_stmt_bind_values(SQLStatement* stmt, const QoreListNode& l, Ex
 }
 
 static int oracle_stmt_exec(SQLStatement* stmt, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -362,6 +378,8 @@ static int oracle_stmt_exec(SQLStatement* stmt, ExceptionSink* xsink) {
 }
 
 static int oracle_stmt_exec_describe(SQLStatement* stmt, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -369,6 +387,8 @@ static int oracle_stmt_exec_describe(SQLStatement* stmt, ExceptionSink* xsink) {
 }
 
 static int oracle_stmt_define(SQLStatement* stmt, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -376,6 +396,8 @@ static int oracle_stmt_define(SQLStatement* stmt, ExceptionSink* xsink) {
 }
 
 static int oracle_stmt_affected_rows(SQLStatement* stmt, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -383,6 +405,8 @@ static int oracle_stmt_affected_rows(SQLStatement* stmt, ExceptionSink* xsink) {
 }
 
 static QoreHashNode* oracle_stmt_get_output(SQLStatement* stmt, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -390,6 +414,8 @@ static QoreHashNode* oracle_stmt_get_output(SQLStatement* stmt, ExceptionSink* x
 }
 
 static QoreHashNode* oracle_stmt_get_output_rows(SQLStatement* stmt, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -397,6 +423,8 @@ static QoreHashNode* oracle_stmt_get_output_rows(SQLStatement* stmt, ExceptionSi
 }
 
 static QoreHashNode* oracle_stmt_fetch_row(SQLStatement* stmt, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -404,6 +432,8 @@ static QoreHashNode* oracle_stmt_fetch_row(SQLStatement* stmt, ExceptionSink* xs
 }
 
 static QoreListNode* oracle_stmt_fetch_rows(SQLStatement* stmt, int rows, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -411,6 +441,8 @@ static QoreListNode* oracle_stmt_fetch_rows(SQLStatement* stmt, int rows, Except
 }
 
 static QoreHashNode* oracle_stmt_fetch_columns(SQLStatement* stmt, int rows, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -419,6 +451,8 @@ static QoreHashNode* oracle_stmt_fetch_columns(SQLStatement* stmt, int rows, Exc
 
 #ifdef QDBI_METHOD_STMT_FETCH_COLUMNAR
 static QoreColumnarResult* oracle_stmt_fetch_columnar(SQLStatement* stmt, int rows, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -427,6 +461,8 @@ static QoreColumnarResult* oracle_stmt_fetch_columnar(SQLStatement* stmt, int ro
 #endif
 
 static QoreHashNode* oracle_stmt_describe(SQLStatement* stmt, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 
@@ -434,6 +470,8 @@ static QoreHashNode* oracle_stmt_describe(SQLStatement* stmt, ExceptionSink* xsi
 }
 
 static bool oracle_stmt_next(SQLStatement* stmt, ExceptionSink* xsink) {
+   // closing a lost connection closes its statements, including this one: it is closed after the call
+   QoreOracleCallGuard cg(stmt->getDatasource(), xsink);
    QorePreparedStatement* bg = (QorePreparedStatement*)stmt->getPrivateData();
    assert(bg);
 

@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2006 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2006 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -23,6 +23,8 @@
 
 #ifndef _QOREPREPAREDSTATEMENT_H
 #define _QOREPREPAREDSTATEMENT_H
+
+#include <memory>
 
 class QoreColumnarResult;
 
@@ -309,13 +311,11 @@ public:
     // this function is called after the connection has been lost and reconnected to recreate the statement
     DLLLOCAL int rebindAbortedConnection(ExceptionSink* xsink) {
         assert(str);
-        QoreString* ns = str;
-        str = 0;
+        // prepare() takes a copy of the SQL string
+        std::unique_ptr<QoreString> ns(str);
+        str = nullptr;
 
-        if (prepare(*ns, 0, false, xsink))
-            return -1;
-
-        return 0;
+        return prepare(*ns, nullptr, false, xsink);
     }
 
     // this function is called when the DB connection has been lost to free all the statement's data

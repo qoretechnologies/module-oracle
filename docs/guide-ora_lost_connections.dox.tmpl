@@ -1,0 +1,37 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page oracleora_lost_connectionsguide Lost Connections
+
+    @tableofcontents
+
+    @section ora_lost_connection_handling Handling a Lost Connection
+
+    The connection to the server can be lost while a call is in progress, for example because the session was killed
+    on the server (as happens during Oracle RAC rolling patching, where all sessions connected to the node being
+    patched are killed), or because of a network or cluster failover event.  The driver handles the error as follows:
+    - <b>outside of a transaction</b>: the driver connects to the server again and executes the statement again in the
+      new session, after preparing it and binding its values again; values bound as temporary LOBs are created again in
+      the new session
+    - <b>in a transaction</b>: the transaction is lost; the driver connects to the server again and raises a
+      \c DBI:ORACLE:TRANSACTION-ERROR exception whose description includes the original Oracle error; the application
+      must roll back and restart the transaction
+    - <b>operations that cannot be executed again</b> (ex: commit, rollback, fetching from an open statement, or
+      creating a temporary LOB for a bind value): the lost connection error is raised (ex: \c ORA-00028,
+      \c ORA-03113, or \c ORA-03135), and the \c Datasource is closed and is opened again on its next use
+    - <b>if the connection cannot be made again</b>: the lost connection error is raised, followed by the error raised
+      when connecting again (ex: \c ORA-28000 for a locked account), and the \c Datasource is closed and is opened
+      again on its next use
+
+    A lost connection always results in an exception if the operation could not be completed; a commit never
+    reports success for a transaction that was lost.
+
+    A call ended by the connection's receive timeout (the \c "recv-timeout" option; see @ref ora_options) is reported
+    with \c ORA-12609; the statement is not executed again, as it can have run on the server, and a transaction in
+    progress is lost.
+
+    @section ora_lost_connection_restart Restarting Transactions
+
+    \c SqlUtil::get_restart_transaction_reason() and \c SqlUtil::RestartableTransaction recognize
+    \c DBI:ORACLE:TRANSACTION-ERROR and the Oracle errors raised when a connection is lost as errors that require
+    the transaction to be restarted.
+*/

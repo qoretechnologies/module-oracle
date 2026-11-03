@@ -111,6 +111,7 @@ set(QORE_DOX_TMPL_SRC
     docs/guide-bindings_and_types.dox.tmpl
     docs/guide-named_types.dox.tmpl
     docs/guide-ora_known_issues.dox.tmpl
+    docs/guide-ora_lost_connections.dox.tmpl
     docs/guide-ora_native_bulk_load.dox.tmpl
     docs/guide-ora_options.dox.tmpl
     docs/guide-ora_releasenotes.dox.tmpl
@@ -141,6 +142,7 @@ list(APPEND MODULE_DOX_INPUT
     ${CMAKE_CURRENT_BINARY_DIR}/guide-bindings_and_types.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-named_types.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_known_issues.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_lost_connections.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_native_bulk_load.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_options.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_releasenotes.dox
