@@ -6,47 +6,69 @@ default:
     - k8s
     - amd64
   before_script:
-    - |
-        curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-        -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-        -d "{\"state\": \"pending\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
+    - test/docker_test/github_status.sh pending
     - set +e
 
 variables:
   REPO_NAME: module-oracle
 
-test-ubuntu:
+.oracle_test:
   stage: test
-  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop
+  services:
+    - name: gvenzl/oracle-free:slim
+      alias: oracle
+      pull_policy: always
+      # The image's sqlnet.ora sets DISABLE_OOB=ON (gvenzl/oci-oracle-xe issue 43), so the server sees a break
+      # (OCIBreak) only when it next reads the connection: a statement waiting on the server (a row lock,
+      # DBMS_SESSION.SLEEP) cannot be cancelled.  The setting is removed from every server sqlnet.ora of the image
+      # before the image's own entrypoint runs, so the server gets Oracle's default out-of-band break.  Should the
+      # file move in a later image, the setting stays and the cancel tests of waiting statements fail, which shows
+      # it.  (The command has no "$": GitLab expands variables in it.)
+      entrypoint:
+        - sh
+        - -c
+        - >-
+          sed -i -E '/^[[:space:]]*DISABLE_OOB[[:space:]]*=/Id' /opt/oracle/product/*/*/network/admin/sqlnet.ora;
+          grep -H -i -E 'oob|break' /opt/oracle/product/*/*/network/admin/sqlnet.ora;
+          exec container-entrypoint.sh
+  variables:
+    ORACLE_PASSWORD: omq
+    DOCKER_ORACLE: "1"
+    # the Oracle Free service container needs more than the runner's 4Gi default while it
+    # initializes its datafiles on first boot.  At 4Gi it is OOMKilled within seconds; job pods use
+    # restartPolicy "Never", so the sidecar never comes back and the listener never appears, which
+    # looks like a DB that is merely slow to start.  Peak usage depends on how quickly dirty pages
+    # are written back, so this only bites when the cluster is under load (verified on the CI
+    # cluster: 4Gi -> OOMKilled after 7s, 8Gi -> "DATABASE IS READY TO USE" after 41s)
+    KUBERNETES_SERVICE_MEMORY_REQUEST: 4Gi
+    KUBERNETES_SERVICE_MEMORY_LIMIT: 8Gi
   script:
-    - test/docker_test/init_oracle.sh
+    # NOTE: "set +e" above means that a failure here would otherwise be ignored; the exit status must
+    # be checked explicitly, otherwise the test suite runs against a DB that never came up and the
+    # real cause is buried under misleading test failures
     - |
-        if test/docker_test/test-ubuntu.sh; then
-          curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-            -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-            -d "{\"state\": \"success\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
+        if ! test/docker_test/init_oracle.sh; then
+          echo "ERROR: the Oracle DB is not available; aborting the build without running any tests" >&2
+          test/docker_test/github_status.sh failure
+          exit 1
+        fi
+    - |
+        if ${TEST_SCRIPT}; then
+          test/docker_test/github_status.sh success
           exit 0
         else
-          curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-            -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-            -d "{\"state\": \"failure\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
+          test/docker_test/github_status.sh failure
           exit 1
         fi
 
+test-ubuntu:
+  extends: .oracle_test
+  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:7.0
+  variables:
+    TEST_SCRIPT: test/docker_test/test-ubuntu.sh
+
 test-alpine:
-  stage: test
-  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop-alpine
-  script:
-    - test/docker_test/init_oracle.sh
-    - |
-        if test/docker_test/test-alpine.sh; then
-          curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-            -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-            -d "{\"state\": \"success\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
-          exit 0
-        else
-          curl "https://api.github.com/repos/qoretechnologies/${REPO_NAME}/statuses/${CI_COMMIT_SHA}" \
-            -X POST --oauth2-bearer ${GITHUB_ACCESS_TOKEN} -H "Content-Type: application/json" \
-            -d "{\"state\": \"failure\", \"context\": \"${REPO_NAME}\", \"description\": \"Gitlab CI\", \"target_url\": \"${CI_JOB_URL}\"}"
-          exit 1
-        fi
+  extends: .oracle_test
+  image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:7.0-alpine
+  variables:
+    TEST_SCRIPT: test/docker_test/test-alpine.sh

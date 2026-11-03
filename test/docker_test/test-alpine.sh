@@ -27,9 +27,9 @@ export MAKE_JOBS=4
 
 # build module and install
 echo && echo "-- building module --"
-cd ${MODULE_SRC_DIR}
-./reconf.sh
-./configure --enable-debug --prefix=${INSTALL_PREFIX}
+mkdir -p ${MODULE_SRC_DIR}/build
+cd ${MODULE_SRC_DIR}/build
+cmake .. -DCMAKE_BUILD_TYPE=debug -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} ${CMAKE_EXTRA_FLAGS}
 make -j${MAKE_JOBS}
 make install
 
@@ -47,6 +47,26 @@ chown -R qore:qore ${MODULE_SRC_DIR}
 # run the tests
 export QORE_MODULE_DIR=${MODULE_SRC_DIR}/qlib:${QORE_MODULE_DIR}
 cd ${MODULE_SRC_DIR}
+# run all tests before reporting failures; aborting on the first failure hides the results of the rest
+set +e
+rc=0
+failed=
+# the tests must load the module that this job built and installed, not one that the image already has
+loaded=$(gosu qore:qore qore -l oracle -e 'printf("%s", get_module_hash().oracle.filename);')
+if ! grep -qxF "${loaded}" ${MODULE_SRC_DIR}/build/install_manifest.txt; then
+    echo "ERROR: the tests would load '${loaded}', which this job did not install" >&2
+    exit 1
+fi
+echo "-- the tests load ${loaded}"
+
 for test in test/*.qtest; do
     gosu qore:qore qore $test -vv
+    if [ $? != 0 ]; then
+        rc=1
+        failed="${failed} ${test}"
+    fi
 done
+if [ $rc != 0 ]; then
+    echo && echo "-- FAILED TESTS:${failed} --"
+fi
+exit $rc
