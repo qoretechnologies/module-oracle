@@ -6,7 +6,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -156,11 +156,15 @@ static int oracle_open(Datasource* ds, ExceptionSink* xsink) {
         return -1;
     }
 
-    std::unique_ptr<QoreOracleConnection> conn(new QoreOracleConnection(*ds, xsink));
-    if (*xsink)
+    // the connection object is reference-counted and must be released with deref()
+    auto conn_deref = [](QoreOracleConnection* c) { c->deref(); };
+    std::unique_ptr<QoreOracleConnection, decltype(conn_deref)> conn(new QoreOracleConnection(*ds, xsink),
+        conn_deref);
+    if (*xsink) {
         return -1;
+    }
 
-    ds->setPrivateData((void *)conn.release());
+    ds->setPrivateData(static_cast<void*>(conn.release()));
     return 0;
 }
 
@@ -169,9 +173,10 @@ static int oracle_close(Datasource* ds) {
 
     QoreOracleConnection *conn = (QoreOracleConnection *)ds->getPrivateData();
 
-    delete conn;
+    // release the datasource's reference; statements still referencing the connection keep it valid
+    conn->deref();
 
-    ds->setPrivateData(0);
+    ds->setPrivateData(nullptr);
 
     return 0;
 }

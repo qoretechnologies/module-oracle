@@ -30,6 +30,7 @@
 #include "oracleobject.h"
 #include <qore/Qore.h>
 
+#include <memory>
 #include <vector>
 #include <string>
 

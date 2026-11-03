@@ -4,7 +4,7 @@
 
   Qore Programming Language
 
-  Copyright (C) 2003 - 2022 Qore Technologies, s.r.o.
+  Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
@@ -46,13 +46,21 @@ struct QoreOracleSimpleStatement {
 
     DLLLOCAL QoreOracleSimpleStatement(QoreOracleConnection& n_conn, OCIStmt* n_stmthp = nullptr) : conn(n_conn),
         stmthp(n_stmthp) {
+        // the connection must remain valid as long as the statement exists
+        conn.ref();
     }
 
     DLLLOCAL ~QoreOracleSimpleStatement() {
         if (stmthp) {
             del();
         }
+        // the connection object may be deleted here
+        conn.deref();
     }
+
+    // statements cannot be copied
+    QoreOracleSimpleStatement(const QoreOracleSimpleStatement&) = delete;
+    QoreOracleSimpleStatement& operator=(const QoreOracleSimpleStatement&) = delete;
 
     DLLLOCAL void del() {
         assert(stmthp);

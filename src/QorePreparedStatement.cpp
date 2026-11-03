@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2006 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2006 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -1165,7 +1165,10 @@ public:
         if (loc) {
             if (lob_allocated) {
                 assert(conn);
-                OCILobFreeTemporary(conn->svchp, conn->errhp, loc);
+                // temporary LOBs cannot be freed if the connection has been lost
+                if (!conn->isLost()) {
+                    OCILobFreeTemporary(conn->svchp, conn->errhp, loc);
+                }
             }
             OCIDescriptorFree(loc, OCI_DTYPE_LOB);
         }
@@ -1978,9 +1981,13 @@ void OraBindNode::resetValue(ExceptionSink* xsink) {
     if (strlob) {
         if (lob_allocated) {
             QoreOracleConnection* conn = stmt.getData();
-            //printd(5, "deallocating temporary clob\n");
-            conn->checkerr(OCILobFreeTemporary(conn->svchp, conn->errhp, strlob), "OraBindNode::resetValue() free "
-                "temporary LOB", xsink);
+            // temporary LOBs cannot be freed if the connection has been lost; they have already been freed by the
+            // server when the session was terminated
+            if (!conn->isLost()) {
+                //printd(5, "deallocating temporary clob\n");
+                conn->checkerr(OCILobFreeTemporary(conn->svchp, conn->errhp, strlob), "OraBindNode::resetValue() "
+                    "free temporary LOB", xsink);
+            }
             lob_allocated = false;
         }
         //printd(5, "freeing lob descriptor\n");
@@ -2025,7 +2032,8 @@ int QorePreparedStatement::execute(ExceptionSink* xsink, const char* who, int oc
 
     //printd(5, "QoreOracleStatement::execute() stmthp: %p status: %d (OCI_ERROR: %d)\n", stmthp, status, OCI_ERROR);
     if (status == OCI_ERROR) {
-        if (!conn.handleError(xsink, who, true)) {
+        // if the connection was lost and has been reestablished, this statement is prepared and bound again
+        if (!conn.handleError(xsink, who, true, this)) {
             assert(*xsink);
             return -1;
         }

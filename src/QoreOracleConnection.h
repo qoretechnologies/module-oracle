@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -27,6 +27,7 @@
 
 #include <stdarg.h>
 
+#include <atomic>
 #include <set>
 
 //#define QORE_OCI_FLAGS (OCI_DEFAULT|OCI_THREADED|OCI_NO_MUTEX|OCI_OBJECT)
@@ -126,11 +127,46 @@ public:
     int number_support;
 
     DLLLOCAL QoreOracleConnection(Datasource &n_ds, ExceptionSink* xsink);
-    DLLLOCAL ~QoreOracleConnection();
+
+    //! increments the reference count
+    /** The Datasource holds one reference, and every statement holds a reference, so that the connection object
+        remains valid for statements still referencing it after the Datasource has been closed (for example, after
+        the connection to the server has been lost)
+    */
+    DLLLOCAL void ref() {
+        refs.fetch_add(1);
+    }
+
+    //! decrements the reference count and deletes the object when it reaches zero
+    DLLLOCAL void deref() {
+        if (refs.fetch_sub(1) == 1) {
+            delete this;
+        }
+    }
+
+    //! returns true if the server connection has been lost and has not been reestablished
+    /** session resources (like temporary LOBs) cannot be freed in this state; they have already been released by
+        the server when the session was terminated
+    */
+    DLLLOCAL bool isLost() const {
+        return lost;
+    }
 
     DLLLOCAL int checkerr(sword status, const char *query_name, ExceptionSink* xsink, bool* retry = nullptr);
 
-    DLLLOCAL bool handleError(ExceptionSink* xsink, const char* who, bool can_retry);
+    //! handles an OCI_ERROR status
+    /** @param xsink for exceptions
+        @param who the name of the operation that failed
+        @param can_retry if true, then the connection will be reestablished if it has been lost, and the caller can
+        retry the operation if the return value is true
+        @param stmt the statement being executed, if any; if the connection is reestablished, the statement is
+        prepared and bound again on the new connection
+
+        @return true if the connection was lost and has been reestablished and the operation can be retried, false
+        if an exception has been raised
+    */
+    DLLLOCAL bool handleError(ExceptionSink* xsink, const char* who, bool can_retry,
+            QorePreparedStatement* stmt = nullptr);
 
     DLLLOCAL int doException(const char *query_name, text errbuf[], sb4 errcode, ExceptionSink *xsink);
 
@@ -374,6 +410,25 @@ public:
 protected:
     typedef std::set<QorePreparedStatement*> stmt_set_t;
     stmt_set_t stmt_set;
+
+    //! reference count
+    std::atomic<int> refs{1};
+    //! true once the connection has been established
+    bool connected = false;
+    //! true while the server connection is lost and has not been reestablished
+    bool lost = false;
+    //! true while handling a lost connection; prevents recursive lost connection handling
+    bool in_lost_connection = false;
+
+    //! the destructor is only called by deref()
+    DLLLOCAL ~QoreOracleConnection();
+
+    //! handles a lost connection; called from handleError()
+    DLLLOCAL bool handleLostConnection(ExceptionSink* xsink, const char* who, bool can_retry,
+            QorePreparedStatement* stmt, text errbuf[], sb4 errcode);
+
+    //! resets all registered statements and aborts the connection
+    DLLLOCAL void abortConnection(ExceptionSink* xsink);
 
     DLLLOCAL static sb4 readClobCallback(void *sp, CONST dvoid *bufp, ub4 len, ub1 piece) {
         //printd(5, "QoreOracleConnection::readClobCallback(%p, %p, %d, %d)\n", sp, bufp, len, piece);

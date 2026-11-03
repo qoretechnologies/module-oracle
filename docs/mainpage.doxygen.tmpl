@@ -11,6 +11,7 @@
     - @ref default_oracle_to_qore_mapping
     - @ref named_types
     - @ref aq
+    - @ref ora_lost_connections
     - @ref ora_known_issues
     - @ref ora_releasenotes
 
@@ -448,6 +449,23 @@ int rows = ds.exec("merge into merge_target t using (select %v as id, %v as val,
     |Qore::Oracle::AQQueue|Main queue handler
     |Qore::Oracle::AQMessage|Enhanced features for message
 
+    @section ora_lost_connections Lost Connections
+
+    When the connection to the server is lost, for example because the session was killed on the server (as happens
+    during Oracle RAC rolling patching, where all sessions connected to the node being patched are killed), or because
+    of a network or cluster failover event, the driver handles the error as follows:
+    - <b>outside of a transaction</b>: the driver reconnects to the server transparently and executes the statement
+      again in the new session; if reconnecting fails, the original lost connection error is raised followed by the
+      error raised when reconnecting, and the \c Datasource is closed
+    - <b>in a transaction</b>: the transaction has been lost; the driver reconnects to the server and raises a
+      \c DBI:ORACLE:TRANSACTION-ERROR exception including the original Oracle error; the application must restart the
+      transaction
+    - <b>operations that cannot be retried</b> (ex: commit, rollback, fetching from an open statement, or creating a
+      temporary LOB for a bind value): the lost connection error is raised (ex: \c ORA-00028, \c ORA-03113, or
+      \c ORA-03135), and the \c Datasource is closed and will be reopened on the next use
+
+    A lost connection always results in an exception if the operation could not be completed.
+
     @section ora_known_issues Known Issues
 
     Unfortunately there are some known bugs in the Oracle Module which cannot be fixed
@@ -553,6 +571,20 @@ kpcest_err_handler: Max errors exceeded..Closing connection
     as the rpath used when linking is set automatically when the module is installed.
 
     @section ora_releasenotes Release Notes
+
+    @subsection oracle3_3_4 oracle Driver Version 3.3.4
+    - fixed crashes and memory corruption when the connection to the server was lost while statements were active, for
+      example when sessions were killed during Oracle RAC rolling patching
+    - fixed a bug where commit, rollback, and other operations returned successfully without an exception when the
+      connection to the server was lost outside of a transaction and could not be recovered, causing data to be lost
+      silently
+    - fixed a bug where a lost connection error during reconnection was handled recursively, causing the connection to
+      be freed while still in use and the error to be lost
+    - fixed a bug where statements with values bound as temporary LOBs were executed again after a reconnection with
+      LOBs created in the old session, causing \c OCI-INVALID-HANDLE errors
+    - the \c DBI:ORACLE:TRANSACTION-ERROR exception now includes the original Oracle error that caused the
+      connection to be lost
+    - added documentation about @ref ora_lost_connections
 
     @subsection oracle3_3_3 oracle Driver Version 3.3.3
     - fixed array binds of strings with values 32K bytes or longer; in this case the values are all bound as CLOB
