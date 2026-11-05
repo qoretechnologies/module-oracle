@@ -32,7 +32,7 @@ variables:
           grep -H -i -E 'oob|break' /opt/oracle/product/*/*/network/admin/sqlnet.ora;
           exec container-entrypoint.sh
   variables:
-    ORACLE_PASSWORD: omq
+    ORACLE_PASSWORD: qore
     DOCKER_ORACLE: "1"
     # the Oracle Free service container needs more than the runner's 4Gi default while it
     # initializes its datafiles on first boot.  At 4Gi it is OOMKilled within seconds; job pods use

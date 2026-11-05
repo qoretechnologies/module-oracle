@@ -6,7 +6,7 @@
     Tests a connection that is lost during a call and cannot be made again: the driver closes the connection, and
     the call's statement is freed before the connection is (valgrind showed it read freed handles).
 
-    Needs QORE_DB_CONNSTR_ORACLE for the server, and a privileged connection in SYS_OMQ_DB_STRING (for example
+    Needs QORE_DB_CONNSTR_ORACLE for the server, and a privileged connection in QORE_DB_CONNSTR_ORACLE_SYS (for example
     "oracle:system/pass@db") to create the test user, end its session and lock it.
 */
 
@@ -29,7 +29,7 @@ class OracleLostConnectionTest inherits QUnit::Test {
 
     constructor() : QUnit::Test("OracleLostConnectionTest", "1.0", \ARGV) {
         connstr = ENV.QORE_DB_CONNSTR_ORACLE;
-        sys_connstr = ENV.SYS_OMQ_DB_STRING;
+        sys_connstr = ENV.QORE_DB_CONNSTR_ORACLE_SYS;
 
         if (!connstr || !sys_connstr) {
             addTestCase("No database connection configured", \testNoDatabaseConfigured());
@@ -43,7 +43,7 @@ class OracleLostConnectionTest inherits QUnit::Test {
     }
 
     testNoDatabaseConfigured() {
-        testSkip("QORE_DB_CONNSTR_ORACLE or SYS_OMQ_DB_STRING not set; skipping the lost connection tests");
+        testSkip("QORE_DB_CONNSTR_ORACLE or QORE_DB_CONNSTR_ORACLE_SYS not set; skipping the lost connection tests");
     }
 
     #! returns the connection string of the test user on the server of the test connection

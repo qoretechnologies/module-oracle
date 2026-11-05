@@ -8,7 +8,7 @@
 
     Database tests need QORE_DB_CONNSTR_ORACLE (or the connection string as the first argument).  Tests that observe
     a session from outside (V$SESSION, V$SESSTAT, killing a session) also need a privileged connection in
-    SYS_OMQ_DB_STRING (for example "oracle:system/pass@db").
+    QORE_DB_CONNSTR_ORACLE_SYS (for example "oracle:system/pass@db").
 */
 
 %modern
@@ -40,7 +40,7 @@ class OracleSessionInfoTest inherits QUnit::Test {
 
     constructor() : QUnit::Test("OracleSessionInfoTest", "1.0", \ARGV) {
         connstr = ENV.QORE_DB_CONNSTR_ORACLE ?? shift ARGV;
-        sys_connstr = ENV.SYS_OMQ_DB_STRING;
+        sys_connstr = ENV.QORE_DB_CONNSTR_ORACLE_SYS;
 
         addTestCase("thread API set, get, replace, and clear", \testThreadApi());
         addTestCase("values are truncated on a character boundary", \testTruncation());
@@ -324,7 +324,7 @@ class OracleSessionInfoTest inherits QUnit::Test {
 
     testNoExtraRoundTrips() {
         if (!connstr || !sys_connstr) {
-            testSkip("needs QORE_DB_CONNSTR_ORACLE and SYS_OMQ_DB_STRING");
+            testSkip("needs QORE_DB_CONNSTR_ORACLE and QORE_DB_CONNSTR_ORACLE_SYS");
         }
         on_exit Oracle::setThreadSessionInfo();
         Oracle::setThreadSessionInfo();
@@ -367,7 +367,7 @@ class OracleSessionInfoTest inherits QUnit::Test {
 
     testCommitRollback() {
         if (!connstr || !sys_connstr) {
-            testSkip("needs QORE_DB_CONNSTR_ORACLE and SYS_OMQ_DB_STRING");
+            testSkip("needs QORE_DB_CONNSTR_ORACLE and QORE_DB_CONNSTR_ORACLE_SYS");
         }
         on_exit Oracle::setThreadSessionInfo();
 
@@ -395,7 +395,7 @@ class OracleSessionInfoTest inherits QUnit::Test {
 
     testReconnect() {
         if (!connstr || !sys_connstr) {
-            testSkip("needs QORE_DB_CONNSTR_ORACLE and SYS_OMQ_DB_STRING");
+            testSkip("needs QORE_DB_CONNSTR_ORACLE and QORE_DB_CONNSTR_ORACLE_SYS");
         }
         on_exit Oracle::setThreadSessionInfo();
 

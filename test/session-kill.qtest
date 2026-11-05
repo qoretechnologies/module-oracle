@@ -9,7 +9,7 @@
     rolling patching, where all sessions connected to the node being patched are killed
 
     requires a connection string for a user with the privileges to create users and kill sessions in the
-    QORE_DB_CONNSTR_ORACLE_SYS or SYS_OMQ_DB_STRING environment variable; a temporary user is created for the test, so
+    QORE_DB_CONNSTR_ORACLE_SYS environment variable; a temporary user is created for the test, so
     that sessions belonging to other users are not affected
 */
 
@@ -67,9 +67,9 @@ class SessionKillTest inherits QUnit::Test {
     }
 
     globalSetUp() {
-        sys_connstr = ENV.QORE_DB_CONNSTR_ORACLE_SYS ?? ENV.SYS_OMQ_DB_STRING;
+        sys_connstr = ENV.QORE_DB_CONNSTR_ORACLE_SYS;
         if (!sys_connstr) {
-            skip_reason = "no privileged connection string set in QORE_DB_CONNSTR_ORACLE_SYS or SYS_OMQ_DB_STRING";
+            skip_reason = "no privileged connection string set in QORE_DB_CONNSTR_ORACLE_SYS";
             return;
         }
 

@@ -15,7 +15,7 @@
 # sandboxed code by a Program with a SandboxManager that allows the network but denies the filesystem.
 #
 # Needs an Oracle database: QORE_DB_CONNSTR_ORACLE gives the connection of a user that can create types and use
-# DBMS_AQADM and DBMS_AQ; the lost-subscription cases also need SYS_OMQ_DB_STRING, the connection of a user that
+# DBMS_AQADM and DBMS_AQ; the lost-subscription cases also need QORE_DB_CONNSTR_ORACLE_SYS, the connection of a user that
 # can lock that user's account and kill its sessions.
 
 %modern
@@ -162,7 +162,7 @@ auto sub run(code c, ...) {
 
     constructor() : QUnit::Test("AqSubscriptionTest", "1.0", \ARGV) {
         connstr = ENV.QORE_DB_CONNSTR_ORACLE;
-        sysconnstr = ENV.SYS_OMQ_DB_STRING;
+        sysconnstr = ENV.QORE_DB_CONNSTR_ORACLE_SYS;
         addTestCase("an unsandboxed subscription's callback reads the file", \testUnsandboxed());
         addTestCase("onAsyncMessage() runs under the sandbox of the subscription's starter", \testMessage());
         addTestCase("a lost subscription is reported and can be restarted from onSubscriptionLost()",
@@ -366,7 +366,7 @@ auto sub run(code c, ...) {
     private lostTest(*Program p, string expected) {
         checkQueue();
         if (!sysconnstr) {
-            testSkip("SYS_OMQ_DB_STRING is not set");
+            testSkip("QORE_DB_CONNSTR_ORACLE_SYS is not set");
         }
         Datasource sys(sysconnstr);
         sys.setAutoCommit(True);
