@@ -45,19 +45,14 @@ fi
 chown -R qore:qore ${MODULE_SRC_DIR}
 
 # run the tests
-export QORE_MODULE_DIR=${MODULE_SRC_DIR}/qlib:${QORE_MODULE_DIR}
+export QORE_MODULE_DIR=${MODULE_SRC_DIR}/qlib:${MODULE_SRC_DIR}/build:${QORE_MODULE_DIR}
 cd ${MODULE_SRC_DIR}
 # run all tests before reporting failures; aborting on the first failure hides the results of the rest
 set +e
 rc=0
 failed=
-# the tests must load the module that this job built and installed, not one that the image already has
-loaded=$(gosu qore:qore qore -l oracle -e 'printf("%s", get_module_hash().oracle.filename);')
-if ! grep -qxF "${loaded}" ${MODULE_SRC_DIR}/build/install_manifest.txt; then
-    echo "ERROR: the tests would load '${loaded}', which this job did not install" >&2
-    exit 1
-fi
-echo "-- the tests load ${loaded}"
+# the tests must load the modules that this job built, not the copies that the image already has
+${MODULE_SRC_DIR}/test/docker_test/check-loaded-modules.sh ${MODULE_SRC_DIR}/build gosu qore:qore || exit 1
 
 for test in test/*.qtest; do
     gosu qore:qore qore $test -vv
@@ -66,6 +61,9 @@ for test in test/*.qtest; do
         failed="${failed} ${test}"
     fi
 done
+
+# ... and they still do once the tests have run
+${MODULE_SRC_DIR}/test/docker_test/check-loaded-modules.sh ${MODULE_SRC_DIR}/build gosu qore:qore || exit 1
 if [ $rc != 0 ]; then
     echo && echo "-- FAILED TESTS:${failed} --"
 fi
