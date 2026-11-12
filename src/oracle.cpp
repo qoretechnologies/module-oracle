@@ -84,6 +84,9 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
 static void oracle_module_ns_init(QoreNamespace* rns, QoreNamespace* qns, ExceptionSink& xsink);
 static void oracle_module_delete();
 
+// the module's namespace; purged when the module is deleted (see QoreModuleInfo::ns)
+QoreNamespace OraNS("Qore::Oracle");
+
 extern "C" DLLEXPORT void oracle_qore_module_desc(QoreModuleInfo& mod_info) {
     mod_info.name = "oracle";
     mod_info.version = PACKAGE_VERSION;
@@ -95,6 +98,10 @@ extern "C" DLLEXPORT void oracle_qore_module_desc(QoreModuleInfo& mod_info) {
     mod_info.init = oracle_module_init;
     mod_info.ns_init = oracle_module_ns_init;
     mod_info.del = oracle_module_delete;
+#ifdef QORE_HAS_MODULE_NS_PURGE
+    // the namespace is purged when the module is deleted, before the types are freed (see QoreModuleInfo::ns)
+    mod_info.ns = &OraNS;
+#endif
     // The native module includes the LGPL OCILIB implementation.
     mod_info.license = QL_LGPL;
     mod_info.license_str = "LGPL-2.1-or-later";
@@ -520,8 +527,6 @@ static QoreValue oracle_opt_get(const Datasource* ds, const char* opt) {
    QoreOracleConnection& conn = ds->getPrivateDataRef<QoreOracleConnection>();
    return conn.getOption(opt);
 }
-
-QoreNamespace OraNS("Qore::Oracle");
 
 static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink) {
    QORE_TRACE("oracle_module_init()");
