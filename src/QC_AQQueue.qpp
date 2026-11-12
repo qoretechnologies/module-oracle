@@ -156,6 +156,12 @@ protected:
    bool running = false;
    //! tells the watchdog thread to leave its loop
    bool quit = false;
+   //! true once the manager has been stopped (when the module is deleted): no watchdog thread is started again
+   bool stopped = false;
+#ifdef DEBUG
+   //! the number of watchdog threads started (see aq_dbg_stop_and_post())
+   unsigned threads_started = 0;
+#endif
 
 public:
    DLLLOCAL AQSubscriptionManager() {
@@ -174,6 +180,12 @@ public:
       size_t stack_size = q_thread_get_stack_size();
       AQThreadJoiner finished;
       AutoLocker al(l);
+      if (stopped) {
+         // the module is being deleted: a watchdog thread started now would reference objects whose Qore state is
+         // being freed
+         xsink->raiseException("AQQUEUE-ERROR", "cannot start a subscription: the oracle module is being deleted");
+         return -1;
+      }
       objects.insert(o);
       // a watchdog thread that is about to leave its loop because the last subscription was removed keeps running
       quit = false;
@@ -196,6 +208,9 @@ public:
       }
       started = true;
       running = true;
+#ifdef DEBUG
+      ++threads_started;
+#endif
       return 0;
    }
 
@@ -216,10 +231,13 @@ public:
    }
 
    //! Stops the watchdog thread and waits for it to end; called when the module is deleted
+   /** No watchdog thread is started afterwards (see add()); can be called more than once.
+   */
    DLLLOCAL void stop() {
       // the watchdog thread needs the lock to leave its loop: it is joined once the lock is released
       AQThreadJoiner finished;
       AutoLocker al(l);
+      stopped = true;
       quit = true;
       c.signal();
       if (started) {
@@ -227,6 +245,14 @@ public:
          started = false;
       }
    }
+
+#ifdef DEBUG
+   //! the number of watchdog threads started
+   DLLLOCAL unsigned dbgThreadsStarted() {
+      AutoLocker al(l);
+      return threads_started;
+   }
+#endif
 
    DLLLOCAL void run() {
       QoreForeignThreadHelper qfth;
@@ -338,6 +364,21 @@ public:
       AsyncMessage,
       //! AQQueue::onSubscriptionLost(), for a subscription that the watchdog could not restore
       SubscriptionLost,
+#ifdef DEBUG
+      //! no callback and no queue: only counted (see aq_dbg_stop_and_post())
+      Test,
+#endif
+   };
+
+   //! the result of post()
+   enum class PostResult {
+      //! the callback was queued, and the references were taken
+      Queued,
+      //! the callback could not be queued (then the caller must make it itself); no reference was taken
+      Failed,
+      //! the dispatcher has been stopped, as the module is being deleted: the callback must not be made, and no
+      //! reference was taken
+      Stopped,
    };
 
    DLLLOCAL ~AQCallbackDispatcher() {
@@ -346,53 +387,67 @@ public:
    }
 
    //! Queues a callback for the given queue
-   /** Takes over the reference to the private data and, for Kind::AsyncMessage, the weak reference to the object.
-       Can be called on a thread that %Qore did not start, as it calls no %Qore code.
+   /** Takes a reference to the private data and, for Kind::AsyncMessage, a weak reference to the object, for the
+       queued callback, under the lock, so that no reference is taken once the dispatcher has been stopped (see
+       stop()).  Can be called on a thread that %Qore did not start, as it calls no %Qore code.
 
        @param kind the callback
-       @param priv the private data of the queue (referenced)
-       @param obj for Kind::AsyncMessage: the object of the queue (weakly referenced)
+       @param priv the private data of the queue
+       @param obj for Kind::AsyncMessage: the object of the queue
        @param subscription for Kind::AsyncMessage: the subscription that the notification is for (see
        AQQueuePriv::deliverAsyncMessage())
 
-       @return 0 if the callback was queued, -1 if it could not be (then the caller must make it itself)
+       @return PostResult::Queued if the callback was queued, PostResult::Failed if it could not be (then the caller
+       must make it itself), PostResult::Stopped if the module is being deleted (then the callback must not be made)
    */
-   DLLLOCAL int post(Kind kind, AQQueuePriv* priv, QoreObject* obj = nullptr, uint64_t subscription = 0) {
+   DLLLOCAL PostResult post(Kind kind, AQQueuePriv* priv, QoreObject* obj = nullptr, uint64_t subscription = 0) {
       // the stack size is read before the lock is taken: reading it takes a lock of the library, which fork() takes
       // before the lock of the dispatcher (see aq_register_fork_handlers())
       size_t stack_size = q_thread_get_stack_size();
       AQThreadJoiner finished;
       AutoLocker al(l);
+      if (stopped) {
+         // the module is being deleted: the Qore objects must no longer be referenced or called
+         return PostResult::Stopped;
+      }
       try {
          queue.push_back(Callback{kind, priv, obj, subscription});
       } catch (std::bad_alloc&) {
-         return -1;
+         return PostResult::Failed;
       }
-      if (running) {
-         return 0;
+      if (!running) {
+         // the previous thread has left its loop: it is joined once the lock is released
+         reapUnlocked(finished);
+         // the thread runs Qore code and Oracle client calls, so it gets the stack size of a Qore thread
+         pthread_attr_t attr;
+         pthread_attr_init(&attr);
+         pthread_attr_setstacksize(&attr, stack_size);
+         int rc = pthread_create(&thread, &attr, &AQCallbackDispatcher::thread_helper, this);
+         pthread_attr_destroy(&attr);
+         if (rc) {
+            queue.pop_back();
+            return PostResult::Failed;
+         }
+         started = true;
+         running = true;
+#ifdef DEBUG
+         ++threads_started;
+#endif
       }
-      // the previous thread has left its loop: it is joined once the lock is released
-      reapUnlocked(finished);
-      // the thread runs Qore code and Oracle client calls, so it gets the stack size of a Qore thread
-      pthread_attr_t attr;
-      pthread_attr_init(&attr);
-      pthread_attr_setstacksize(&attr, stack_size);
-      int rc = pthread_create(&thread, &attr, &AQCallbackDispatcher::thread_helper, this);
-      pthread_attr_destroy(&attr);
-      if (rc) {
-         queue.pop_back();
-         return -1;
-      }
-      started = true;
-      running = true;
-      return 0;
+      // the references are taken for the queued callback, which the thread cannot take from the queue before the
+      // lock is released; taking them takes no lock
+      Callback::ref(kind, priv, obj);
+      return PostResult::Queued;
    }
 
    //! Waits for the queued callbacks to be made and joins the thread; called when the module is deleted
+   /** No callback is queued and no thread is started afterwards (see post()); can be called more than once.
+   */
    DLLLOCAL void stop() {
       // the thread needs the lock to leave its loop: it is joined once the lock is released
       AQThreadJoiner finished;
       AutoLocker al(l);
+      stopped = true;
       if (started) {
          finished.join(thread);
          started = false;
@@ -409,6 +464,19 @@ private:
       QoreObject* obj;
       //! for Kind::AsyncMessage: the subscription that the notification is for
       uint64_t subscription;
+
+      //! takes the references of a queued callback
+      DLLLOCAL static void ref(Kind kind, AQQueuePriv* priv, QoreObject* obj) {
+#ifdef DEBUG
+         if (kind == Kind::Test) {
+            return;
+         }
+#endif
+         priv->ref();
+         if (kind == Kind::AsyncMessage) {
+            obj->tRef();
+         }
+      }
    };
 
    QoreThreadLock l;
@@ -424,6 +492,14 @@ private:
    bool started = false;
    //! true while the thread is in its loop
    bool running = false;
+   //! true once the dispatcher has been stopped (when the module is deleted): no callback is queued again
+   bool stopped = false;
+#ifdef DEBUG
+   //! the number of threads started (see aq_dbg_stop_and_post())
+   unsigned threads_started = 0;
+   //! the number of Kind::Test callbacks made
+   unsigned test_callbacks = 0;
+#endif
 
    DLLLOCAL void run() {
       QoreForeignThreadHelper qfth;
@@ -431,6 +507,12 @@ private:
       while (!queue.empty()) {
          Callback cb = queue.front();
          queue.pop_front();
+#ifdef DEBUG
+         if (cb.kind == Kind::Test) {
+            ++test_callbacks;
+            continue;
+         }
+#endif
          AutoUnlocker aul(l);
          if (cb.kind == Kind::AsyncMessage) {
             cb.priv->deliverAsyncMessage(cb.obj, cb.subscription);
@@ -458,6 +540,20 @@ private:
    }
 
 public:
+#ifdef DEBUG
+   //! the number of threads started
+   DLLLOCAL unsigned dbgThreadsStarted() {
+      AutoLocker al(l);
+      return threads_started;
+   }
+
+   //! the number of Kind::Test callbacks made
+   DLLLOCAL unsigned dbgTestCallbacks() {
+      AutoLocker al(l);
+      return test_callbacks;
+   }
+#endif
+
    //! the fork handlers of the lock (see aq_register_fork_handlers())
    /** The lock's holders change the queue and start the thread, holding no other lock.
    */
@@ -1087,11 +1183,18 @@ void AQQueuePriv::checkSubscription() {
 
    // the subscription is reported lost on the dispatch thread, outside this thread's OCI processing (see
    // AQCallbackDispatcher), without any lock held, so that onSubscriptionLost() can restart it
-   ref();
-   if (aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::SubscriptionLost, this)) {
-      // the dispatch thread cannot be started: the loss is reported here
-      notifySubscriptionLost();
-      deref();
+   switch (aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::SubscriptionLost, this)) {
+      case AQCallbackDispatcher::PostResult::Queued:
+         break;
+      case AQCallbackDispatcher::PostResult::Failed:
+         // the dispatch thread cannot be started: the loss is reported here; the watchdog holds a reference to this
+         // object while it is checked
+         notifySubscriptionLost();
+         break;
+      case AQCallbackDispatcher::PostResult::Stopped:
+         // not reached: the watchdog is stopped before the dispatcher when the module is deleted; the loss is not
+         // reported, and the weak reference to the object is not released, as the module is being deleted
+         break;
    }
 }
 
@@ -1127,14 +1230,23 @@ void AQQueuePriv::postAsyncMessage() {
       return;
    }
    assert(obj);
-   ref();
-   obj->tRef();
-   if (aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::AsyncMessage, this, obj, subscription)) {
-      // the dispatch thread cannot be started: the callback is made here, on the notification thread
-      QoreForeignThreadHelper qfth(aqCallbackThreadManager.getTid());
-      deliverAsyncMessage(obj, subscription);
-      obj->tDeref();
-      deref();
+   switch (aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::AsyncMessage, this, obj, subscription)) {
+      case AQCallbackDispatcher::PostResult::Queued:
+         break;
+      case AQCallbackDispatcher::PostResult::Failed: {
+         // the dispatch thread cannot be started: the callback is made here, on the notification thread
+         ref();
+         obj->tRef();
+         QoreForeignThreadHelper qfth(aqCallbackThreadManager.getTid());
+         deliverAsyncMessage(obj, subscription);
+         obj->tDeref();
+         deref();
+         break;
+      }
+      case AQCallbackDispatcher::PostResult::Stopped:
+         // a late notification (for a subscription that outlived every Program) after the module's delete function
+         // stopped the dispatcher: the module's Qore state is being freed, so the notification is dropped
+         break;
    }
 }
 
@@ -1178,6 +1290,48 @@ QoreValue aq_dbg_with_queue_lock(const QoreListNode* args, RuntimeConfig& rc, Ex
       return QoreValue();
    }
    return priv->dbgWithLock(code, xsink);
+}
+
+QoreValue aq_dbg_stop_and_post(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   ReferenceHolder<QoreHashNode> rv(new QoreHashNode(autoTypeInfo), xsink);
+   // a callback that is posted before the module is deleted is made on a new thread
+   unsigned dispatcher_threads = aqCallbackDispatcher.dbgThreadsStarted();
+   AQCallbackDispatcher::PostResult before = aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::Test, nullptr);
+   rv->setKeyValue("posted_before_stop", before == AQCallbackDispatcher::PostResult::Queued, xsink);
+   rv->setKeyValue("threads_before_stop",
+      static_cast<int64>(aqCallbackDispatcher.dbgThreadsStarted() - dispatcher_threads), xsink);
+
+   // what the module's delete function does (see aq_module_delete()), twice, as it must be idempotent
+   aqSubscriptionManager.stop();
+   aqCallbackDispatcher.stop();
+   aqSubscriptionManager.stop();
+   aqCallbackDispatcher.stop();
+   rv->setKeyValue("callbacks_before_stop", static_cast<int64>(aqCallbackDispatcher.dbgTestCallbacks()), xsink);
+
+   // a late notification: no thread may be started and nothing may be queued
+   dispatcher_threads = aqCallbackDispatcher.dbgThreadsStarted();
+   AQCallbackDispatcher::PostResult after = aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::Test, nullptr);
+   rv->setKeyValue("posted_after_stop", after == AQCallbackDispatcher::PostResult::Queued, xsink);
+   rv->setKeyValue("refused_after_stop", after == AQCallbackDispatcher::PostResult::Stopped, xsink);
+   // the dispatcher is stopped again, so that a thread started by the post is joined and its callback made
+   aqCallbackDispatcher.stop();
+   rv->setKeyValue("threads_after_stop",
+      static_cast<int64>(aqCallbackDispatcher.dbgThreadsStarted() - dispatcher_threads), xsink);
+   rv->setKeyValue("callbacks_after_stop", static_cast<int64>(aqCallbackDispatcher.dbgTestCallbacks()), xsink);
+
+   // a subscription started after the watchdog was stopped (e.g. by a callback made while the dispatcher drains its
+   // queue) is refused, and no watchdog thread is started
+   unsigned watchdog_threads = aqSubscriptionManager.dbgThreadsStarted();
+   {
+      ExceptionSink add_xsink;
+      if (aqSubscriptionManager.add(nullptr, &add_xsink)) {
+         rv->setKeyValue("add_after_stop_error", add_xsink.getExceptionErr().refSelf(), xsink);
+         add_xsink.clear();
+      }
+   }
+   rv->setKeyValue("watchdog_threads_after_stop",
+      static_cast<int64>(aqSubscriptionManager.dbgThreadsStarted() - watchdog_threads), xsink);
+   return rv.release();
 }
 #endif
 

@@ -40,6 +40,9 @@
       subscription waited forever; both callbacks are now called on a callback thread of the module, one at a time,
       and no notification of a subscription is delivered once
       @ref Qore::Oracle::AQQueue::stopSubscription() "AQQueue::stopSubscription()" has stopped it
+    - fixed AQ notifications that arrived while the process was exiting, after the module had been shut down: they
+      started a new callback thread that used objects that were being freed; they are now dropped, and a
+      subscription can no longer be started at that point
     - fixed \c Datasource::getClientVersion() and the \c OCILobWrite2() LOB
       path being compiled out of builds with \c configure on Alpine Linux
     - fixed a child process created with \c fork() ending its parent's sessions and subscriptions, or waiting

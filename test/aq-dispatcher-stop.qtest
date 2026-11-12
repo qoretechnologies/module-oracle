@@ -1,0 +1,51 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+
+# When the module is deleted, its AQ subscription watchdog and callback dispatcher are stopped, so that no Qore object
+# is referenced or called once qore_cleanup() frees the library's state.  A notification that the Oracle client
+# delivers afterwards (for a subscription that outlived every Program) must then be dropped: the dispatcher must not
+# start a new thread or take references, and the watchdog must not be started again by a subscription started from a
+# callback made while the dispatcher drains its queue.
+#
+# The debug hook Qore::Oracle::dbg_aq_stop_and_post() stops both as the module's delete function does and then posts
+# a callback and starts a subscription; it needs a debug build of the module, and no database.  The process can use no
+# AQ subscription afterwards.
+
+%modern
+
+%requires QUnit
+%requires oracle
+
+%exec-class AqDispatcherStopTest
+
+class AqDispatcherStopTest inherits QUnit::Test {
+    constructor() : QUnit::Test("AqDispatcherStop", "1.0") {
+        addTestCase("post after stop", \testPostAfterStop());
+        set_return_value(main());
+    }
+
+    testPostAfterStop() {
+        hash<auto> h;
+        try {
+            h = call_function("Qore::Oracle::dbg_aq_stop_and_post");
+        } catch (hash<ExceptionInfo> ex) {
+            if (ex.err == "NO-FUNCTION") {
+                testSkip("the test needs a debug build of the module");
+            }
+            rethrow;
+        }
+        # before the stop, a callback is queued on a new thread, and stop() makes it
+        assertTrue(h.posted_before_stop);
+        assertEq(1, h.threads_before_stop);
+        assertEq(1, h.callbacks_before_stop);
+        # after the stop, a callback is refused: no thread is started, and it is never made
+        assertFalse(h.posted_after_stop);
+        assertTrue(h.refused_after_stop);
+        assertEq(0, h.threads_after_stop);
+        assertEq(1, h.callbacks_after_stop);
+        # a subscription started after the stop is refused, and no watchdog thread is started
+        assertEq("AQQUEUE-ERROR", h.add_after_stop_error);
+        assertEq(0, h.watchdog_threads_after_stop);
+    }
+}
