@@ -1193,7 +1193,10 @@ void AQQueuePriv::checkSubscription() {
          break;
       case AQCallbackDispatcher::PostResult::Stopped:
          // not reached: the watchdog is stopped before the dispatcher when the module is deleted; the loss is not
-         // reported, and the weak reference to the object is not released, as the module is being deleted
+         // reported, and the weak reference taken for it is released as notifySubscriptionLost() would
+         if (QoreObject* o = m_lost.exchange(nullptr)) {
+            o->tDeref();
+         }
          break;
    }
 }
