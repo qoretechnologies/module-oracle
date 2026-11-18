@@ -1,0 +1,48 @@
+/* Copyright (C) 2026 Qore Technologies, s.r.o. */
+
+/** @page oracleora_sandbox_connectionsguide Connections from Sandboxed Code
+
+    @tableofcontents
+
+    @section ora_sandbox_connections_intro Introduction
+
+    When the connection values of a \c Datasource or \c DatasourcePool were chosen by code under a sandbox that
+    restricts network access, %Qore checks the destinations of each connection against the network policy of that
+    sandbox before the driver connects.  The driver reports the destinations from the connect identifier, and a
+    connection that the policy allows connects only to the numeric addresses that were checked: each \c ADDRESS of
+    the connect descriptor is replaced by one \c ADDRESS for each checked address of its host, also when the
+    connection is made again after it was lost.  A connection whose destinations the driver cannot determine exactly
+    is refused with \c NETWORK-ACCESS-DENIED, and the message says why.
+
+    Connections whose values were chosen by code that no such sandbox governs are made as before.
+
+    @section ora_sandbox_connections_identifiers Connect Identifiers
+
+    |!Connect identifier|!Destinations
+    |a host and port set in the datasource|that host and port; the database name is the service
+    |a connect descriptor: <tt>(DESCRIPTION=...)</tt> or <tt>(DESCRIPTION_LIST=...)</tt>|every \c ADDRESS, in order, also of failover and load-balancing lists; a missing \c PORT is \c 1521
+    |an Easy Connect string: <tt>[tcp://]host[:port][,host[:port]...]/service[:server][/instance]</tt>|every host; a port applies to the hosts before it that have none, and the default is \c 1521; an IPv6 address is given in brackets
+    |a TNS alias|the addresses of its connect descriptor in \c tnsnames.ora (see below)
+
+    @section ora_sandbox_connections_aliases TNS Aliases
+
+    A TNS alias is resolved from \c tnsnames.ora as the Oracle client resolves it, from every file that the client
+    reads: \c ~/.tnsnames.ora, and \c tnsnames.ora in \c $TNS_ADMIN, in the \c network/admin directory of the Oracle
+    client library (Instant Client) and in <tt>$ORACLE_HOME/network/admin</tt>, following \c IFILE entries.  It is
+    refused:
+    - if no such file defines it;
+    - if two files define it differently;
+    - if a \c sqlnet.ora file that the client reads uses another naming method before \c TNSNAMES
+      (\c NAMES.DIRECTORY_PATH; LDAP, for example), or sets \c NAMES.DEFAULT_DOMAIN, with which the client would look
+      up another name.
+
+    @section ora_sandbox_connections_refused Connections that are Refused
+
+    - \c TCPS (and <tt>tcps://</tt>): the certificate of the server is checked against the host name, which the
+      checked numeric address would replace (see module-oracle issue 104)
+    - other protocols than TCP (\c IPC, \c BEQ)
+    - connections through an HTTPS proxy (\c HTTPS_PROXY)
+    - Easy Connect parameters (<tt>?...</tt>) and Easy Connect strings without a service
+
+    @since oracle 3.4.1
+*/

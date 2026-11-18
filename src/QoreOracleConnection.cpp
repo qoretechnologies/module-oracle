@@ -22,6 +22,7 @@
 */
 
 #include "oracle.h"
+#include "OracleConnectTargets.h"
 
 #include "ocilib_internal.h"
 
@@ -692,15 +693,27 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
 
    // format potential db link string: host[:port]/SID or SID only
    QoreString dblink;
-   if (ds.getHostName() && strlen(ds.getHostName())) {
-       dblink.concat(ds.getHostName());
-       if (ds.getPort()) {
-           dblink.concat(":");
-           dblink.sprintf("%d", ds.getPort());
+#ifdef QDBI_METHOD_GET_CONNECT_TARGETS
+   // a connection checked against a sandbox connects to the checked addresses only, also when it reconnects
+   if (const QoreListNode* checked = ds.getCheckedConnectTargets()) {
+       std::string desc;
+       if (qore_oracle_targets::checked_connect_string(ds, checked, desc, xsink)) {
+           return -1;
        }
-       dblink.concat("/");
+       dblink.concat(desc.c_str());
+   } else
+#endif
+   {
+       if (ds.getHostName() && strlen(ds.getHostName())) {
+           dblink.concat(ds.getHostName());
+           if (ds.getPort()) {
+               dblink.concat(":");
+               dblink.sprintf("%d", ds.getPort());
+           }
+           dblink.concat("/");
+       }
+       dblink.concat(ds.getDBName());
    }
-   dblink.concat(ds.getDBName());
 
    int e;
 
