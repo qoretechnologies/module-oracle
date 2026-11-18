@@ -43,6 +43,8 @@ public class ConnectRedirectTest inherits QUnit::Test {
     constructor() : QUnit::Test("Oracle connect redirect", "1.0", \ARGV) {
         addTestCase("a redirect to an address that the sandbox denies is refused before the login", \denied());
         addTestCase("a redirect to an address that the sandbox allows works", \allowed());
+        addTestCase("a sandbox that allows uncontrolled APIs but restricts the network refuses the redirect",
+            \deniedUncontrolledApis());
         set_return_value(main());
     }
 
@@ -94,6 +96,15 @@ public class ConnectRedirectTest inherits QUnit::Test {
         assertEq(before, lastLogin(), "no login");
     }
 
+    #! the policy of a sandbox that allows uncontrolled APIs restricts the network all the same
+    deniedUncontrolledApis() {
+        *date before = lastLogin();
+        hash<auto> r = open(True, True);
+        assertEq("NETWORK-ACCESS-DENIED", r.err, "the redirect is refused: " + (r.desc ?? ""));
+        assertNeq(-1, (r.desc ?? "").find("refused before the login"), r.desc ?? "");
+        assertEq(before, lastLogin(), "no login");
+    }
+
     allowed() {
         *date before = lastLogin();
         hash<auto> r = open(False);
@@ -103,7 +114,7 @@ public class ConnectRedirectTest inherits QUnit::Test {
 
     #! opens a connection through the fake listener from a sandboxed Program that denies the database's address
     #! (\a deny) or allows it
-    private hash<auto> open(bool deny) {
+    private hash<auto> open(bool deny, *bool uncontrolled_apis) {
         Program p(PO_NEW_STYLE);
         p.parse("hash<auto> sub try_open(hash<auto> conn) {
     try {
@@ -119,6 +130,9 @@ public class ConnectRedirectTest inherits QUnit::Test {
         sm.setNetworkDefaultPolicy(True);
         if (deny) {
             sm.addNetworkDeniedIPRange(listener_addr + "/32");
+        }
+        if (uncontrolled_apis) {
+            sm.setUncontrolledApiPolicy(True);
         }
         p.setSandboxManager(sm);
         return p.callFunction("try_open", {

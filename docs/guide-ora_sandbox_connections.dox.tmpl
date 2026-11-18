@@ -49,8 +49,11 @@
     a socket that another thread opened at the same time is checked too, which can refuse a connection but never
     allow one.  On other platforms, connections that a restricting sandbox chose are refused for now.
 
-    The residual risk: before the check, the client has opened one TCP connection to the redirect target and sent it
-    the connect request (the connect descriptor), but no credentials.
+    The residual risk: before the check, the client has opened a TCP connection to each redirect target (a chain of
+    redirects reaches each host of the chain) and sent it the connect request (the connect descriptor), but no
+    credentials; a redirect to a TCPS address makes the TLS handshake there before the check, with the client's
+    wallet certificate if one is configured; and only the direct peer is checked, so a redirect to an allowed relay
+    (Connection Manager, \c SOURCE_ROUTE) that forwards elsewhere is not detected.
 
     @section ora_sandbox_connections_refused Connections that are Refused
 

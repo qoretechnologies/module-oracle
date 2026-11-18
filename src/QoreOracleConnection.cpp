@@ -742,16 +742,11 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
    /* attach to the server - use default host? */
    sword rc = OCIServerAttach(srvhp, errhp, reinterpret_cast<const OraText*>(dblink.getBuffer()),
        dblink.size(), OCI_DEFAULT);
-   if (qore_check_cancel(xsink, "attaching to the Oracle server")) {
-       return -1;
+   // an attached server is detached on every failure from here until the session has begun (also when the thread is
+   // cancelled right after the attach), so that nothing more is sent on the connection
+   if (rc == OCI_SUCCESS || rc == OCI_SUCCESS_WITH_INFO) {
+       server_attached = true;
    }
-   if (checkerr(rc, "QoreOracleConnection::logon() server attach", xsink)) {
-       return -1;
-   }
-   server_attached = true;
-
-   // every failure from here until the session has begun detaches the server, so that nothing more is sent on the
-   // connection
    struct AttachGuard {
        QoreOracleConnection& conn;
        bool logged_in = false;
@@ -762,6 +757,13 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
            }
        }
    } attach_guard{*this};
+
+   if (qore_check_cancel(xsink, "attaching to the Oracle server")) {
+       return -1;
+   }
+   if (checkerr(rc, "QoreOracleConnection::logon() server attach", xsink)) {
+       return -1;
+   }
 
 #ifdef QORE_ORACLE_PEER_CHECK
    // before anything is sent on the connection, and before the login sends the credentials

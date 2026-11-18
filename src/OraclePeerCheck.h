@@ -42,9 +42,19 @@
     socket that another thread opened at the same time is checked as well, which can only refuse a connection, never
     allow one.  On other platforms a restricted connection is refused before it is attached.
 
-    The residual risk: before the check, the client has opened one TCP connection to the redirect target and sent it
-    the connect request (the connect descriptor), but no credentials.
+    The residual risk: before the check, the client has opened a TCP connection to each redirect target (a chain of
+    redirects reaches each host of the chain) and sent it the connect request (the connect descriptor), but no
+    credentials; a redirect to a TCPS address makes the TLS handshake there before the check, with the client's
+    wallet certificate if one is configured; and only the direct peer is checked, so a redirect to an allowed relay
+    (Connection Manager, \c SOURCE_ROUTE) that forwards elsewhere is not detected.
 */
+
+#if defined(QDBI_METHOD_GET_CONNECT_TARGETS) \
+    && !(defined(QORE_HAS_DBI_CHECK_CONNECT_PATH) && defined(_QORE_HAS_DATASOURCE_CONNECT_CHOOSERS))
+// the driver reports its destinations, so the connections that a sandbox restricts must also be checked after a
+// redirect of the listener; never build the one without the other
+#error "this Qore has QDBI_METHOD_GET_CONNECT_TARGETS but not the APIs that the check of the connected address needs"
+#endif
 
 #if defined(QORE_HAS_DBI_CHECK_CONNECT_PATH) && defined(_QORE_HAS_DATASOURCE_CONNECT_CHOOSERS)
 #define QORE_ORACLE_PEER_CHECK 1
@@ -116,11 +126,10 @@ public:
                 continue;
             }
             ++checked;
-            // every sandbox that restricts the code that chose the connection must allow the address
+            // the policy of every sandbox that governed code that chose the connection must allow the address: every
+            // entry with a policy manager, as the Qore library checks the destinations before the connection (an entry
+            // that allows uncontrolled APIs can still restrict the network); an entry without one restricts nothing
             for (size_t i = 0, e = choosers.size(); i < e; ++i) {
-                if (choosers.allowsUncontrolledApis(i)) {
-                    continue;
-                }
                 QoreSandboxManager* mgr = choosers.getPolicyManagerRef(i);
                 if (!mgr) {
                     continue;
