@@ -36,6 +36,25 @@
       (\c NAMES.DIRECTORY_PATH; LDAP, for example), or sets \c NAMES.DEFAULT_DOMAIN, with which the client would look
       up another name.
 
+    @section ora_sandbox_connections_redirect Listener Redirects
+
+    A listener can answer the client's connect request with a REDIRECT to another address, which the Oracle client
+    follows while it attaches to the server, without a way to refuse it (a RAC SCAN listener redirects to the listener
+    of a node, for example).  So after the attach, and before the login sends the credentials, the address that the
+    client is actually connected to is checked against the network policy of the sandbox: a connection to an address
+    that the policy allows proceeds (so a redirect within the allowed addresses works), and one to an address that it
+    does not allow, or whose address cannot be determined, is detached and refused with \c NETWORK-ACCESS-DENIED.
+
+    The address is read from the TCP sockets that the attach opened (Linux: \c /proc/self/fd and \c getpeername());
+    a socket that another thread opened at the same time is checked too, which can refuse a connection but never
+    allow one.  On other platforms, connections that a restricting sandbox chose are refused for now.
+
+    The residual risk: before the check, the client has opened a TCP connection to each redirect target (a chain of
+    redirects reaches each host of the chain) and sent it the connect request (the connect descriptor), but no
+    credentials; a redirect to a TCPS address makes the TLS handshake there before the check, with the client's
+    wallet certificate if one is configured; and only the direct peer is checked, so a redirect to an allowed relay
+    (Connection Manager, \c SOURCE_ROUTE) that forwards elsewhere is not detected.
+
     @section ora_sandbox_connections_refused Connections that are Refused
 
     - \c TCPS (and <tt>tcps://</tt>): the certificate of the server is checked against the host name, which the

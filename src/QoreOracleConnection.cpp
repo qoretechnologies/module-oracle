@@ -23,6 +23,7 @@
 
 #include "oracle.h"
 #include "OracleConnectTargets.h"
+#include "OraclePeerCheck.h"
 
 #include "ocilib_internal.h"
 
@@ -729,16 +730,47 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
       return -1;
    }
 
+#ifdef QORE_ORACLE_PEER_CHECK
+   // a connection chosen by code under a sandbox that restricts the network: the address that the client is
+   // connected to after the attach (a listener can redirect it) is checked before the login
+   OraclePeerCheck peer_check;
+   if (peer_check.start(ds, xsink)) {
+       return -1;
+   }
+#endif
+
    /* attach to the server - use default host? */
    sword rc = OCIServerAttach(srvhp, errhp, reinterpret_cast<const OraText*>(dblink.getBuffer()),
        dblink.size(), OCI_DEFAULT);
+   // an attached server is detached on every failure from here until the session has begun (also when the thread is
+   // cancelled right after the attach), so that nothing more is sent on the connection
+   if (rc == OCI_SUCCESS || rc == OCI_SUCCESS_WITH_INFO) {
+       server_attached = true;
+   }
+   struct AttachGuard {
+       QoreOracleConnection& conn;
+       bool logged_in = false;
+       ~AttachGuard() {
+           if (!logged_in && conn.server_attached) {
+               OCIServerDetach(conn.srvhp, conn.errhp, OCI_DEFAULT);
+               conn.server_attached = false;
+           }
+       }
+   } attach_guard{*this};
+
    if (qore_check_cancel(xsink, "attaching to the Oracle server")) {
        return -1;
    }
    if (checkerr(rc, "QoreOracleConnection::logon() server attach", xsink)) {
        return -1;
    }
-   server_attached = true;
+
+#ifdef QORE_ORACLE_PEER_CHECK
+   // before anything is sent on the connection, and before the login sends the credentials
+   if (peer_check.check(ds, xsink)) {
+       return -1;
+   }
+#endif
 
    // a connection made again after it was lost has the receive timeout that was set on it
    if (recv_timeout_ms && applyRecvTimeout(recv_timeout_ms, xsink)) {
@@ -765,6 +797,7 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
    if (checkerr(rc, "QoreOracleConnection::logon() session begin", xsink)) {
        return -1;
    }
+   attach_guard.logged_in = true;
 
    /* set the session attribute in the service context */
    e = checkerr(OCIAttrSet(svchp, OCI_HTYPE_SVCCTX, usrhp, 0, OCI_ATTR_SESSION, errhp), "QoreOracleConnection::logon() set the session attribute in the service context", xsink);
