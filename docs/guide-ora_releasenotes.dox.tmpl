@@ -9,6 +9,9 @@
       restricts the network can connect where the policy of the sandbox allows, and connects only to the checked
       addresses; a connection whose destinations cannot be determined exactly (an unresolvable TNS alias, \c TCPS) is
       refused: see @ref ora_sandbox_connections
+    - <b>Security</b>: a sandboxed connection that a listener redirects is checked after the client attached and before
+      the login: the address that the client is connected to must be allowed by the sandbox, else the connection is
+      refused before the credentials are sent: see @ref ora_sandbox_connections
     - fixed crashes and memory corruption when the connection to the server was lost while statements were active, for
       example when sessions were killed during Oracle RAC rolling patching: fetching from an \c SQLStatement after its
       connection was lost used freed memory, and the statements of a lost connection were freed while they were

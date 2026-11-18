@@ -1,0 +1,166 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+# test-platform: macos - an Oracle listener's REDIRECT and the check of the connected address before the login
+#
+# A listener can answer the client's connect request with a REDIRECT to another address, which the client follows
+# inside the attach.  For a connection chosen by code under a sandbox that restricts the network, the driver checks
+# the address that the client is connected to after the attach against the sandbox's policy, before the login: a
+# redirect to an address that the policy does not allow is refused before the credentials are sent, and a redirect to
+# an allowed address works (as a RAC SCAN listener redirects to a node).
+#
+# A fake listener of the test (on 127.0.0.3) answers the connect request with a REDIRECT to the listener of the test
+# database (QORE_ORACLE_LISTENER, host:port, default oracle:1521, as in CI); the sandbox allows the fake listener and
+# denies or allows the database's address.  That no login reached the database is shown by the LAST_LOGIN of a user
+# of the test, which only a login changes.
+
+%modern
+%no-child-restrictions
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires oracle
+
+%exec-class ConnectRedirectTest
+
+#! the user of the test
+const TestUser = "QTEST_REDIRECT";
+const TestPass = "Qtest_redirect_1";
+
+public class ConnectRedirectTest inherits QUnit::Test {
+    private {
+        *string sysconnstr = ENV.QORE_DB_CONNSTR_ORACLE_SYS;
+        string listener_host;
+        int listener_port;
+        #! the numeric address of the database's listener
+        string listener_addr;
+        string service;
+        Socket fake();
+        int fake_port;
+        Counter stop(1);
+        Counter running(1);
+    }
+
+    constructor() : QUnit::Test("Oracle connect redirect", "1.0", \ARGV) {
+        addTestCase("a redirect to an address that the sandbox denies is refused before the login", \denied());
+        addTestCase("a redirect to an address that the sandbox allows works", \allowed());
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        if (!sysconnstr) {
+            testSkip("QORE_DB_CONNSTR_ORACLE_SYS is not set");
+        }
+        (*string h, *string p) = ((ENV.QORE_ORACLE_LISTENER ?? "oracle:1521") =~ x/^(.*):([0-9]+)$/);
+        listener_host = h;
+        listener_port = p.toInt();
+        try {
+            listener_addr = gethostbyname(listener_host);
+            Socket s();
+            s.connect(sprintf("%s:%d", listener_addr, listener_port), 5s);
+            s.close();
+        } catch (hash<ExceptionInfo> ex) {
+            testSkip(sprintf("the listener %s:%d cannot be reached: %s", listener_host, listener_port, ex.desc));
+        }
+        service = ENV.QORE_ORACLE_SERVICE ?? ENV.ORACLE_PDB ?? "FREEPDB1";
+        Datasource ds(sysconnstr);
+        try {
+            ds.exec(sprintf("create user %s identified by \"%s\"", TestUser, TestPass));
+        } catch (hash<ExceptionInfo> ex) {
+            if (ex.desc !~ /ORA-01920/) {
+                rethrow;
+            }
+        }
+        ds.exec(sprintf("grant create session to %s", TestUser));
+        ds.commit();
+        # the fake listener: a REDIRECT for each connect request
+        fake.bind("127.0.0.3:0", True);
+        fake.listen();
+        fake_port = fake.getSocketInfo().port;
+        background serveFake();
+    }
+
+    globalTearDown() {
+        stop.dec();
+        running.waitForZero(10s);
+        fake.close();
+    }
+
+    denied() {
+        *date before = lastLogin();
+        hash<auto> r = open(True);
+        assertEq("NETWORK-ACCESS-DENIED", r.err, "the redirect is refused: " + (r.desc ?? ""));
+        assertNeq(-1, (r.desc ?? "").find("refused before the login"), r.desc ?? "");
+        # no login reached the database
+        assertEq(before, lastLogin(), "no login");
+    }
+
+    allowed() {
+        *date before = lastLogin();
+        hash<auto> r = open(False);
+        assertTrue(r.ok, "the redirect is followed and the login works: " + (r.desc ?? ""));
+        assertTrue(!before || lastLogin() > before, "the login reached the database");
+    }
+
+    #! opens a connection through the fake listener from a sandboxed Program that denies the database's address
+    #! (\a deny) or allows it
+    private hash<auto> open(bool deny) {
+        Program p(PO_NEW_STYLE);
+        p.parse("hash<auto> sub try_open(hash<auto> conn) {
+    try {
+        Datasource ds(conn);
+        ds.open();
+        ds.close();
+        return {\"ok\": True};
+    } catch (hash<ExceptionInfo> ex) {
+        return {\"err\": ex.err, \"desc\": ex.desc};
+    }
+}", "sandboxed");
+        SandboxManager sm();
+        sm.setNetworkDefaultPolicy(True);
+        if (deny) {
+            sm.addNetworkDeniedIPRange(listener_addr + "/32");
+        }
+        p.setSandboxManager(sm);
+        return p.callFunction("try_open", {
+            "type": "oracle",
+            "user": TestUser,
+            "pass": TestPass,
+            "db": sprintf("(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=127.0.0.3)(PORT=%d))(CONNECT_DATA=(SERVICE_NAME=%s)))",
+                fake_port, service),
+        });
+    }
+
+    #! returns the LAST_LOGIN of the user of the test
+    private *date lastLogin() {
+        Datasource ds(sysconnstr);
+        return ds.selectRow("select last_login from dba_users where username = %v", TestUser).last_login;
+    }
+
+    #! answers each connect request with a REDIRECT to the database's listener
+    private serveFake() {
+        on_exit running.dec();
+        binary redirect = binary(sprintf("(ADDRESS=(PROTOCOL=TCP)(HOST=%s)(PORT=%d))", listener_addr, listener_port))
+            + binary(chr(0));
+        while (stop.getCount()) {
+            *Socket c = fake.accept(500ms);
+            if (!c) {
+                continue;
+            }
+            try {
+                # the connect packet: its length is in the first two bytes of the header
+                binary hdr = c.recvBinary(8, 5s);
+                int len = (hdr[0] << 8) | hdr[1];
+                if (len > 8) {
+                    c.recvBinary(len - 8, 5s);
+                }
+                # REDIRECT (packet type 5): the length of the data, then the data
+                binary body = binary(chr(redirect.size() >> 8) + chr(redirect.size() & 0xff)) + redirect;
+                int plen = 8 + body.size();
+                c.send(binary(chr(plen >> 8) + chr(plen & 0xff) + chr(0) + chr(0) + chr(5) + chr(0) + chr(0)
+                    + chr(0)) + body);
+            } catch (hash<ExceptionInfo> ex) {
+            }
+            c.close();
+        }
+    }
+}
