@@ -1,0 +1,247 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+#
+# The destinations of an Oracle connection (QDBI_METHOD_GET_CONNECT_TARGETS): code under a sandbox that restricts the
+# network can connect to the destinations that its policy allows, which the driver reports from the connect
+# identifier: a host and port, an Easy Connect string, a connect descriptor (every ADDRESS, also of a failover list
+# or a DESCRIPTION_LIST), or a TNS alias resolved from tnsnames.ora as the Oracle client resolves it.  What cannot be
+# checked exactly is refused: a TNS alias that is not found, or that another naming method or a default domain
+# would resolve, or that is defined differently in two files; TCPS, IPC, an HTTPS proxy, Easy Connect parameters or
+# an Easy Connect string without a service.
+#
+# No database is needed: the sandbox denies one address (connect-targets-child.q), and a connection to an allowed
+# address with no listener (127.0.0.1, port 1) fails in the Oracle client, after the check, so a connection that the
+# check refuses fails with NETWORK-ACCESS-DENIED and one that it allows fails with a DBI:ORACLE error.
+
+%modern
+%requires QUnit
+%requires FsUtil
+%requires json
+
+%exec-class ConnectTargetsTest
+
+#! an allowed destination with no listener
+const Allowed = "127.0.0.1";
+const AllowedPort = 1;
+#! the destination that the sandbox denies (see connect-targets-child.q)
+const Denied = "10.255.255.2";
+
+public class ConnectTargetsTest inherits QUnit::Test {
+    private {
+        TmpDir tmp("oracle-connect-targets-");
+        #! an empty directory, for HOME and TNS_ADMIN when no file is wanted
+        string empty_dir;
+    }
+
+    constructor() : QUnit::Test("Oracle connect targets", "1.0", \ARGV) {
+        addTestCase("a host and port set in the datasource", \hostPort());
+        addTestCase("Easy Connect strings", \ezConnect());
+        addTestCase("connect descriptors and failover lists", \descriptors());
+        addTestCase("what cannot be checked is refused", \refused());
+        addTestCase("TNS aliases from tnsnames.ora", \aliases());
+        addTestCase("TNS aliases that cannot be resolved exactly are refused", \aliasRefused());
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        empty_dir = tmp.path + "/empty";
+        mkdir(empty_dir);
+    }
+
+    hostPort() {
+        list<hash<auto>> r = run((
+            {"db": "svc", "host": Allowed, "port": AllowedPort},
+            {"db": "svc", "host": Denied, "port": 1521},
+        ));
+        assertAllowed(r[0], "allowed host");
+        assertDenied(r[1], "denied host");
+    }
+
+    ezConnect() {
+        list<hash<auto>> r = run((
+            {"db": sprintf("%s:%d/svc", Allowed, AllowedPort)},
+            {"db": sprintf("//%s:%d/svc", Allowed, AllowedPort)},
+            {"db": sprintf("tcp://%s:%d/svc:dedicated/inst", Allowed, AllowedPort)},
+            # the second host of a list, which a failover reaches
+            {"db": sprintf("%s:%d,%s:1521/svc", Allowed, AllowedPort, Denied)},
+            # the default port
+            {"db": sprintf("%s/svc", Denied)},
+            # a port given after several hosts applies to all of them
+            {"db": sprintf("%s,%s:%d/svc", Denied, Allowed, AllowedPort)},
+            {"db": sprintf("[::1]:%d/svc", AllowedPort)},
+        ));
+        assertAllowed(r[0], "host:port/service");
+        assertAllowed(r[1], "//host:port/service");
+        assertAllowed(r[2], "tcp:// with server and instance");
+        assertDenied(r[3], "second host of a list");
+        assertDenied(r[4], "default port");
+        assertDenied(r[5], "host list with one port");
+        assertAllowed(r[6], "IPv6 address");
+    }
+
+    descriptors() {
+        string allowed_addr = sprintf("(ADDRESS=(PROTOCOL=TCP)(HOST=%s)(PORT=%d))", Allowed, AllowedPort);
+        string denied_addr = sprintf("(ADDRESS=(PROTOCOL=tcp)(HOST=%s)(PORT=1521))", Denied);
+        string cd = "(CONNECT_DATA=(SERVICE_NAME=svc))";
+        list<hash<auto>> r = run((
+            {"db": sprintf("(DESCRIPTION=%s%s)", allowed_addr, cd)},
+            {"db": sprintf("(DESCRIPTION=(FAILOVER=on)(ADDRESS_LIST=%s%s)%s)", allowed_addr, denied_addr, cd)},
+            {"db": sprintf("(DESCRIPTION_LIST=(DESCRIPTION=%s%s)(DESCRIPTION=%s%s))", allowed_addr, cd,
+                denied_addr, cd)},
+            {"db": sprintf("(description = (address_list = %s) %s)", allowed_addr, cd)},
+        ));
+        assertAllowed(r[0], "single address");
+        assertDenied(r[1], "failover list");
+        assertDenied(r[2], "description list");
+        assertAllowed(r[3], "lower case and spaces");
+    }
+
+    refused() {
+        string cd = "(CONNECT_DATA=(SERVICE_NAME=svc))";
+        list<hash<auto>> r = run((
+            {"db": sprintf("(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=%s)(PORT=%d))%s)", Allowed, AllowedPort, cd)},
+            {"db": sprintf("tcps://%s:%d/svc", Allowed, AllowedPort)},
+            {"db": sprintf("(DESCRIPTION=(ADDRESS=(PROTOCOL=IPC)(KEY=k))%s)", cd)},
+            {"db": sprintf("(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=%s)(PORT=%d)(HTTPS_PROXY=proxy)"
+                "(HTTPS_PROXY_PORT=80))%s)", Allowed, AllowedPort, cd)},
+            {"db": sprintf("%s:%d/svc?connect_timeout=5", Allowed, AllowedPort)},
+            {"db": sprintf("%s:%d", Allowed, AllowedPort)},
+            {"db": "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=x)"},
+        ));
+        assertRefused(r[0], "TCPS", "TCPS descriptor");
+        assertRefused(r[1], "TCPS", "tcps:// Easy Connect");
+        assertRefused(r[2], "only TCP", "IPC");
+        assertRefused(r[3], "HTTPS proxy", "HTTPS proxy");
+        assertRefused(r[4], "parameters", "Easy Connect parameters");
+        assertRefused(r[5], "without a service", "Easy Connect without a service");
+        assertRefused(r[6], "parentheses", "malformed descriptor");
+    }
+
+    aliases() {
+        string admin = tmp.path + "/admin";
+        mkdir(admin);
+        writeFile(admin + "/tnsnames.ora", sprintf("# test aliases
+qtest_allowed, qtest_other =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = %s)(PORT = %d))
+    (CONNECT_DATA = (SERVICE_NAME = svc))
+  )
+qtest_denied = (DESCRIPTION = (ADDRESS_LIST = (ADDRESS = (PROTOCOL = TCP)(HOST = %s)(PORT = 1521)))
+  (CONNECT_DATA = (SERVICE_NAME = svc)))
+IFILE = included.ora
+", Allowed, AllowedPort, Denied));
+        writeFile(admin + "/included.ora", sprintf("qtest_included = (DESCRIPTION = (ADDRESS = (PROTOCOL = TCP)"
+            "(HOST = %s)(PORT = 1521))(CONNECT_DATA = (SERVICE_NAME = svc)))\n", Denied));
+        writeFile(admin + "/sqlnet.ora", "NAMES.DIRECTORY_PATH = (TNSNAMES, EZCONNECT)\n");
+        string home = tmp.path + "/home";
+        mkdir(home);
+        writeFile(home + "/.tnsnames.ora", sprintf("qtest_home = (DESCRIPTION = (ADDRESS = (PROTOCOL = TCP)"
+            "(HOST = %s)(PORT = 1521))(CONNECT_DATA = (SERVICE_NAME = svc)))\n", Denied));
+        list<hash<auto>> r = run((
+            {"db": "qtest_allowed"},
+            {"db": "QTEST_OTHER"},
+            {"db": "qtest_denied"},
+            {"db": "qtest_included"},
+            {"db": "qtest_home"},
+        ), {"TNS_ADMIN": admin, "HOME": home});
+        assertAllowed(r[0], "alias");
+        assertAllowed(r[1], "second name of an entry, upper case");
+        assertDenied(r[2], "alias of a denied address");
+        assertDenied(r[3], "alias from an IFILE");
+        assertDenied(r[4], "alias from ~/.tnsnames.ora");
+    }
+
+    aliasRefused() {
+        string entry = sprintf("qtest_a = (DESCRIPTION = (ADDRESS = (PROTOCOL = TCP)(HOST = %s)(PORT = %d))"
+            "(CONNECT_DATA = (SERVICE_NAME = svc)))\n", Allowed, AllowedPort);
+        # LDAP before TNSNAMES
+        string ldap = tmp.path + "/ldap";
+        mkdir(ldap);
+        writeFile(ldap + "/tnsnames.ora", entry);
+        writeFile(ldap + "/sqlnet.ora", "NAMES.DIRECTORY_PATH = (LDAP, TNSNAMES)\n");
+        # a default domain
+        string domain = tmp.path + "/domain";
+        mkdir(domain);
+        writeFile(domain + "/tnsnames.ora", entry);
+        writeFile(domain + "/sqlnet.ora", "NAMES.DEFAULT_DOMAIN = example.com\n");
+        # two different definitions
+        string amb = tmp.path + "/amb";
+        mkdir(amb);
+        writeFile(amb + "/tnsnames.ora", entry);
+        string amb_home = tmp.path + "/amb-home";
+        mkdir(amb_home);
+        writeFile(amb_home + "/.tnsnames.ora", sprintf("qtest_a = (DESCRIPTION = (ADDRESS = (PROTOCOL = TCP)"
+            "(HOST = %s)(PORT = 1522))(CONNECT_DATA = (SERVICE_NAME = svc)))\n", Allowed));
+        # the same definition in two files is not ambiguous
+        string same_home = tmp.path + "/same-home";
+        mkdir(same_home);
+        writeFile(same_home + "/.tnsnames.ora", entry);
+
+        assertRefused(run(({"db": "qtest_missing"},), {"TNS_ADMIN": empty_dir, "HOME": empty_dir})[0],
+            "is not defined", "unknown alias");
+        assertRefused(run(({"db": "qtest_a"},), {"TNS_ADMIN": ldap, "HOME": empty_dir})[0], "do not resolve",
+            "LDAP first");
+        assertRefused(run(({"db": "qtest_a"},), {"TNS_ADMIN": domain, "HOME": empty_dir})[0],
+            "NAMES.DEFAULT_DOMAIN", "default domain");
+        assertRefused(run(({"db": "qtest_a"},), {"TNS_ADMIN": amb, "HOME": amb_home})[0], "different definitions",
+            "different definitions");
+        assertAllowed(run(({"db": "qtest_a"},), {"TNS_ADMIN": amb, "HOME": same_home})[0], "same definition twice");
+    }
+
+    #! runs the connections in a child process with the given environment; returns their results
+    private list<hash<auto>> run(list<hash<auto>> conns, *hash<string, string> env) {
+        string json_path = tmp.path + sprintf("/conns-%d.json", ++seq);
+        writeFile(json_path, make_json(conns));
+        # no ORACLE_HOME: its network/admin directory would be read too
+        string cmd = "unset ORACLE_HOME; ";
+        if (!env.TNS_ADMIN) {
+            env.TNS_ADMIN = empty_dir;
+        }
+        if (!env.HOME) {
+            env.HOME = empty_dir;
+        }
+        foreach hash<auto> e in (env.pairIterator()) {
+            cmd += sprintf("%s='%s' ", e.key, e.value);
+        }
+        cmd += sprintf("%s %s/connect-targets-child.q \"$(cat %s)\" 2>&1", get_qore(), get_script_dir(), json_path);
+        int rc;
+        string out = backquote(cmd, \rc);
+        if (rc) {
+            throw "CHILD-ERROR", sprintf("the child process failed (%d): %s", rc, out);
+        }
+        # the last line is the result
+        list<auto> lines = select out.split("\n"), $1;
+        return parse_json(lines.last());
+    }
+
+    private assertAllowed(hash<auto> r, string label) {
+        # the check allowed the connection: it failed in the Oracle client (no listener), or it connected
+        assertTrue(r.ok || (r.err =~ /^DBI:ORACLE/), label + ": " + make_json(r));
+    }
+
+    private assertDenied(hash<auto> r, string label) {
+        assertEq("NETWORK-ACCESS-DENIED", r.err, label + ": " + make_json(r));
+        assertEq(-1, (r.desc ?? "").find("cannot be checked"), label + ": denied by the policy, not refused: "
+            + make_json(r));
+    }
+
+    private assertRefused(hash<auto> r, string reason, string label) {
+        assertEq("NETWORK-ACCESS-DENIED", r.err, label + ": " + make_json(r));
+        assertNeq(-1, (r.desc ?? "").find(reason), label + ": " + make_json(r));
+    }
+
+    private writeFile(string path, string data) {
+        File f();
+        f.open2(path, O_CREAT | O_WRONLY | O_TRUNC);
+        f.write(data);
+    }
+
+    private static string get_qore() {
+        return ENV.QORE_BINARY ?? "qore";
+    }
+
+    private {
+        int seq = 0;
+    }
+}

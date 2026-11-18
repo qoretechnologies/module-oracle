@@ -115,6 +115,7 @@ set(QORE_DOX_TMPL_SRC
     docs/guide-ora_native_bulk_load.dox.tmpl
     docs/guide-ora_options.dox.tmpl
     docs/guide-ora_releasenotes.dox.tmpl
+    docs/guide-ora_sandbox_connections.dox.tmpl
     docs/guide-ora_thread_session_info.dox.tmpl
     docs/guide-select_with_dup_col.dox.tmpl
 )

@@ -29,6 +29,7 @@
 #include <qore/QoreColumnarResult.h>
 #endif
 #include "oracle-module.h"
+#include "OracleConnectTargets.h"
 #include "oracleobject.h"
 
 #include <atomic>
@@ -614,6 +615,10 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
 
    methods.add(QDBI_METHOD_OPT_SET, oracle_opt_set);
    methods.add(QDBI_METHOD_OPT_GET, oracle_opt_get);
+#ifdef QDBI_METHOD_GET_CONNECT_TARGETS
+   // the destinations of a connection, which the Qore library checks against the sandbox of the code that chose it
+   methods.add(QDBI_METHOD_GET_CONNECT_TARGETS, qore_oracle_targets::get_connect_targets);
+#endif
 
    methods.registerOption(DBI_OPT_NUMBER_OPT, "when set, number values are returned as integers if possible, otherwise as arbitrary-precision number values; the argument is ignored; setting this option turns it on and turns off 'string-numbers' and 'numeric-numbers'");
    methods.registerOption(DBI_OPT_NUMBER_STRING, "when set, number values are returned as strings for backwards-compatibility; the argument is ignored; setting this option turns it on and turns off 'optimal-numbers' and 'numeric-numbers'");
