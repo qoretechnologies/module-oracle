@@ -10,6 +10,7 @@ default:
     - set +e
 
 variables:
+  GITHUB_ORG: qoretechnologies
   REPO_NAME: module-oracle
 
 .oracle_test:
@@ -52,23 +53,12 @@ variables:
           test/docker_test/github_status.sh failure
           exit 1
         fi
-    - |
-        if ${TEST_SCRIPT}; then
-          test/docker_test/github_status.sh success
-          exit 0
-        else
-          test/docker_test/github_status.sh failure
-          exit 1
-        fi
+    - python3 test/docker_test/platform-ci.py
 
 test-ubuntu:
   extends: .oracle_test
   image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop
-  variables:
-    TEST_SCRIPT: test/docker_test/test-ubuntu.sh
 
 test-alpine:
   extends: .oracle_test
   image: $CI_REGISTRY/infrastructure/qore-test-base/qore-test-base:develop-alpine
-  variables:
-    TEST_SCRIPT: test/docker_test/test-alpine.sh
