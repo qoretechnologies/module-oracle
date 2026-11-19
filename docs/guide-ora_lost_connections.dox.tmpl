@@ -25,7 +25,7 @@
     A lost connection always results in an exception if the operation could not be completed; a commit never
     reports success for a transaction that was lost.
 
-    A call ended by the connection's receive timeout (the \c "recv-timeout" option; see @ref ora_options) is reported
+    A call ended by the connection's receive timeout (the \c "recv-timeout" option; see @ref oracleora_optionsguide) is reported
     with \c ORA-12609; the statement is not executed again, as it can have run on the server, and a transaction in
     progress is lost.
 

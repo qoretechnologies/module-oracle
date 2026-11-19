@@ -147,6 +147,7 @@ list(APPEND MODULE_DOX_INPUT
     ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_native_bulk_load.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_options.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_releasenotes.dox
+    ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_sandbox_connections.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-ora_thread_session_info.dox
     ${CMAKE_CURRENT_BINARY_DIR}/guide-select_with_dup_col.dox
 )
