@@ -126,7 +126,7 @@ Application Info for method calls where there is no explicit info used.
 
 @subsubsection instrumentation_info_examples Examples
 
-@code
+@code{.py}
 %new-style
 
 OracleExtensions::OracleDatasource ds("oracle", "user", "pass", "db");
@@ -145,7 +145,7 @@ The code above has some important characteristics:
 
 Next example explains how to use @ref instrumentation_info_auto
 
-@code
+@code{.py}
 # user code to get default/automatic Application Info.
 *OracleExtensions::OracleApplicationInfo sub getAutoInfo()
 {
@@ -175,7 +175,7 @@ work you have done so far.
 
 @subsubsection instrumentation_longops_example Examples
 
-@code
+@code{.py}
 %new-style
 
 OracleDatasource ds("oracle", "user", "pass", "db");
@@ -209,7 +209,7 @@ is especially useful for displaying PL/SQL debugging information.
 
 @subsection dbms_output_examples Examples
 
-@code
+@code{.py}
 %new-style
 
 OracleExtensions::OracleDatasource ds("oracle", "user", "pass", "db");
@@ -237,6 +237,19 @@ hey, it's server here
 "
 @endcode
 
+    @subpage oracleextensionsreleasenotes
+*/
+
+/** @page oracleextensionsreleasenotes OracleExtensions Release Notes
+
+    @section oracleextensionsv12 OracleExtensions 1.2
+    - The instrumentation base supports both Datasource and DatasourcePool.
+
+    @section oracleextensionsv11 OracleExtensions 1.1
+    - Added OracleSQLStatement.
+
+    @section oracleextensionsv10 OracleExtensions 1.0
+    - initial release
 */
 
 
@@ -1216,7 +1229,7 @@ public class OracleDatasource inherits OracleExtensions::OracleDatasourceBase {
 
     Both examples below result in the same behavior in the Oracle server.
 
-    @code
+    @code{.py}
 OracleExtensions::OracleDatasource dd(..., \getAutoInfo());
 
 OracleSQLStatement stmt(dd);
@@ -1229,7 +1242,7 @@ stmt.commit();
     @endcode
 
     <b>Example where the Auto Info goes from user code</b>
-    @code
+    @code{.py}
 Datasource dd(...);
 
 OracleSQLStatement stmt(dd, \getAutoInfo());

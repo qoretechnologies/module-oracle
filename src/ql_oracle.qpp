@@ -65,7 +65,7 @@ namespace Qore::Oracle;
     - \c "value" : a variable/value itself
 
     @par Example:
-    @code
+    @code{.py}
 my string $str = "lorem ipsum";
 my int $i = 10;
 my date $d = now();
@@ -95,7 +95,7 @@ hash bindInOut(auto value, *string type) [flags=CONSTANT,NAMED_ARGS] {
     - \c "^values^": the value of the \c values argument
 
     @par Example:
-    @code
+    @code{.py}
 $db.exec("insert into object_table (obj) values (%v)", bindOracleObject("MY_OBJECT", $h));
     @endcode
  */
@@ -115,7 +115,7 @@ hash bindOracleObject(string type_name, hash<auto> values) [flags=CONSTANT,NAMED
     - \c "value": the value of the \c type_name argument
 
     @par Example:
-    @code
+    @code{.py}
 my hash $h = $db.exec("begin my_pkg.get_obj(:retval); end;", placeholderOracleObject("MY_OBJECT")).retval;
     @endcode
  */
@@ -136,7 +136,7 @@ hash placeholderOracleObject(string type_name) [flags=CONSTANT,NAMED_ARGS] {
     - \c "^values^": the value of the \c values argument
 
     @par Example:
-    @code
+    @code{.py}
 $db.exec("insert into object_table (obj) values (%v)", bindOracleObject("MY_OBJECT", $h));
     @endcode
  */
@@ -156,7 +156,7 @@ hash bindOracleCollection(string type_name, list<auto> values) [flags=CONSTANT,N
     - \c "value": the value of the \c type_name argument
 
     @par Example:
-    @code
+    @code{.py}
 my hash $h = $db.exec("begin my_pkg.get_collection(:retval); end;", placeholderOracleCollection("MY_COLLECTION")).retval;
     @endcode
  */
