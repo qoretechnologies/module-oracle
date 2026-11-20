@@ -77,7 +77,10 @@ ds.commit();
         #   boot, so the password is refused until initialization completes
         # - ORA-12514 / ORA-12528 / ORA-12541: the listener does not know the service yet, blocks new connections,
         #   or is not up yet
-        elif ! echo "$out" | grep -E "QoreOracleConnection::logon.*ORA-(01017|01033|01034|01089|01109|12514|12528|12541)" > /dev/null 2>&1; then
+        # - ORA-03113 end-of-file on communication channel: the listener accepted the connection and the server
+        #   process behind it was not ready (the container is still starting, or the database is being opened):
+        #   CI jobs failed about a minute after the service start with exactly this error and passed on a retry
+        elif ! echo "$out" | grep -E "QoreOracleConnection::logon.*ORA-(01017|01033|01034|01089|01109|03113|12514|12528|12541)" > /dev/null 2>&1; then
             echo "Error in Oracle initialization:"
             echo "$out"
             exit 1
