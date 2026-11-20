@@ -168,6 +168,29 @@ DLLLOCAL QoreHashNode* ora_get_thread_session_info_hash(ExceptionSink* xsink);
 //! Releases the current thread's session information; registered as a Qore thread cleanup function
 DLLLOCAL void ora_thread_session_info_cleanup(void* arg);
 
+//! Gives the current thread no session information while the object exists, then restores what the thread had
+/** A thread that runs callbacks for many callers (the AQ callback threads) makes each callback within such a scope:
+    the session information that a callback sets belongs to that callback only, so it is never sent with the SQL of
+    the next callback on the thread, which can belong to other code, and no callback can read what another one set.
+    The session information that the callback leaves is freed when the object is destroyed.
+*/
+class OraThreadSessionInfoScope {
+public:
+    //! Takes the current thread's session information out of the thread, which has none afterwards
+    DLLLOCAL OraThreadSessionInfoScope() noexcept;
+
+    //! Frees the session information that was set in the scope and restores the information taken
+    DLLLOCAL ~OraThreadSessionInfoScope();
+
+private:
+    //! the session information that the thread had when the scope was entered, owned by the object
+    OracleSessionInfo* saved;
+
+    // non-copyable
+    OraThreadSessionInfoScope(const OraThreadSessionInfoScope&) = delete;
+    OraThreadSessionInfoScope& operator=(const OraThreadSessionInfoScope&) = delete;
+};
+
 //! Truncates a UTF-8 string to at most the given number of bytes on a character boundary
 DLLLOCAL void ora_truncate_utf8(std::string& str, size_t max_bytes);
 

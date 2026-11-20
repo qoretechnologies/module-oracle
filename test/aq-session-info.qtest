@@ -1,0 +1,401 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+
+# The callbacks of every AQ subscription in the process, AQQueue::onAsyncMessage() and AQQueue::onSubscriptionLost(),
+# are made one after the other on the module's callback thread, and, when that thread cannot be started, on the thread
+# that delivers the notification or reports the loss.  The session information that
+# Qore::Oracle::setThreadSessionInfo() sets belongs to the thread and is sent with every statement that the thread
+# executes, so a callback must start without session information, and what it sets must end with it: otherwise the
+# next callback on the thread, which can belong to other code with a sandbox of its own, executes its statements with
+# the module, action, client info and client identifier of the previous one, and can read them.
+#
+# Each subscription is started by a sandboxed Program of its own (a tenant) through the code of a Program of its own;
+# the callbacks are made in a known order with the debug hook Qore::Oracle::dbg_aq_callback(), which queues them for
+# the callback thread, or makes them on the calling thread, with no notification from the server.  The test needs a
+# debug build of the module and an Oracle database: QORE_DB_CONNSTR_ORACLE gives the connection of a user that can
+# create types and use DBMS_AQADM and DBMS_AQ.
+
+%modern
+
+%requires QUnit
+%requires Util
+%requires oracle
+
+%exec-class AqSessionInfoTest
+
+class AqSessionInfoTest inherits QUnit::Test {
+    private {
+        #! the connection of the test user
+        *string connstr;
+        #! the connection of the test user, for setup
+        *Datasource ds;
+        #! why the queues could not be set up
+        *string setup_error;
+        #! true if the module has the debug hook
+        bool have_hook;
+    }
+
+    #! the queue of the first tenant
+    const QueueA = "QORE_SI_AQ_QA";
+    #! the queue of the second tenant
+    const QueueB = "QORE_SI_AQ_QB";
+    #! the queue table
+    const QueueTableName = "QORE_SI_AQ_QT";
+    #! the message type
+    const TypeName = "QORE_SI_AQ_MSG";
+
+    #! the longest a test waits for a callback; it is a guard against a hang, never an expected time
+    const CallbackTimeout = 120s;
+
+    #! the session information that the first tenant's callbacks set
+    const InfoA = <OracleSessionInfo>{
+        "module": "tenant-a-module",
+        "action": "tenant-a-action",
+        "client_info": "tenant-a-info",
+        "client_identifier": "tenant-a-ident",
+    };
+
+    #! the session information that the calling thread sets for the cases that make callbacks on it
+    const InfoCaller = <OracleSessionInfo>{
+        "module": "caller-module",
+        "client_identifier": "caller-ident",
+    };
+
+    #! the session attributes of a session with no session information
+    const NoInfo = {
+        "module": NULL,
+        "action": NULL,
+        "client_info": NULL,
+        "client_identifier": NULL,
+    };
+
+    #! the code of a tenant: a subscriber that reports what its callbacks see
+    const TenantSource = "
+%requires oracle
+
+class Subscriber inherits Oracle::AQQueue {
+    private {
+        #! the connection that the callbacks read their session attributes with
+        Datasource probe;
+        Queue results;
+        #! if set, the callbacks set this session information
+        *hash<OracleSessionInfo> info;
+        #! if set, the callbacks wait for it before they return
+        *Queue gate;
+        #! if true, the next callback raises an exception after setting the session information
+        bool fail;
+    }
+
+    constructor(string queue, string type, string conn, Queue results, *hash<OracleSessionInfo> info, *Queue gate,
+            bool fail) : Oracle::AQQueue(queue, type, conn) {
+        probe = new Datasource(conn);
+        self.results = results;
+        self.info = info;
+        self.gate = gate;
+        self.fail = fail;
+    }
+
+    nothing onAsyncMessage() {
+        callback(\"message\");
+    }
+
+    nothing onSubscriptionLost() {
+        callback(\"lost\");
+    }
+
+    private callback(string event) {
+        hash<auto> h = {
+            \"event\": event,
+            \"tid\": gettid(),
+            \"seen\": Oracle::getThreadSessionInfo(),
+            \"session\": session(),
+        };
+        if (info) {
+            Oracle::setThreadSessionInfo(info);
+            h.after = Oracle::getThreadSessionInfo();
+            h.session_after = session();
+        }
+        results.push(h);
+        if (gate) {
+            gate.get();
+        }
+        if (fail) {
+            # only the first callback fails: the exception is reported on the standard error output
+            fail = False;
+            throw \"TENANT-CALLBACK-ERROR\", \"the callback failed after setting session information\";
+        }
+    }
+
+    #! the session attributes that the statements of this thread are executed with
+    private hash<auto> session() {
+        on_exit probe.rollback();
+        return probe.selectRow(\"select sys_context('userenv', 'module') module, \"
+            \"sys_context('userenv', 'action') action, \"
+            \"sys_context('userenv', 'client_info') client_info, \"
+            \"sys_context('userenv', 'client_identifier') client_identifier from dual\");
+    }
+}
+
+Oracle::AQQueue sub subscribe(string queue, string type, string conn, Queue results, *hash<OracleSessionInfo> info,
+        *Queue gate, bool fail = False) {
+    Subscriber s(queue, type, conn, results, info, gate, fail);
+    s.startSubscription();
+    return s;
+}
+
+code sub get_subscribe() {
+    return \\subscribe();
+}
+";
+
+    #! the sandboxed code of a tenant: it starts its subscription through its code
+    const SandboxedSource = "
+auto sub run(code c, ...) {
+    return call_function_args(c, argv);
+}
+";
+
+    constructor() : QUnit::Test("AqSessionInfoTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE;
+        addTestCase("a callback on the callback thread never sees the previous callback's session information",
+            \testDispatcher());
+        addTestCase("onSubscriptionLost() never sees the previous callback's session information",
+            \testDispatcherLost());
+        addTestCase("session information set by a callback that raises an exception ends with it",
+            \testDispatcherException());
+        addTestCase("a callback made on the calling thread starts without the thread's session information, which is "
+            "restored afterwards", \testCallingThread());
+        addTestCase("onSubscriptionLost() made on the calling thread starts without the thread's session information, "
+            "which is restored afterwards", \testCallingThreadLost());
+        addTestCase("code restricted from the database cannot set session information", \testRestricted());
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        have_hook = exists_function("dbg_aq_callback");
+        if (!connstr || !have_hook) {
+            return;
+        }
+        ds = new Datasource(connstr);
+        ds.open();
+        dropQueues();
+        try {
+            ds.exec("create or replace type " + TypeName + " as object (code number, text varchar2(100))");
+            ds.exec(sprintf("begin dbms_aqadm.create_queue_table(queue_table => '%s', queue_payload_type => '%s'); "
+                "end;", QueueTableName, TypeName));
+            foreach string queue in ((QueueA, QueueB)) {
+                ds.exec(sprintf("begin dbms_aqadm.create_queue(queue_name => '%s', queue_table => '%s'); "
+                    "dbms_aqadm.start_queue(queue_name => '%s'); end;", queue, QueueTableName, queue));
+            }
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            ds.rollback();
+            setup_error = sprintf("the AQ queues cannot be created with %s: %s: %s", connstr, ex.err, ex.desc);
+        }
+    }
+
+    globalTearDown() {
+        if (ds) {
+            dropQueues();
+        }
+        Oracle::setThreadSessionInfo();
+    }
+
+    #! drops the queues, their table and their type, if they exist
+    private dropQueues() {
+        foreach string queue in ((QueueA, QueueB)) {
+            try {
+                ds.exec(sprintf("begin dbms_aqadm.stop_queue(queue_name => '%s'); "
+                    "dbms_aqadm.drop_queue(queue_name => '%s'); end;", queue, queue));
+            } catch (hash<ExceptionInfo> ex) {
+            }
+        }
+        try {
+            ds.exec(sprintf("begin dbms_aqadm.drop_queue_table(queue_table => '%s', force => true); end;",
+                QueueTableName));
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        try {
+            ds.exec("drop type " + TypeName + " force");
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        ds.commit();
+    }
+
+    #! skips the test case if there is no debug hook or no queue
+    private checkQueue() {
+        if (!have_hook) {
+            testSkip("the test needs a debug build of the module (%s)", "Qore::Oracle::dbg_aq_callback() is missing");
+        }
+        if (!connstr) {
+            testSkip("QORE_DB_CONNSTR_ORACLE is not set");
+        }
+        if (setup_error) {
+            testSkip(setup_error);
+        }
+    }
+
+    #! a tenant: its code and the sandboxed Program that starts its subscription
+    private hash<auto> getTenant(string name) {
+        Program code(PO_NEW_STYLE);
+        code.parse(TenantSource, name + "-code");
+        Program p(PO_NEW_STYLE);
+        p.parse(SandboxedSource, name);
+        SandboxManager sm();
+        sm.setFilesystemDefaultPolicy(False);
+        sm.setNetworkDefaultPolicy(True);
+        p.setSandboxManager(sm);
+        return {"code": code, "sandboxed": p};
+    }
+
+    #! starts the subscription of a tenant on the given queue from its sandboxed Program
+    private AQQueue subscribe(hash<auto> tenant, string queue, Queue results, *hash<OracleSessionInfo> info,
+            *Queue gate, bool fail = False) {
+        return tenant.sandboxed.callFunction("run", tenant.code.callFunction("get_subscribe"), queue, TypeName,
+            connstr, results, info, gate, fail);
+    }
+
+    #! makes a callback of the queue's subscription
+    private callback(AQQueue q, bool lost, bool here, string expected) {
+        assertEq(expected, call_function("Qore::Oracle::dbg_aq_callback", q, lost, here));
+    }
+
+    #! the first tenant's callback sets session information and is held while the second tenant's callback is queued
+    #! behind it on the callback thread; the second one is held in turn while the first tenant's next callback is
+    #! queued behind it, so that all three run on the same thread
+    private dispatcherTest(bool lost_a, bool lost_b, bool fail_a = False) {
+        checkQueue();
+        hash<auto> tenant_a = getTenant("tenant-a");
+        hash<auto> tenant_b = getTenant("tenant-b");
+        Queue results_a();
+        Queue results_b();
+        Queue gate_a();
+        Queue gate_b();
+        AQQueue a = subscribe(tenant_a, QueueA, results_a, InfoA, gate_a, fail_a);
+        on_exit {
+            # the callback may still be waiting for the gate
+            gate_a.push(True);
+            a.stopSubscription();
+            delete a;
+        }
+        AQQueue b = subscribe(tenant_b, QueueB, results_b, NOTHING, gate_b);
+        on_exit {
+            gate_b.push(True);
+            b.stopSubscription();
+            delete b;
+        }
+
+        callback(a, lost_a, False, "queued");
+        hash<auto> ha = results_a.get(CallbackTimeout);
+        # the second tenant's callback is queued while the first one runs on the callback thread
+        callback(b, lost_b, False, "queued");
+        gate_a.push(True);
+        hash<auto> hb = results_b.get(CallbackTimeout);
+        # the first tenant's next callback is queued while the second one runs on the callback thread
+        callback(a, False, False, "queued");
+        gate_b.push(True);
+        gate_a.push(True);
+        hash<auto> ha2 = results_a.get(CallbackTimeout);
+
+        assertEq(lost_a ? "lost" : "message", ha.event);
+        assertEq(lost_b ? "lost" : "message", hb.event);
+        # both callbacks ran on the same thread
+        assertEq(ha.tid, hb.tid, "the callback thread");
+        # the first callback starts without session information; what it sets applies to its own statements
+        assertEq(NOTHING, ha.seen);
+        assertEq(NoInfo, ha.session);
+        assertEq(InfoA, ha.after);
+        assertEq(InfoA, ha.session_after);
+        # the second callback sees none of it, neither through the API nor in its session
+        assertEq(NoInfo, hb.session, "the session attributes of the second tenant's statements");
+        assertEq(NOTHING, hb.seen, "the session information that the second tenant's callback sees");
+
+        # the first tenant's next callback, on the same thread, starts without the session information of its previous
+        # one too
+        assertEq("message", ha2.event);
+        assertEq(hb.tid, ha2.tid, "the callback thread");
+        assertEq(NoInfo, ha2.session);
+        assertEq(NOTHING, ha2.seen);
+        assertEq(InfoA, ha2.after);
+        assertEq(InfoA, ha2.session_after);
+    }
+
+    testDispatcher() {
+        dispatcherTest(False, False);
+    }
+
+    testDispatcherLost() {
+        dispatcherTest(True, False);
+        dispatcherTest(False, True);
+    }
+
+    testDispatcherException() {
+        dispatcherTest(False, False, True);
+    }
+
+    #! callbacks made on the calling thread, as when the callback thread cannot be started
+    private callingThreadTest(bool lost) {
+        checkQueue();
+        on_exit Oracle::setThreadSessionInfo();
+        hash<auto> tenant_a = getTenant("tenant-a");
+        hash<auto> tenant_b = getTenant("tenant-b");
+        Queue results_a();
+        Queue results_b();
+        AQQueue a = subscribe(tenant_a, QueueA, results_a, InfoA);
+        on_exit {
+            a.stopSubscription();
+            delete a;
+        }
+        AQQueue b = subscribe(tenant_b, QueueB, results_b);
+        on_exit {
+            b.stopSubscription();
+            delete b;
+        }
+
+        Oracle::setThreadSessionInfo(InfoCaller);
+        int tid = gettid();
+
+        # the callback does not see the calling thread's session information
+        callback(b, lost, True, "made");
+        hash<auto> hb = results_b.get(CallbackTimeout);
+        assertEq(tid, hb.tid);
+        assertEq(NOTHING, hb.seen, "the session information that the callback sees");
+        assertEq(NoInfo, hb.session, "the session attributes of the callback's statements");
+        assertEq(InfoCaller, Oracle::getThreadSessionInfo());
+
+        # the session information that a callback sets ends with it, and the thread's own is restored
+        callback(a, lost, True, "made");
+        hash<auto> ha = results_a.get(CallbackTimeout);
+        assertEq(tid, ha.tid);
+        assertEq(NOTHING, ha.seen);
+        assertEq(InfoA, ha.session_after);
+        assertEq(InfoCaller, Oracle::getThreadSessionInfo(), "the calling thread's session information");
+
+        # a callback made afterwards does not see it either
+        callback(b, lost, True, "made");
+        hb = results_b.get(CallbackTimeout);
+        assertEq(NOTHING, hb.seen);
+        assertEq(NoInfo, hb.session);
+    }
+
+    testCallingThread() {
+        callingThreadTest(False);
+    }
+
+    testCallingThreadLost() {
+        callingThreadTest(True);
+    }
+
+    # session information is set by database code: code restricted from the database cannot call the API at all
+    testRestricted() {
+        foreach string src in (("Oracle::setThreadSessionInfo(<OracleSessionInfo>{\"client_identifier\": \"x\"});",
+            "auto x = Oracle::getThreadSessionInfo();")) {
+            Program p(PO_NEW_STYLE | PO_NO_DATABASE);
+            p.loadModule("oracle");
+            assertThrows("PARSE-EXCEPTION", \p.parse(), (src, "restricted"), src);
+        }
+        # and the calling thread's session information is unchanged
+        assertEq(NOTHING, Oracle::getThreadSessionInfo());
+    }
+}

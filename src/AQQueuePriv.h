@@ -84,8 +84,9 @@ public:
    DLLLOCAL void checkSubscription();
 
    //! Calls AQQueue::onSubscriptionLost() for the subscription that checkSubscription() could not restore
-   /** Runs under the sandbox of the code that started the subscription; no lock is held when onSubscriptionLost() is
-       called, so it can restart the subscription.
+   /** Runs under the sandbox of the code that started the subscription, without the calling thread's session
+       information (see OraThreadSessionInfoScope); no lock is held when onSubscriptionLost() is called, so it can
+       restart the subscription.
    */
    DLLLOCAL void notifySubscriptionLost();
 
@@ -97,8 +98,10 @@ public:
    DLLLOCAL void postAsyncMessage();
 
    //! Calls AQQueue::onAsyncMessage() on the given object for a notification of the given subscription
-   /** Called on the module's dispatch thread with no lock held; runs under the sandbox of the code that started the
-       subscription.  Nothing is called if the subscription was stopped after the notification was queued.
+   /** Called on the module's dispatch thread with no lock held (or on the notification thread if the dispatch thread
+       cannot be started); runs under the sandbox of the code that started the subscription, without the calling
+       thread's session information (see OraThreadSessionInfoScope).  Nothing is called if the subscription was
+       stopped after the notification was queued.
    */
    DLLLOCAL void deliverAsyncMessage(QoreObject* obj, uint64_t subscription);
 
@@ -107,6 +110,21 @@ public:
    /** Lets the tests hold the queue's lock while a notification of its subscription is delivered.
    */
    DLLLOCAL QoreValue dbgWithLock(const ResolvedCallReferenceNode* code, ExceptionSink* xsink);
+
+   //! Makes a callback of the active subscription as for a notification or a lost subscription; DEBUG builds only
+   /** Lets the tests make callbacks on the dispatch thread in a known order, with no notification from the server:
+       with \a here false, the callback is queued for the dispatch thread as the Oracle client's notification thread
+       and the watchdog queue it; with \a here true, it is made on the calling thread, as when the dispatch thread
+       cannot be started.
+
+       @param lost true for AQQueue::onSubscriptionLost(), false for AQQueue::onAsyncMessage()
+       @param here true to make the callback on the calling thread
+       @param xsink an exception is raised if there is no active subscription
+
+       @return \c "queued", \c "failed" or \c "stopped" (see AQCallbackDispatcher::PostResult), or \c "made" if the
+       callback was made on the calling thread
+   */
+   DLLLOCAL QoreValue dbgCallback(bool lost, bool here, ExceptionSink* xsink);
 #endif
 
    //! Returns true in a child process created with fork() after the object was created

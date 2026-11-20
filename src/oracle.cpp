@@ -57,6 +57,10 @@ DLLLOCAL QoreValue aq_dbg_with_queue_lock(const QoreListNode* args, RuntimeConfi
 //! function does, then posts a callback and starts a subscription, and returns a hash describing what happened (see
 //! test/aq-dispatcher-stop.qtest); DEBUG builds only, and the process can use no AQ subscription afterwards
 DLLLOCAL QoreValue aq_dbg_stop_and_post(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
+//! Qore::Oracle::dbg_aq_callback(AQQueue queue, bool lost, bool here): makes a callback of the queue's active
+//! subscription, queued for the dispatch thread or on the calling thread, with no notification from the server (see
+//! AQQueuePriv::dbgCallback()); DEBUG builds only
+DLLLOCAL QoreValue aq_dbg_callback(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
 #endif
 DLLLOCAL void aq_module_delete();
 DLLLOCAL int aq_register_fork_handlers();
@@ -561,6 +565,9 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
       autoTypeInfo, 2, QC_AQQUEUE->getTypeInfo(), QORE_PARAM_NO_ARG, "queue", codeTypeInfo, QORE_PARAM_NO_ARG, "code");
    OraNS.addBuiltinVariant("dbg_aq_stop_and_post", aq_dbg_stop_and_post, QCF_NO_FLAGS, QDOM_THREAD_CONTROL,
       hashTypeInfo, 0);
+   OraNS.addBuiltinVariant("dbg_aq_callback", aq_dbg_callback, QCF_NO_FLAGS, QDOM_THREAD_CONTROL,
+      stringTypeInfo, 3, QC_AQQUEUE->getTypeInfo(), QORE_PARAM_NO_ARG, "queue", boolTypeInfo, QORE_PARAM_NO_ARG,
+      "lost", boolTypeInfo, QORE_PARAM_NO_ARG, "here");
 #endif
 
    // register driver with DBI subsystem
