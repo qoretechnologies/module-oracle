@@ -81,7 +81,14 @@ public:
        the object is removed from the watchdog and the loss is reported with notifySubscriptionLost() on the notifier
        thread.
    */
+#ifdef DEBUG
+   /** @param dbg_requested true if the check belongs to a round of the watchdog that the tests requested (see
+       AQSubscriptionManager::dbgCheckNow()): only such a check honors a loss forced with dbgForceLost()
+   */
+   DLLLOCAL void checkSubscription(bool dbg_requested);
+#else
    DLLLOCAL void checkSubscription();
+#endif
 
    //! Calls AQQueue::onSubscriptionLost() for the subscription that checkSubscription() could not restore
    /** Runs under the sandbox of the code that started the subscription, without the calling thread's session
@@ -125,6 +132,32 @@ public:
        callback was made on the calling thread
    */
    DLLLOCAL QoreValue dbgCallback(bool lost, bool here, ExceptionSink* xsink);
+
+   //! Makes the next check of the watchdog in a requested round handle the subscription as lost and not restorable;
+   //! DEBUG builds only
+   /** The check (in a round requested with AQSubscriptionManager::dbgCheckNow()) stops the subscription as for a lost
+       connection whose subscription cannot be registered again, and reports the loss with
+       AQQueue::onSubscriptionLost() (see checkSubscription())
+
+       @return 0 for OK, -1 if an exception was raised (the queue has no active subscription)
+   */
+   DLLLOCAL int dbgForceLost(ExceptionSink* xsink) {
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      if (!m_subscription) {
+         xsink->raiseException("AQQUEUE-ERROR", "the queue has no active subscription");
+         return -1;
+      }
+      m_dbg_lost.store(true);
+      return 0;
+   }
+
+   //! Delivers a notification of the active subscription as the Oracle client's notification thread does; DEBUG
+   //! builds only
+   /** Must be called on a thread that %Qore did not start (see aq_dbg_notify()).
+   */
+   DLLLOCAL void dbgNotify() {
+      postAsyncMessage();
+   }
 #endif
 
    //! Returns true in a child process created with fork() after the object was created
@@ -161,6 +194,10 @@ private:
    QoreObject *m_self = nullptr;
    //! the object of a subscription that could not be restored, weakly referenced until the loss is reported
    std::atomic<QoreObject*> m_lost{nullptr};
+#ifdef DEBUG
+   //! true if the next check of the watchdog must handle the subscription as lost; see dbgForceLost()
+   std::atomic<bool> m_dbg_lost{false};
+#endif
 
    //! the sandbox of the code that started the current subscription; see getSandbox()
    std::shared_ptr<const QoreSandboxCapture> m_sandbox;

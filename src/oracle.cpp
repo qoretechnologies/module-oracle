@@ -61,6 +61,28 @@ DLLLOCAL QoreValue aq_dbg_stop_and_post(const QoreListNode* args, RuntimeConfig&
 //! subscription, queued for the dispatch thread or on the calling thread, with no notification from the server (see
 //! AQQueuePriv::dbgCallback()); DEBUG builds only
 DLLLOCAL QoreValue aq_dbg_callback(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
+//! Qore::Oracle::dbg_aq_fail_dispatch(bool fail): makes the AQ callback dispatcher refuse every callback, as if it
+//! could not be queued, so that the notification thread and the watchdog make the callbacks themselves, or accept
+//! them again; DEBUG builds only
+DLLLOCAL QoreValue aq_dbg_fail_dispatch(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
+//! Qore::Oracle::dbg_aq_force_lost(AQQueue queue): makes the watchdog's next check of the queue's subscription in a
+//! round requested with dbg_aq_check_now() handle it as lost and not restorable; raises AQQUEUE-ERROR if the queue has
+//! no active subscription; DEBUG builds only
+DLLLOCAL QoreValue aq_dbg_force_lost(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
+//! Qore::Oracle::dbg_aq_check_now(): makes the AQ watchdog check every subscription now, waits until it has, and
+//! returns the watchdog's OS thread (see dbg_native_thread_id()), or 0 if no watchdog runs, if it left its loop
+//! before it served the request, or if another watchdog thread was started meanwhile; DEBUG builds only
+DLLLOCAL QoreValue aq_dbg_check_now(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
+//! Qore::Oracle::dbg_aq_notify(list<AQQueue> queues): delivers a notification of each queue's subscription, in
+//! order, on a new thread that Qore did not start, as the Oracle client's notification thread does, waits for the
+//! thread, and returns its OS thread (see dbg_native_thread_id()); DEBUG builds only
+DLLLOCAL QoreValue aq_dbg_notify(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
+
+//! Qore::Oracle::dbg_native_thread_id(): returns an identifier of the calling OS thread, which, unlike the Qore
+//! thread ID, does not change when a thread that Qore did not start registers with Qore again; DEBUG builds only
+static QoreValue ora_dbg_native_thread_id(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   return static_cast<int64>(reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(pthread_self())));
+}
 #endif
 DLLLOCAL void aq_module_delete();
 DLLLOCAL int aq_register_fork_handlers();
@@ -568,6 +590,16 @@ static void oracle_module_init(QoreModuleInitContext& ctx, ExceptionSink& xsink)
    OraNS.addBuiltinVariant("dbg_aq_callback", aq_dbg_callback, QCF_NO_FLAGS, QDOM_THREAD_CONTROL,
       stringTypeInfo, 3, QC_AQQUEUE->getTypeInfo(), QORE_PARAM_NO_ARG, "queue", boolTypeInfo, QORE_PARAM_NO_ARG,
       "lost", boolTypeInfo, QORE_PARAM_NO_ARG, "here");
+   OraNS.addBuiltinVariant("dbg_native_thread_id", ora_dbg_native_thread_id, QCF_NO_FLAGS, QDOM_THREAD_INFO,
+      bigIntTypeInfo, 0);
+   OraNS.addBuiltinVariant("dbg_aq_fail_dispatch", aq_dbg_fail_dispatch, QCF_NO_FLAGS, QDOM_THREAD_CONTROL,
+      nothingTypeInfo, 1, boolTypeInfo, QORE_PARAM_NO_ARG, "fail");
+   OraNS.addBuiltinVariant("dbg_aq_force_lost", aq_dbg_force_lost, QCF_NO_FLAGS, QDOM_THREAD_CONTROL,
+      nothingTypeInfo, 1, QC_AQQUEUE->getTypeInfo(), QORE_PARAM_NO_ARG, "queue");
+   OraNS.addBuiltinVariant("dbg_aq_check_now", aq_dbg_check_now, QCF_NO_FLAGS, QDOM_THREAD_CONTROL,
+      bigIntTypeInfo, 0);
+   OraNS.addBuiltinVariant("dbg_aq_notify", aq_dbg_notify, QCF_NO_FLAGS, QDOM_THREAD_CONTROL,
+      bigIntTypeInfo, 1, listTypeInfo, QORE_PARAM_NO_ARG, "queues");
 #endif
 
    // register driver with DBI subsystem

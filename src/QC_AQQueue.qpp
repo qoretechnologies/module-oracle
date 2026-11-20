@@ -26,6 +26,7 @@
 
 #include "AQQueuePriv.h"
 
+#include <algorithm>
 #include <cstring>
 #include <list>
 #include <memory>
@@ -161,6 +162,16 @@ protected:
 #ifdef DEBUG
    //! the number of watchdog threads started (see aq_dbg_stop_and_post())
    unsigned threads_started = 0;
+   //! the number of rounds requested with dbgCheckNow()
+   unsigned dbg_requested = 0;
+   //! the last round requested with dbgCheckNow() that the watchdog has finished
+   unsigned dbg_done = 0;
+   //! the value of dbg_requested when the current watchdog thread was started: only later requests are served by it
+   unsigned dbg_base = 0;
+   //! the OS thread of the watchdog, as reported by dbgCheckNow()
+   pthread_t dbg_thread;
+   //! signaled when the watchdog finishes a round or leaves its loop (see dbgCheckNow())
+   QoreCondition dbg_c;
 #endif
 
 public:
@@ -210,6 +221,8 @@ public:
       running = true;
 #ifdef DEBUG
       ++threads_started;
+      // a request that a previous watchdog thread left unserved when it quit is not served by the new thread
+      dbg_base = dbg_requested;
 #endif
       return 0;
    }
@@ -255,11 +268,19 @@ public:
 #endif
 
    DLLLOCAL void run() {
-      QoreForeignThreadHelper qfth;
       //printd(5, "AQSubscriptionManager::run(): starting connection watchdog thread\n");
 
       AutoLocker al(l);
+#ifdef DEBUG
+      dbg_thread = pthread_self();
+#endif
       while (!quit) {
+#ifdef DEBUG
+         // the rounds requested so far are served by this round
+         unsigned round = dbg_requested;
+         // true if this round serves a request of dbgCheckNow() made since this thread was started
+         bool requested = round > std::max(dbg_done, dbg_base);
+#endif
          // the objects stay valid while they are checked without the lock
          std::vector<AQQueuePriv*> snapshot;
          try {
@@ -274,17 +295,64 @@ public:
          {
             AutoUnlocker aul(l);
             for (AQQueuePriv* o : snapshot) {
+               // each subscription is checked with a Qore thread context of its own, which ends with the check: the
+               // check can call onSubscriptionLost() (see checkSubscription()), and code that serves several
+               // subscriptions must not find the thread-local data of another subscription's callback (see
+               // AQCallbackDispatcher)
+               QoreForeignThreadHelper qfth;
+#ifdef DEBUG
+               o->checkSubscription(requested);
+#else
                o->checkSubscription();
+#endif
                o->deref();
             }
          }
+#ifdef DEBUG
+         dbg_done = round;
+         dbg_c.broadcast();
+         // poll every 25 seconds, unless a round has been requested meanwhile
+         if (!quit && dbg_requested == round) {
+            c.wait(l, 25000);
+         }
+#else
          // poll every 25 seconds
          if (!quit) {
             c.wait(l, 25000);
          }
+#endif
       }
       running = false;
+#ifdef DEBUG
+      dbg_c.broadcast();
+#endif
    }
+
+#ifdef DEBUG
+   //! Makes the watchdog check every subscription now and waits until it has; DEBUG builds only
+   /** @return the OS thread of the watchdog, or 0 if no watchdog thread is running (then nothing is checked), if it
+       left its loop before it served the request, or if another watchdog thread was started meanwhile
+   */
+   DLLLOCAL int64 dbgCheckNow() {
+      AutoLocker al(l);
+      if (!running || quit) {
+         return 0;
+      }
+      unsigned round = ++dbg_requested;
+      // the thread that the request is made to; a thread started later does not serve it (see add())
+      unsigned thread_gen = threads_started;
+      c.signal();
+      while (running && threads_started == thread_gen && dbg_done < round) {
+         dbg_c.wait(l);
+      }
+      // once another thread has been started, dbg_done and dbg_thread can be its own: the request is reported as not
+      // served (also if the thread that it was made to served it before it left its loop)
+      if (threads_started != thread_gen || dbg_done < round) {
+         return 0;
+      }
+      return static_cast<int64>(reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(dbg_thread)));
+   }
+#endif
 
    DLLLOCAL static void* thread_helper(void* context) {
        ((AQSubscriptionManager*)context)->run();
@@ -319,6 +387,11 @@ public:
       m->quit = false;
       memset(static_cast<void*>(&m->c), 0, sizeof(m->c));
       new (&m->c) QoreCondition();
+#ifdef DEBUG
+      // the same for the condition of dbgCheckNow(), whose waiters do not exist in the child either
+      memset(static_cast<void*>(&m->dbg_c), 0, sizeof(m->dbg_c));
+      new (&m->dbg_c) QoreCondition();
+#endif
       qore_fork_child_thread_lock(&m->l);
    }
 
@@ -355,8 +428,10 @@ AQSubscriptionManager aqSubscriptionManager;
     Each callback runs under the sandbox of the code that started the subscription, and without the session
     information that the thread had before it, which is restored afterwards, so that no callback can use or see the
     session information of another (see AQQueuePriv::deliverAsyncMessage(), AQQueuePriv::notifySubscriptionLost()
-    and OraThreadSessionInfoScope).  The thread runs while callbacks are queued; a finished thread is joined when the
-    next callback starts a new one and when the module is deleted.
+    and OraThreadSessionInfoScope).  Each callback also runs with a Qore thread context of its own (see run()), so
+    that it never finds the thread-local data (\c save_thread_data(), \c thread_local variables) that the callback of
+    another subscription left, even if both run code of the same Program.  The thread runs while callbacks are queued;
+    a finished thread is joined when the next callback starts a new one and when the module is deleted.
 */
 class AQCallbackDispatcher {
 public:
@@ -412,6 +487,12 @@ public:
          // the module is being deleted: the Qore objects must no longer be referenced or called
          return PostResult::Stopped;
       }
+#ifdef DEBUG
+      if (dbg_fail && kind != Kind::Test) {
+         // as if the callback could not be queued (see dbgSetFail())
+         return PostResult::Failed;
+      }
+#endif
       try {
          queue.push_back(Callback{kind, priv, obj, subscription});
       } catch (std::bad_alloc&) {
@@ -501,10 +582,11 @@ private:
    unsigned threads_started = 0;
    //! the number of Kind::Test callbacks made
    unsigned test_callbacks = 0;
+   //! if true, no callback is queued: post() returns PostResult::Failed (see dbgSetFail())
+   bool dbg_fail = false;
 #endif
 
    DLLLOCAL void run() {
-      QoreForeignThreadHelper qfth;
       AutoLocker al(l);
       while (!queue.empty()) {
          Callback cb = queue.front();
@@ -516,6 +598,10 @@ private:
          }
 #endif
          AutoUnlocker aul(l);
+         // each callback runs with a Qore thread context of its own, which ends with the callback (it is destroyed
+         // before the lock is taken again): the thread-local data that the callback leaves is destroyed then, and the
+         // next callback, which can run code of the same Program for another subscription, starts without it
+         QoreForeignThreadHelper qfth;
          if (cb.kind == Kind::AsyncMessage) {
             cb.priv->deliverAsyncMessage(cb.obj, cb.subscription);
             cb.obj->tDeref();
@@ -553,6 +639,15 @@ public:
    DLLLOCAL unsigned dbgTestCallbacks() {
       AutoLocker al(l);
       return test_callbacks;
+   }
+
+   //! Makes post() refuse every callback (as if it could not be queued) or accept them again
+   /** Lets the tests take the paths where the caller of post() makes the callback itself: the Oracle client's
+       notification thread (AQQueuePriv::postAsyncMessage()) and the watchdog (AQQueuePriv::checkSubscription()).
+   */
+   DLLLOCAL void dbgSetFail(bool fail) {
+      AutoLocker al(l);
+      dbg_fail = fail;
    }
 #endif
 
@@ -1143,7 +1238,11 @@ std::shared_ptr<const QoreSandboxCapture> AQQueuePriv::getSandbox() const {
    return m_sandbox;
 }
 
+#ifdef DEBUG
+void AQQueuePriv::checkSubscription(bool dbg_requested) {
+#else
 void AQQueuePriv::checkSubscription() {
+#endif
    std::shared_ptr<const QoreSandboxCapture> sandbox = getSandbox();
    if (!sandbox) {
       return;
@@ -1162,12 +1261,25 @@ void AQQueuePriv::checkSubscription() {
       }
       ON_BLOCK_EXIT_OBJ(l, &QoreThreadLock::unlock);
 
-      if (!valid || !m_hasSubscription || !m_conn || pingUnlocked()) {
+#ifdef DEBUG
+      // a loss forced with dbgForceLost() is handled as a lost connection that cannot be restored, in a round that
+      // the tests requested only (a round that the watchdog makes on its own does not consume it)
+      bool forced = dbg_requested && valid && m_hasSubscription && m_dbg_lost.exchange(false);
+#else
+      constexpr bool forced = false;
+#endif
+      if (!valid || !m_hasSubscription || !m_conn || (!forced && pingUnlocked())) {
          return;
       }
 
       printd(5, "AQQueuePriv::checkSubscription() connection lost, restoring subscription: %p\n", this);
-      if (!reconnectSubscriptionUnlocked(&xsink)) {
+      if (forced) {
+         // the subscription is stopped as reconnectSubscriptionUnlocked() stops it, and the connection is kept, as
+         // when the connection is made again but the subscription cannot be registered
+         ExceptionSink lost_xsink;
+         stopSubscriptionUnlocked(&lost_xsink, false);
+         lost_xsink.clear();
+      } else if (!reconnectSubscriptionUnlocked(&xsink)) {
          return;
       }
 
@@ -1283,6 +1395,10 @@ void AQQueuePriv::endSubscriptionUnlocked() {
    {
       std::lock_guard<std::mutex> sl(m_sandbox_lock);
       m_subscription = 0;
+#ifdef DEBUG
+      // a loss forced for the subscription ends with it (see dbgForceLost())
+      m_dbg_lost.store(false);
+#endif
    }
    aqCallbackThreadManager.dec();
 }
@@ -1363,6 +1479,90 @@ QoreValue aq_dbg_callback(const QoreListNode* args, RuntimeConfig& rc, Exception
       return QoreValue();
    }
    return priv->dbgCallback(lost, here, xsink);
+}
+
+QoreValue aq_dbg_fail_dispatch(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   aqCallbackDispatcher.dbgSetFail(get_param_value(args, 0).getAsBool());
+   return QoreValue();
+}
+
+QoreValue aq_dbg_force_lost(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   QoreObject* obj = get_param_value(args, 0).get<QoreObject>();
+   PrivateDataRefHolder<AQQueuePriv> priv(obj, CID_AQQUEUE, xsink);
+   if (priv) {
+      priv->dbgForceLost(xsink);
+   }
+   return QoreValue();
+}
+
+QoreValue aq_dbg_check_now(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   return aqSubscriptionManager.dbgCheckNow();
+}
+
+namespace {
+// the queues whose notifications aq_dbg_notify() delivers, referenced
+struct AQDbgNotifyArgs {
+   std::vector<AQQueuePriv*> queues;
+   pthread_t thread;
+
+   ~AQDbgNotifyArgs() {
+      for (AQQueuePriv* q : queues) {
+         q->deref();
+      }
+   }
+
+   // delivers the notifications on a thread that Qore did not start, as the Oracle client's notification thread
+   static void* run(void* arg) {
+      AQDbgNotifyArgs* a = static_cast<AQDbgNotifyArgs*>(arg);
+      a->thread = pthread_self();
+      for (AQQueuePriv* q : a->queues) {
+         q->dbgNotify();
+      }
+      return nullptr;
+   }
+};
+}
+
+QoreValue aq_dbg_notify(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   const QoreListNode* l = get_param_value(args, 0).get<const QoreListNode>();
+   size_t stack_size = q_thread_get_stack_size();
+   AQDbgNotifyArgs a;
+   ConstListIterator i(l);
+   while (i.next()) {
+      QoreValue v = i.getValue();
+      if (v.getType() != NT_OBJECT) {
+         xsink->raiseException("AQQUEUE-ERROR", "expecting a list of AQQueue objects; got type '%s'",
+            v.getTypeName());
+         return QoreValue();
+      }
+      AQQueuePriv* priv = v.get<QoreObject>()->getReferencedPrivateData<AQQueuePriv>(CID_AQQUEUE, xsink);
+      if (!priv) {
+         if (!*xsink) {
+            xsink->raiseException("AQQUEUE-ERROR", "expecting a list of AQQueue objects; got an object of class "
+               "'%s'", v.get<QoreObject>()->getClassName());
+         }
+         return QoreValue();
+      }
+      try {
+         a.queues.push_back(priv);
+      } catch (std::bad_alloc&) {
+         priv->deref();
+         xsink->outOfMemory();
+         return QoreValue();
+      }
+   }
+   pthread_attr_t attr;
+   pthread_attr_init(&attr);
+   pthread_attr_setstacksize(&attr, stack_size);
+   pthread_t thread;
+   int rc_create = pthread_create(&thread, &attr, &AQDbgNotifyArgs::run, &a);
+   pthread_attr_destroy(&attr);
+   if (rc_create) {
+      xsink->raiseErrnoException("THREAD-CREATION-FAILURE", rc_create, "could not create the notification thread");
+      return QoreValue();
+   }
+   pthread_join(thread, nullptr);
+   return static_cast<int64>(reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(a.thread)));
 }
 
 QoreValue aq_dbg_stop_and_post(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
@@ -1490,6 +1690,10 @@ int AQQueuePriv::stopSubscriptionUnlocked(ExceptionSink *xsink, bool release_cal
       // no notification that has not been delivered yet is delivered from now on (see deliverAsyncMessage())
       std::lock_guard<std::mutex> sl(m_sandbox_lock);
       m_subscription = 0;
+#ifdef DEBUG
+      // a loss forced for the subscription ends with it (see dbgForceLost())
+      m_dbg_lost.store(false);
+#endif
    }
    bool b = OCI_DequeueUnsubscribe(&m_conn->ocilib, m_dequeue, xsink);
    if (release_callback_thread) {
@@ -1627,7 +1831,12 @@ static void aqqueue_constructor_hash(const QoreStringNode* queueName, const Qore
  * never do more than that code.  Each callback also starts without session information (see
  * @ref oracleora_thread_session_infoguide), and the session information that it sets with
  * @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()" ends with it, so the callbacks of
- * different subscriptions never share it.
+ * different subscriptions never share it.  Likewise each callback runs with Qore thread-local data of its own
+ * (\c save_thread_data(), \c thread_local variables), which is destroyed when the callback returns, so a callback never
+ * finds what the callback of another subscription left there, even if both run code of the same Program; thread-local
+ * data does not persist from one callback to the next.  For the same reason, the thread resources that a callback
+ * leaves (for example a lock that it did not release or a transaction that it did not end) are released when it
+ * returns, as when a thread terminates, and the Qore thread ID (\c gettid()) can differ from one callback to the next.
  *
  * An AQQueue object cannot be used in a child process created with \c fork() after it was created: its session and
  * subscription belong to the parent, and every method raises \c AQQUEUE-FORK-ERROR in the child; when the child
