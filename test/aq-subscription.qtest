@@ -16,7 +16,12 @@
 #
 # Needs an Oracle database: QORE_DB_CONNSTR_ORACLE gives the connection of a user that can create types and use
 # DBMS_AQADM and DBMS_AQ; the lost-subscription cases also need QORE_DB_CONNSTR_ORACLE_SYS, the connection of a user that
-# can lock that user's account and kill its sessions.
+# can create users, grant them DBMS_AQADM and DBMS_AQ, lock their accounts and kill their sessions.
+#
+# The lost-subscription cases lock the account of the subscription's user, so they use a temporary user of their own
+# (named LostUserPrefix plus the process ID) with a queue in its schema, never the shared test user: a test that dies
+# while the account is locked can affect no other test.  The user is dropped when the test ends; a user that a test
+# that died left behind is dropped by the next run.
 
 %modern
 %no-child-restrictions
@@ -73,7 +78,31 @@ class AqSubscriptionTest inherits QUnit::Test {
         string dir;
         #! the file that the callbacks read
         string secret;
+        #! the temporary user of the lost-subscription cases, once created
+        *string lost_user;
+        #! the connection of the temporary user
+        *string lost_connstr;
+        #! the connection of the temporary user, for setup and for posting messages
+        *Datasource lost_ds;
+        #! why the temporary user or its queue could not be set up
+        *string lost_setup_error;
     }
+
+    #! the name prefix of the temporary users of the lost-subscription cases
+    const LostUserPrefix = "QORE_AQ_LOST_";
+    #! the LIKE pattern of the temporary users' names (escape character: backslash)
+    const LostUserPattern = "QORE\\_AQ\\_LOST\\_%";
+
+    #! the grants of the temporary users: those of the CI test user (test/docker_test/init_oracle.sh)
+    const LostUserGrants = (
+        "create session, create procedure, create sequence, create table, create trigger, create type, create view, "
+            "unlimited tablespace",
+        "execute on dbms_aqadm",
+        "execute on dbms_aq",
+    );
+
+    #! the number of attempts to drop a temporary user whose killed sessions have not ended yet
+    const DropAttempts = 40;
 
     #! the content of the secret file
     const SecretContent = "the secret content";
@@ -171,6 +200,10 @@ auto sub run(code c, ...) {
         addTestCase("a subscription is started while onAsyncMessage() waits for the lock of its queue",
             \testStartWhileCallbackWaits());
         addTestCase("onAsyncMessage() stops its own subscription", \testStopInCallback());
+        addTestCase("the temporary user of the lost-subscription cases has a queue of its own",
+            \testLostUserIsolated());
+        addTestCase("a temporary user that a test left behind is dropped, and one in use is not",
+            \testLeftoverLostUsers());
         set_return_value(main());
     }
 
@@ -189,23 +222,43 @@ auto sub run(code c, ...) {
         }
         ds = new Datasource(connstr);
         ds.open();
-        dropQueue();
+        dropQueue(ds);
         try {
-            ds.exec("create or replace type " + TypeName + " as object (code number, text varchar2(100))");
-            ds.exec(sprintf("begin dbms_aqadm.create_queue_table(queue_table => '%s', queue_payload_type => '%s'); "
-                "dbms_aqadm.create_queue(queue_name => '%s', queue_table => '%s'); "
-                "dbms_aqadm.start_queue(queue_name => '%s'); end;", QueueTableName, TypeName, QueueName,
-                QueueTableName, QueueName));
-            ds.commit();
+            createQueue(ds);
         } catch (hash<ExceptionInfo> ex) {
-            ds.rollback();
             setup_error = sprintf("the AQ queue cannot be created with %s: %s: %s", connstr, ex.err, ex.desc);
+        }
+
+        if (sysconnstr && !setup_error) {
+            # a run that sets up concurrently can take the new user for a leftover and drop it before its connection
+            # marks it in use (ORA-01917 / ORA-01918: the user does not exist; ORA-01017: the connection is refused, as
+            # the user does not exist): the setup is made again once
+            for (int attempt = 0; attempt < 2; ++attempt) {
+                try {
+                    setUpLostUser();
+                    break;
+                } catch (hash<ExceptionInfo> ex) {
+                    resetLostUser();
+                    if (attempt == 0 && ex.desc =~ /ORA-0(1917|1918|1017)/) {
+                        continue;
+                    }
+                    lost_setup_error = sprintf("the temporary user of the lost-subscription cases cannot be set "
+                        "up: %s: %s", ex.err, ex.desc);
+                    break;
+                }
+            }
         }
     }
 
     globalTearDown() {
         if (ds) {
-            dropQueue();
+            dropQueue(ds);
+        }
+        try {
+            dropLostUser();
+        } catch (hash<ExceptionInfo> ex) {
+            printf("WARNING: the temporary user %s cannot be dropped (the next run drops it): %s: %s\n", lost_user,
+                ex.err, ex.desc);
         }
         if (dir.val()) {
             try {
@@ -216,23 +269,173 @@ auto sub run(code c, ...) {
         }
     }
 
-    #! drops the queue, its table and its type, if they exist
-    private dropQueue() {
+    #! creates the queue, its table and its type with the given connection
+    private static createQueue(Datasource d) {
+        on_error d.rollback();
+        d.exec("create or replace type " + TypeName + " as object (code number, text varchar2(100))");
+        d.exec(sprintf("begin dbms_aqadm.create_queue_table(queue_table => '%s', queue_payload_type => '%s'); "
+            "dbms_aqadm.create_queue(queue_name => '%s', queue_table => '%s'); "
+            "dbms_aqadm.start_queue(queue_name => '%s'); end;", QueueTableName, TypeName, QueueName,
+            QueueTableName, QueueName));
+        d.commit();
+    }
+
+    #! drops the queue, its table and its type, if they exist, with the given connection
+    private static dropQueue(Datasource d) {
         try {
-            ds.exec(sprintf("begin dbms_aqadm.stop_queue(queue_name => '%s'); "
+            d.exec(sprintf("begin dbms_aqadm.stop_queue(queue_name => '%s'); "
                 "dbms_aqadm.drop_queue(queue_name => '%s'); end;", QueueName, QueueName));
         } catch (hash<ExceptionInfo> ex) {
         }
         try {
-            ds.exec(sprintf("begin dbms_aqadm.drop_queue_table(queue_table => '%s', force => true); end;",
+            d.exec(sprintf("begin dbms_aqadm.drop_queue_table(queue_table => '%s', force => true); end;",
                 QueueTableName));
         } catch (hash<ExceptionInfo> ex) {
         }
         try {
-            ds.exec("drop type " + TypeName + " force");
+            d.exec("drop type " + TypeName + " force");
         } catch (hash<ExceptionInfo> ex) {
         }
-        ds.commit();
+        d.commit();
+    }
+
+    #! returns a privileged connection in autocommit mode
+    private Datasource getSys() {
+        Datasource sys(sysconnstr);
+        sys.setAutoCommit(True);
+        return sys;
+    }
+
+    #! creates the temporary user of the lost-subscription cases, with a queue in its schema
+    /** temporary users that tests left behind are dropped first
+    */
+    private setUpLostUser() {
+        Datasource sys = getSys();
+        dropLeftoverLostUsers(sys);
+
+        string user = LostUserPrefix + getpid();
+        string pass = sprintf("Aq%d_%s", getpid(), get_random_string(16));
+        sys.exec(sprintf("create user %s identified by \"%s\"", user, pass));
+        # set once the user exists, so that the user is dropped however the setup ends
+        lost_user = user;
+        foreach string grant in (LostUserGrants) {
+            sys.exec(sprintf("grant %s to %s", grant, user));
+        }
+
+        # the connection of the shared test user, with the temporary user's credentials
+        hash<auto> h = parse_datasource(connstr);
+        string cs = sprintf("oracle:%s/%s@%s", user, pass, h.db);
+        if (h.charset) {
+            cs += sprintf("(%s)", h.charset);
+        }
+        if (h.host) {
+            cs += sprintf("%%%s", h.host);
+            if (h.port) {
+                cs += sprintf(":%d", h.port);
+            }
+        }
+        # (the values are not quoted: no option of the driver takes a value that contains ',' or '}')
+        if (h.options) {
+            cs += "{" + (foldl $1 + "," + $2, (map sprintf("%s=%s", $1.key, $1.value), h.options.pairIterator()))
+                + "}";
+        }
+        lost_connstr = cs;
+        # the connection is kept until the test ends: a user in use is never taken for a leftover by another run
+        lost_ds = new Datasource(cs);
+        lost_ds.open();
+        createQueue(lost_ds);
+    }
+
+    #! drops the temporary users that tests left behind
+    /** a user that is in use (ORA-01940: cannot drop a user that is currently connected) belongs to a test that is
+        running, and is left alone
+
+        @return the users dropped
+    */
+    private list<string> dropLeftoverLostUsers(Datasource sys) {
+        list<string> dropped = ();
+        foreach hash<auto> row in (sys.select("select username from dba_users where username like %v escape '\\' "
+                "order by username", LostUserPattern).contextIterator()) {
+            if (row.username == lost_user) {
+                continue;
+            }
+            try {
+                sys.exec(sprintf("drop user %s cascade", row.username));
+                dropped += row.username;
+            } catch (hash<ExceptionInfo> ex) {
+                # ORA-01940: the user is in use; ORA-01918: another run has just dropped it
+                if (ex.desc !~ /ORA-01940|ORA-01918/) {
+                    rethrow;
+                }
+            }
+        }
+        return dropped;
+    }
+
+    #! forgets the temporary user after a failed setup, dropping it if it was created
+    private resetLostUser() {
+        try {
+            dropLostUser();
+        } catch (hash<ExceptionInfo> ex) {
+            # ORA-01918: the user does not exist any more; any other user is dropped by the next run
+        }
+        remove lost_user;
+        remove lost_connstr;
+        remove lost_ds;
+    }
+
+    #! locks the account of the given user, kills its sessions and drops it
+    /** a killed session ends asynchronously, and the user cannot be dropped until it has ended, so the drop is made
+        again a bounded number of times; a user left behind is dropped by the next run
+    */
+    private static dropUser(Datasource sys, string user) {
+        # no new session can begin while the remaining ones are killed
+        sys.exec(sprintf("alter user %s account lock", user));
+        killSessions(sys, user);
+        int attempt = 0;
+        while (True) {
+            try {
+                sys.exec(sprintf("drop user %s cascade", user));
+                break;
+            } catch (hash<ExceptionInfo> ex) {
+                if (ex.desc !~ /ORA-01940/ || ++attempt == DropAttempts) {
+                    rethrow;
+                }
+            }
+            killSessions(sys, user);
+            usleep(250ms);
+        }
+    }
+
+    #! kills the sessions of the given user that are not being killed already
+    private static killSessions(Datasource sys, string user) {
+        foreach hash<auto> row in (sys.select("select sid, serial# serial from v$session where username = %v "
+                "and status <> 'KILLED'", user).contextIterator()) {
+            try {
+                sys.exec(sprintf("alter system kill session '%d,%d' immediate", row.sid, row.serial));
+            } catch (hash<ExceptionInfo> ex) {
+                # ORA-00030: the session has ended; ORA-00031: the session is killed when its current call ends
+                if (ex.desc !~ /ORA-0003[01]/) {
+                    rethrow;
+                }
+            }
+        }
+    }
+
+    #! drops the temporary user of the lost-subscription cases, if it was created
+    private dropLostUser() {
+        if (!lost_user) {
+            return;
+        }
+        if (lost_ds) {
+            try {
+                lost_ds.rollback();
+                lost_ds.close();
+            } catch (hash<ExceptionInfo> ex) {
+                # the session is killed below
+            }
+        }
+        dropUser(getSys(), lost_user);
     }
 
     #! skips the test case if there is no queue
@@ -263,12 +466,24 @@ auto sub run(code c, ...) {
         return p;
     }
 
-    #! posts a message to the queue
-    private post() {
-        ds.exec(sprintf("declare enq dbms_aq.enqueue_options_t; props dbms_aq.message_properties_t; id raw(16); "
+    #! posts a message to the queue of the shared test user, or to that of the given connection's user
+    private post(*Datasource d) {
+        d = d ?? ds;
+        d.exec(sprintf("declare enq dbms_aq.enqueue_options_t; props dbms_aq.message_properties_t; id raw(16); "
             "begin dbms_aq.enqueue(queue_name => '%s', enqueue_options => enq, message_properties => props, "
             "payload => %s(1, 'message'), msgid => id); end;", QueueName, TypeName));
-        ds.commit();
+        d.commit();
+    }
+
+    #! skips the test case if there is no privileged connection; fails it if the temporary user cannot be set up
+    private checkLostUser() {
+        checkQueue();
+        if (!sysconnstr) {
+            testSkip("QORE_DB_CONNSTR_ORACLE_SYS is not set");
+        }
+        if (lost_setup_error) {
+            throw "LOST-USER-SETUP-ERROR", lost_setup_error;
+        }
     }
 
     #! returns the next result of the given event, skipping the results of other events
@@ -364,28 +579,30 @@ auto sub run(code c, ...) {
         @param expected the result of reading the file in the subscription's callbacks
     */
     private lostTest(*Program p, string expected) {
-        checkQueue();
-        if (!sysconnstr) {
-            testSkip("QORE_DB_CONNSTR_ORACLE_SYS is not set");
-        }
-        Datasource sys(sysconnstr);
-        sys.setAutoCommit(True);
-        string user = parse_datasource(connstr).user.upr();
+        checkLostUser();
+        Datasource sys = getSys();
+        # the account that is locked is that of the temporary user, never that of the shared test user
+        string user = lost_user;
 
         Program u = getTrusted();
         Queue results();
         Queue gate();
         AQQueue q;
         if (p) {
-            q = p.callFunction("run", u.callFunction("get_subscribe"), QueueName, TypeName, connstr, secret,
+            q = p.callFunction("run", u.callFunction("get_subscribe"), QueueName, TypeName, lost_connstr, secret,
                 results, gate);
         } else {
-            q = u.callFunction("subscribe", QueueName, TypeName, connstr, secret, results, gate);
+            q = u.callFunction("subscribe", QueueName, TypeName, lost_connstr, secret, results, gate);
         }
         on_exit {
-            sys.exec("alter user " + user + " account unlock");
-            # the callback may still be waiting for the gate
+            # the callback may still be waiting for the gate: it is released first, so that it never holds the
+            # module's callback thread, whatever happens below
             gate.push(True);
+            try {
+                sys.exec("alter user " + user + " account unlock");
+            } catch (hash<ExceptionInfo> ex) {
+                printf("WARNING: the account of %s cannot be unlocked: %s: %s\n", user, ex.err, ex.desc);
+            }
             try {
                 q.stopSubscription();
             } catch (hash<ExceptionInfo> ex) {
@@ -412,7 +629,103 @@ auto sub run(code c, ...) {
         assertEq("restarted", h.event, sprintf("the restart: %y", h.result));
 
         # the restarted subscription delivers messages under the sandbox of the code that started it first
-        post();
+        post(lost_ds);
         assertEq(expected, getResult(results, "message"), "onAsyncMessage() after the restart");
+    }
+
+    #! the temporary user exists, has the grants of the CI test user, and owns a queue of its own
+    testLostUserIsolated() {
+        checkLostUser();
+        Datasource sys = getSys();
+        assertEq(LostUserPrefix + getpid(), lost_user);
+        assertNeq(parse_datasource(connstr).user.upr(), lost_user);
+        hash<auto> row = sys.selectRow("select account_status from dba_users where username = %v", lost_user);
+        assertEq("OPEN", row.account_status);
+        # the queue is in the temporary user's schema, so locking that user affects no other user's queue
+        row = sys.selectRow("select count(*) cnt from dba_queues where owner = %v and name = %v", lost_user,
+            QueueName);
+        assertEq(1, row.cnt.toInt());
+        list<string> privs = map $1.table_name + ":" + $1.privilege, sys.selectRows("select table_name, privilege "
+            "from dba_tab_privs where grantee = %v and owner = 'SYS' and table_name in ('DBMS_AQ', 'DBMS_AQADM') "
+            "order by table_name, privilege", lost_user);
+        assertEq(("DBMS_AQ:EXECUTE", "DBMS_AQADM:EXECUTE"), privs);
+        privs = map $1.privilege, sys.selectRows("select privilege from dba_sys_privs where grantee = %v "
+            "order by privilege", lost_user);
+        assertEq(("CREATE PROCEDURE", "CREATE SEQUENCE", "CREATE SESSION", "CREATE TABLE", "CREATE TRIGGER",
+            "CREATE TYPE", "CREATE VIEW", "UNLIMITED TABLESPACE"), privs);
+        # a message can be posted to the temporary user's queue (the queue can hold messages of the earlier cases that
+        # were not consumed)
+        int before = lost_ds.selectRow("select count(*) cnt from " + QueueTableName).cnt.toInt();
+        lost_ds.commit();
+        post(lost_ds);
+        assertEq(before + 1, lost_ds.selectRow("select count(*) cnt from " + QueueTableName).cnt.toInt());
+        lost_ds.commit();
+        # the message is removed again
+        lost_ds.exec(sprintf("declare deq dbms_aq.dequeue_options_t; props dbms_aq.message_properties_t; "
+            "payload %s; id raw(16); begin deq.wait := dbms_aq.no_wait; dbms_aq.dequeue(queue_name => '%s', "
+            "dequeue_options => deq, message_properties => props, payload => payload, msgid => id); end;",
+            TypeName, QueueName));
+        lost_ds.commit();
+    }
+
+    #! a temporary user that a test left behind is dropped, and one in use is not
+    testLeftoverLostUsers() {
+        checkLostUser();
+        Datasource sys = getSys();
+        # a user that a test left behind; process IDs are below 2^22 on Linux, so no running test has this name
+        string leftover = LostUserPrefix + "9999999";
+        string pass = "Lo" + get_random_string(16);
+        # a user in use, as by a running test
+        string inuse = LostUserPrefix + "9999998";
+        # the connection that keeps that user in use
+        *Datasource running;
+        on_exit {
+            if (running) {
+                try {
+                    running.close();
+                } catch (hash<ExceptionInfo> ex) {
+                    # its session is killed when the user is dropped
+                }
+            }
+            foreach string user in (inuse, leftover) {
+                try {
+                    dropUserIfExists(sys, user);
+                } catch (hash<ExceptionInfo> ex) {
+                    printf("WARNING: %s cannot be dropped (the next run drops it): %s\n", user, ex.desc);
+                }
+            }
+        }
+        # users of an earlier run of this case that could not be dropped
+        dropUserIfExists(sys, leftover);
+        dropUserIfExists(sys, inuse);
+        foreach string user in (leftover, inuse) {
+            sys.exec(sprintf("create user %s identified by \"%s\"", user, pass));
+            sys.exec(sprintf("grant create session to %s", user));
+        }
+        hash<auto> h = parse_datasource(connstr);
+        h.user = inuse;
+        h.pass = pass;
+        running = new Datasource(h);
+        running.open();
+
+        list<string> dropped = dropLeftoverLostUsers(sys);
+        assertTrue(inlist(leftover, dropped), sprintf("dropped: %y", dropped));
+        assertFalse(inlist(inuse, dropped), sprintf("dropped: %y", dropped));
+        assertFalse(inlist(lost_user, dropped), sprintf("dropped: %y", dropped));
+        assertEq(0, sys.selectRow("select count(*) cnt from dba_users where username = %v", leftover).cnt.toInt());
+        assertEq(1, sys.selectRow("select count(*) cnt from dba_users where username = %v", inuse).cnt.toInt());
+        assertEq(1, sys.selectRow("select count(*) cnt from dba_users where username = %v", lost_user).cnt.toInt());
+    }
+
+    #! drops the given user as dropUser() does, if it exists
+    private static dropUserIfExists(Datasource sys, string user) {
+        try {
+            dropUser(sys, user);
+        } catch (hash<ExceptionInfo> ex) {
+            # ORA-01918: user does not exist
+            if (ex.desc !~ /ORA-01918/) {
+                rethrow;
+            }
+        }
     }
 }
