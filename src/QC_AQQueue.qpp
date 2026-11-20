@@ -26,6 +26,7 @@
 
 #include "AQQueuePriv.h"
 
+#include <algorithm>
 #include <cstring>
 #include <list>
 #include <memory>
@@ -165,6 +166,8 @@ protected:
    unsigned dbg_requested = 0;
    //! the last round requested with dbgCheckNow() that the watchdog has finished
    unsigned dbg_done = 0;
+   //! the value of dbg_requested when the current watchdog thread was started: only later requests are served by it
+   unsigned dbg_base = 0;
    //! the OS thread of the watchdog, as reported by dbgCheckNow()
    pthread_t dbg_thread;
    //! signaled when the watchdog finishes a round or leaves its loop (see dbgCheckNow())
@@ -218,6 +221,8 @@ public:
       running = true;
 #ifdef DEBUG
       ++threads_started;
+      // a request that a previous watchdog thread left unserved when it quit is not served by the new thread
+      dbg_base = dbg_requested;
 #endif
       return 0;
    }
@@ -273,8 +278,8 @@ public:
 #ifdef DEBUG
          // the rounds requested so far are served by this round
          unsigned round = dbg_requested;
-         // true if this round serves a request of dbgCheckNow()
-         bool requested = round != dbg_done;
+         // true if this round serves a request of dbgCheckNow() made since this thread was started
+         bool requested = round > std::max(dbg_done, dbg_base);
 #endif
          // the objects stay valid while they are checked without the lock
          std::vector<AQQueuePriv*> snapshot;
@@ -325,7 +330,8 @@ public:
 
 #ifdef DEBUG
    //! Makes the watchdog check every subscription now and waits until it has; DEBUG builds only
-   /** @return the OS thread of the watchdog, or 0 if no watchdog thread is running (then nothing is checked)
+   /** @return the OS thread of the watchdog, or 0 if no watchdog thread is running (then nothing is checked) or if
+       it left its loop before it served the request
    */
    DLLLOCAL int64 dbgCheckNow() {
       AutoLocker al(l);
@@ -333,8 +339,10 @@ public:
          return 0;
       }
       unsigned round = ++dbg_requested;
+      // the thread that the request is made to; a thread started later does not serve it (see add())
+      unsigned thread_gen = threads_started;
       c.signal();
-      while (running && dbg_done < round) {
+      while (running && threads_started == thread_gen && dbg_done < round) {
          dbg_c.wait(l);
       }
       if (dbg_done < round) {
@@ -1385,6 +1393,10 @@ void AQQueuePriv::endSubscriptionUnlocked() {
    {
       std::lock_guard<std::mutex> sl(m_sandbox_lock);
       m_subscription = 0;
+#ifdef DEBUG
+      // a loss forced for the subscription ends with it (see dbgForceLost())
+      m_dbg_lost.store(false);
+#endif
    }
    aqCallbackThreadManager.dec();
 }
@@ -1676,6 +1688,10 @@ int AQQueuePriv::stopSubscriptionUnlocked(ExceptionSink *xsink, bool release_cal
       // no notification that has not been delivered yet is delivered from now on (see deliverAsyncMessage())
       std::lock_guard<std::mutex> sl(m_sandbox_lock);
       m_subscription = 0;
+#ifdef DEBUG
+      // a loss forced for the subscription ends with it (see dbgForceLost())
+      m_dbg_lost.store(false);
+#endif
    }
    bool b = OCI_DequeueUnsubscribe(&m_conn->ocilib, m_dequeue, xsink);
    if (release_callback_thread) {
