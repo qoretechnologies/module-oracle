@@ -47,6 +47,7 @@
       Program; the thread resources that a callback leaves (such as a lock that it did not release or a transaction
       that it did not end) are released when it returns, and the Qore thread ID of the callbacks can differ from one
       callback to the next
+      (<a href="https://github.com/qoretechnologies/qore/issues/6871">issue 6871</a>)
     - fixed AQ notifications that arrived while the process was exiting, after the module had been shut down: they
       started a new callback thread that used objects that were being freed; they are now dropped, and a
       subscription can no longer be started at that point
