@@ -65,8 +65,9 @@ DLLLOCAL QoreValue aq_dbg_callback(const QoreListNode* args, RuntimeConfig& rc, 
 //! could not be queued, so that the notification thread and the watchdog make the callbacks themselves, or accept
 //! them again; DEBUG builds only
 DLLLOCAL QoreValue aq_dbg_fail_dispatch(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
-//! Qore::Oracle::dbg_aq_force_lost(AQQueue queue): makes the watchdog's next check of the queue's subscription handle
-//! it as lost and not restorable; DEBUG builds only
+//! Qore::Oracle::dbg_aq_force_lost(AQQueue queue): makes the watchdog's next check of the queue's subscription in a
+//! round requested with dbg_aq_check_now() handle it as lost and not restorable; raises AQQUEUE-ERROR if the queue has
+//! no active subscription; DEBUG builds only
 DLLLOCAL QoreValue aq_dbg_force_lost(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
 //! Qore::Oracle::dbg_aq_check_now(): makes the AQ watchdog check every subscription now, waits until it has, and
 //! returns the watchdog's OS thread (see dbg_native_thread_id()), or 0 if no watchdog runs; DEBUG builds only

@@ -81,7 +81,14 @@ public:
        the object is removed from the watchdog and the loss is reported with notifySubscriptionLost() on the notifier
        thread.
    */
+#ifdef DEBUG
+   /** @param dbg_requested true if the check belongs to a round of the watchdog that the tests requested (see
+       AQSubscriptionManager::dbgCheckNow()): only such a check honors a loss forced with dbgForceLost()
+   */
+   DLLLOCAL void checkSubscription(bool dbg_requested);
+#else
    DLLLOCAL void checkSubscription();
+#endif
 
    //! Calls AQQueue::onSubscriptionLost() for the subscription that checkSubscription() could not restore
    /** Runs under the sandbox of the code that started the subscription, without the calling thread's session
@@ -126,12 +133,22 @@ public:
    */
    DLLLOCAL QoreValue dbgCallback(bool lost, bool here, ExceptionSink* xsink);
 
-   //! Makes the next check of the watchdog handle the subscription as lost and not restorable; DEBUG builds only
-   /** The check stops the subscription as for a lost connection that cannot be made again, and reports the loss with
+   //! Makes the next check of the watchdog in a requested round handle the subscription as lost and not restorable;
+   //! DEBUG builds only
+   /** The check (in a round requested with AQSubscriptionManager::dbgCheckNow()) stops the subscription as for a lost
+       connection whose subscription cannot be registered again, and reports the loss with
        AQQueue::onSubscriptionLost() (see checkSubscription())
+
+       @return 0 for OK, -1 if an exception was raised (the queue has no active subscription)
    */
-   DLLLOCAL void dbgForceLost() {
+   DLLLOCAL int dbgForceLost(ExceptionSink* xsink) {
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      if (!m_subscription) {
+         xsink->raiseException("AQQUEUE-ERROR", "the queue has no active subscription");
+         return -1;
+      }
       m_dbg_lost.store(true);
+      return 0;
    }
 
    //! Delivers a notification of the active subscription as the Oracle client's notification thread does; DEBUG

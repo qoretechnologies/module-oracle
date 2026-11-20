@@ -273,6 +273,8 @@ public:
 #ifdef DEBUG
          // the rounds requested so far are served by this round
          unsigned round = dbg_requested;
+         // true if this round serves a request of dbgCheckNow()
+         bool requested = round != dbg_done;
 #endif
          // the objects stay valid while they are checked without the lock
          std::vector<AQQueuePriv*> snapshot;
@@ -293,7 +295,11 @@ public:
                // subscriptions must not find the thread-local data of another subscription's callback (see
                // AQCallbackDispatcher)
                QoreForeignThreadHelper qfth;
+#ifdef DEBUG
+               o->checkSubscription(requested);
+#else
                o->checkSubscription();
+#endif
                o->deref();
             }
          }
@@ -1222,7 +1228,11 @@ std::shared_ptr<const QoreSandboxCapture> AQQueuePriv::getSandbox() const {
    return m_sandbox;
 }
 
+#ifdef DEBUG
+void AQQueuePriv::checkSubscription(bool dbg_requested) {
+#else
 void AQQueuePriv::checkSubscription() {
+#endif
    std::shared_ptr<const QoreSandboxCapture> sandbox = getSandbox();
    if (!sandbox) {
       return;
@@ -1242,8 +1252,9 @@ void AQQueuePriv::checkSubscription() {
       ON_BLOCK_EXIT_OBJ(l, &QoreThreadLock::unlock);
 
 #ifdef DEBUG
-      // a loss forced with dbgForceLost() is handled as a lost connection that cannot be restored
-      bool forced = valid && m_hasSubscription && m_dbg_lost.exchange(false);
+      // a loss forced with dbgForceLost() is handled as a lost connection that cannot be restored, in a round that
+      // the tests requested only (a round that the watchdog makes on its own does not consume it)
+      bool forced = dbg_requested && valid && m_hasSubscription && m_dbg_lost.exchange(false);
 #else
       constexpr bool forced = false;
 #endif
@@ -1253,7 +1264,8 @@ void AQQueuePriv::checkSubscription() {
 
       printd(5, "AQQueuePriv::checkSubscription() connection lost, restoring subscription: %p\n", this);
       if (forced) {
-         // as reconnectSubscriptionUnlocked() does before it tries to connect again
+         // the subscription is stopped as reconnectSubscriptionUnlocked() stops it, and the connection is kept, as
+         // when the connection is made again but the subscription cannot be registered
          ExceptionSink lost_xsink;
          stopSubscriptionUnlocked(&lost_xsink, false);
          lost_xsink.clear();
@@ -1464,7 +1476,7 @@ QoreValue aq_dbg_force_lost(const QoreListNode* args, RuntimeConfig& rc, Excepti
    QoreObject* obj = get_param_value(args, 0).get<QoreObject>();
    PrivateDataRefHolder<AQQueuePriv> priv(obj, CID_AQQUEUE, xsink);
    if (priv) {
-      priv->dbgForceLost();
+      priv->dbgForceLost(xsink);
    }
    return QoreValue();
 }

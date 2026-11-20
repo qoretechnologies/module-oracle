@@ -503,5 +503,8 @@ auto sub run(code c, ...) {
         assertEq(NOTHING, ha.seen_var, "the thread-local variable that the first tenant's callback sees");
         assertEq(NOTHING, hb.seen_data, "the thread data that the second tenant's callback sees");
         assertEq(NOTHING, hb.seen_var, "the thread-local variable that the second tenant's callback sees");
+
+        # the subscriptions are no longer active, so no loss can be forced for them
+        assertThrows("AQQUEUE-ERROR", \call_function(), ("Qore::Oracle::dbg_aq_force_lost", a));
     }
 }
