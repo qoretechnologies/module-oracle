@@ -15,8 +15,18 @@
 # notification from the server.  A callback that is queued while another one runs is made on the same thread, as the
 # thread leaves its loop only when no callback is queued; the callbacks report the OS thread that they run on
 # (Qore::Oracle::dbg_native_thread_id(): the Qore thread ID changes, as each callback registers with Qore anew), and the
-# test checks that they share it.  The test needs a debug build of the module and an Oracle
-# database: QORE_DB_CONNSTR_ORACLE gives the connection of a user that can create types and use DBMS_AQADM and DBMS_AQ.
+# test checks that they share it.
+#
+# The paths where the callback thread is not used are taken with more debug hooks:
+# Qore::Oracle::dbg_aq_fail_dispatch() makes the callback thread refuse every callback, so that the thread that
+# delivers a notification, and the watchdog that reports a lost subscription, make the callback themselves;
+# Qore::Oracle::dbg_aq_notify() delivers notifications on a new thread that Qore did not start, as the Oracle client's
+# notification thread; Qore::Oracle::dbg_aq_force_lost() makes the watchdog handle a subscription as lost and not
+# restorable, and Qore::Oracle::dbg_aq_check_now() makes the watchdog check the subscriptions now and waits until it
+# has.
+#
+# The test needs a debug build of the module and an Oracle database: QORE_DB_CONNSTR_ORACLE gives the connection of a
+# user that can create types and use DBMS_AQADM and DBMS_AQ.
 
 %modern
 
@@ -174,6 +184,10 @@ auto sub run(code c, ...) {
             \testThreadDataLost());
         addTestCase("an object left in thread-local data is destroyed when its callback ends, under its creator's "
             "sandbox", \testLeftObject());
+        addTestCase("callbacks made on the notification thread when the callback thread cannot be used never see "
+            "each other's thread-local data", \testNotificationThread());
+        addTestCase("onSubscriptionLost() made by the watchdog when the callback thread cannot be used never sees "
+            "another subscription's thread-local data", \testWatchdog());
         set_return_value(main());
     }
 
@@ -392,5 +406,102 @@ auto sub run(code c, ...) {
         assertEq(tid, h.tid, "the callback thread");
         assertEq(NOTHING, h.seen_data);
         assertFalse(h.seen_probe, "the second callback sees the object that the first one left");
+    }
+
+    #! makes the callback dispatcher refuse every callback (or accept them again), as if it could not queue them
+    private static failDispatch(bool fail) {
+        call_function("Qore::Oracle::dbg_aq_fail_dispatch", fail);
+    }
+
+    # the callback thread cannot be used, so the thread that delivers the notifications (one that Qore did not start,
+    # as the Oracle client's) makes the callbacks itself: the first tenant's, the second tenant's and the first
+    # tenant's again, one after the other on that thread
+    testNotificationThread() {
+        checkQueue();
+        Program shared = getShared();
+        Program tenant_a = getSandboxed("tenant-a");
+        Program tenant_b = getSandboxed("tenant-b");
+        Queue results_a();
+        Queue results_b();
+        AQQueue a = subscribe(shared, tenant_a, QueueA, "a", results_a, NOTHING, True);
+        on_exit {
+            a.stopSubscription();
+            delete a;
+        }
+        AQQueue b = subscribe(shared, tenant_b, QueueB, "b", results_b);
+        on_exit {
+            b.stopSubscription();
+            delete b;
+        }
+
+        failDispatch(True);
+        on_exit failDispatch(False);
+        int tid = call_function("Qore::Oracle::dbg_aq_notify", (a, b, a));
+        hash<auto> ha = results_a.get(CallbackTimeout);
+        hash<auto> hb = results_b.get(CallbackTimeout);
+        hash<auto> ha2 = results_a.get(CallbackTimeout);
+
+        # the callbacks were made on the notification thread
+        assertNeq(call_function("Qore::Oracle::dbg_native_thread_id"), tid);
+        assertEq(tid, ha.tid, "the notification thread");
+        assertEq(tid, hb.tid, "the notification thread");
+        assertEq(tid, ha2.tid, "the notification thread");
+        assertEq("message", ha.event);
+        assertEq("message", hb.event);
+        assertEq("message", ha2.event);
+        assertEq(NOTHING, ha.seen_data);
+        assertEq("a-data", ha.own_data);
+        # the second tenant's callback sees none of the first one's thread-local data
+        assertEq(NOTHING, hb.seen_data, "the thread data that the second tenant's callback sees");
+        assertEq(NOTHING, hb.seen_var, "the thread-local variable that the second tenant's callback sees");
+        # and the first tenant's next callback starts without it too
+        assertEq(NOTHING, ha2.seen_data);
+        assertEq(NOTHING, ha2.seen_var);
+        assertEq("a-data", ha2.own_data);
+    }
+
+    # the callback thread cannot be used, so the watchdog reports the loss of both subscriptions itself, one after the
+    # other on its thread, in the order of its own; both callbacks set thread-local data, so whichever runs second
+    # would see what the first one set
+    testWatchdog() {
+        checkQueue();
+        Program shared = getShared();
+        Program tenant_a = getSandboxed("tenant-a");
+        Program tenant_b = getSandboxed("tenant-b");
+        Queue results_a();
+        Queue results_b();
+        AQQueue a = subscribe(shared, tenant_a, QueueA, "a", results_a, NOTHING, True);
+        on_exit {
+            a.stopSubscription();
+            delete a;
+        }
+        AQQueue b = subscribe(shared, tenant_b, QueueB, "b", results_b, NOTHING, True);
+        on_exit {
+            b.stopSubscription();
+            delete b;
+        }
+
+        failDispatch(True);
+        on_exit failDispatch(False);
+        call_function("Qore::Oracle::dbg_aq_force_lost", a);
+        call_function("Qore::Oracle::dbg_aq_force_lost", b);
+        # the watchdog checks both subscriptions now; the hook returns once it has
+        int tid = call_function("Qore::Oracle::dbg_aq_check_now");
+        assertNeq(0, tid, "the watchdog thread");
+        hash<auto> ha = results_a.get(CallbackTimeout);
+        hash<auto> hb = results_b.get(CallbackTimeout);
+
+        # both losses were reported on the watchdog thread
+        assertEq(tid, ha.tid, "the watchdog thread");
+        assertEq(tid, hb.tid, "the watchdog thread");
+        assertEq("lost", ha.event);
+        assertEq("lost", hb.event);
+        assertEq("a-data", ha.own_data);
+        assertEq("b-data", hb.own_data);
+        # neither callback sees the other's thread-local data
+        assertEq(NOTHING, ha.seen_data, "the thread data that the first tenant's callback sees");
+        assertEq(NOTHING, ha.seen_var, "the thread-local variable that the first tenant's callback sees");
+        assertEq(NOTHING, hb.seen_data, "the thread data that the second tenant's callback sees");
+        assertEq(NOTHING, hb.seen_var, "the thread-local variable that the second tenant's callback sees");
     }
 }

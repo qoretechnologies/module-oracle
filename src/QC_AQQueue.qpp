@@ -161,6 +161,14 @@ protected:
 #ifdef DEBUG
    //! the number of watchdog threads started (see aq_dbg_stop_and_post())
    unsigned threads_started = 0;
+   //! the number of rounds requested with dbgCheckNow()
+   unsigned dbg_requested = 0;
+   //! the last round requested with dbgCheckNow() that the watchdog has finished
+   unsigned dbg_done = 0;
+   //! the OS thread of the watchdog, as reported by dbgCheckNow()
+   pthread_t dbg_thread;
+   //! signaled when the watchdog finishes a round or leaves its loop (see dbgCheckNow())
+   QoreCondition dbg_c;
 #endif
 
 public:
@@ -258,7 +266,14 @@ public:
       //printd(5, "AQSubscriptionManager::run(): starting connection watchdog thread\n");
 
       AutoLocker al(l);
+#ifdef DEBUG
+      dbg_thread = pthread_self();
+#endif
       while (!quit) {
+#ifdef DEBUG
+         // the rounds requested so far are served by this round
+         unsigned round = dbg_requested;
+#endif
          // the objects stay valid while they are checked without the lock
          std::vector<AQQueuePriv*> snapshot;
          try {
@@ -282,13 +297,46 @@ public:
                o->deref();
             }
          }
+#ifdef DEBUG
+         dbg_done = round;
+         dbg_c.broadcast();
+         // poll every 25 seconds, unless a round has been requested meanwhile
+         if (!quit && dbg_requested == round) {
+            c.wait(l, 25000);
+         }
+#else
          // poll every 25 seconds
          if (!quit) {
             c.wait(l, 25000);
          }
+#endif
       }
       running = false;
+#ifdef DEBUG
+      dbg_c.broadcast();
+#endif
    }
+
+#ifdef DEBUG
+   //! Makes the watchdog check every subscription now and waits until it has; DEBUG builds only
+   /** @return the OS thread of the watchdog, or 0 if no watchdog thread is running (then nothing is checked)
+   */
+   DLLLOCAL int64 dbgCheckNow() {
+      AutoLocker al(l);
+      if (!running || quit) {
+         return 0;
+      }
+      unsigned round = ++dbg_requested;
+      c.signal();
+      while (running && dbg_done < round) {
+         dbg_c.wait(l);
+      }
+      if (dbg_done < round) {
+         return 0;
+      }
+      return static_cast<int64>(reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(dbg_thread)));
+   }
+#endif
 
    DLLLOCAL static void* thread_helper(void* context) {
        ((AQSubscriptionManager*)context)->run();
@@ -323,6 +371,11 @@ public:
       m->quit = false;
       memset(static_cast<void*>(&m->c), 0, sizeof(m->c));
       new (&m->c) QoreCondition();
+#ifdef DEBUG
+      // the same for the condition of dbgCheckNow(), whose waiters do not exist in the child either
+      memset(static_cast<void*>(&m->dbg_c), 0, sizeof(m->dbg_c));
+      new (&m->dbg_c) QoreCondition();
+#endif
       qore_fork_child_thread_lock(&m->l);
    }
 
@@ -418,6 +471,12 @@ public:
          // the module is being deleted: the Qore objects must no longer be referenced or called
          return PostResult::Stopped;
       }
+#ifdef DEBUG
+      if (dbg_fail && kind != Kind::Test) {
+         // as if the callback could not be queued (see dbgSetFail())
+         return PostResult::Failed;
+      }
+#endif
       try {
          queue.push_back(Callback{kind, priv, obj, subscription});
       } catch (std::bad_alloc&) {
@@ -507,6 +566,8 @@ private:
    unsigned threads_started = 0;
    //! the number of Kind::Test callbacks made
    unsigned test_callbacks = 0;
+   //! if true, no callback is queued: post() returns PostResult::Failed (see dbgSetFail())
+   bool dbg_fail = false;
 #endif
 
    DLLLOCAL void run() {
@@ -562,6 +623,15 @@ public:
    DLLLOCAL unsigned dbgTestCallbacks() {
       AutoLocker al(l);
       return test_callbacks;
+   }
+
+   //! Makes post() refuse every callback (as if it could not be queued) or accept them again
+   /** Lets the tests take the paths where the caller of post() makes the callback itself: the Oracle client's
+       notification thread (AQQueuePriv::postAsyncMessage()) and the watchdog (AQQueuePriv::checkSubscription()).
+   */
+   DLLLOCAL void dbgSetFail(bool fail) {
+      AutoLocker al(l);
+      dbg_fail = fail;
    }
 #endif
 
@@ -1171,12 +1241,23 @@ void AQQueuePriv::checkSubscription() {
       }
       ON_BLOCK_EXIT_OBJ(l, &QoreThreadLock::unlock);
 
-      if (!valid || !m_hasSubscription || !m_conn || pingUnlocked()) {
+#ifdef DEBUG
+      // a loss forced with dbgForceLost() is handled as a lost connection that cannot be restored
+      bool forced = valid && m_hasSubscription && m_dbg_lost.exchange(false);
+#else
+      constexpr bool forced = false;
+#endif
+      if (!valid || !m_hasSubscription || !m_conn || (!forced && pingUnlocked())) {
          return;
       }
 
       printd(5, "AQQueuePriv::checkSubscription() connection lost, restoring subscription: %p\n", this);
-      if (!reconnectSubscriptionUnlocked(&xsink)) {
+      if (forced) {
+         // as reconnectSubscriptionUnlocked() does before it tries to connect again
+         ExceptionSink lost_xsink;
+         stopSubscriptionUnlocked(&lost_xsink, false);
+         lost_xsink.clear();
+      } else if (!reconnectSubscriptionUnlocked(&xsink)) {
          return;
       }
 
@@ -1372,6 +1453,90 @@ QoreValue aq_dbg_callback(const QoreListNode* args, RuntimeConfig& rc, Exception
       return QoreValue();
    }
    return priv->dbgCallback(lost, here, xsink);
+}
+
+QoreValue aq_dbg_fail_dispatch(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   aqCallbackDispatcher.dbgSetFail(get_param_value(args, 0).getAsBool());
+   return QoreValue();
+}
+
+QoreValue aq_dbg_force_lost(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   QoreObject* obj = get_param_value(args, 0).get<QoreObject>();
+   PrivateDataRefHolder<AQQueuePriv> priv(obj, CID_AQQUEUE, xsink);
+   if (priv) {
+      priv->dbgForceLost();
+   }
+   return QoreValue();
+}
+
+QoreValue aq_dbg_check_now(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   return aqSubscriptionManager.dbgCheckNow();
+}
+
+namespace {
+// the queues whose notifications aq_dbg_notify() delivers, referenced
+struct AQDbgNotifyArgs {
+   std::vector<AQQueuePriv*> queues;
+   pthread_t thread;
+
+   ~AQDbgNotifyArgs() {
+      for (AQQueuePriv* q : queues) {
+         q->deref();
+      }
+   }
+
+   // delivers the notifications on a thread that Qore did not start, as the Oracle client's notification thread
+   static void* run(void* arg) {
+      AQDbgNotifyArgs* a = static_cast<AQDbgNotifyArgs*>(arg);
+      a->thread = pthread_self();
+      for (AQQueuePriv* q : a->queues) {
+         q->dbgNotify();
+      }
+      return nullptr;
+   }
+};
+}
+
+QoreValue aq_dbg_notify(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   const QoreListNode* l = get_param_value(args, 0).get<const QoreListNode>();
+   size_t stack_size = q_thread_get_stack_size();
+   AQDbgNotifyArgs a;
+   ConstListIterator i(l);
+   while (i.next()) {
+      QoreValue v = i.getValue();
+      if (v.getType() != NT_OBJECT) {
+         xsink->raiseException("AQQUEUE-ERROR", "expecting a list of AQQueue objects; got type '%s'",
+            v.getTypeName());
+         return QoreValue();
+      }
+      AQQueuePriv* priv = v.get<QoreObject>()->getReferencedPrivateData<AQQueuePriv>(CID_AQQUEUE, xsink);
+      if (!priv) {
+         if (!*xsink) {
+            xsink->raiseException("AQQUEUE-ERROR", "expecting a list of AQQueue objects; got an object of class "
+               "'%s'", v.get<QoreObject>()->getClassName());
+         }
+         return QoreValue();
+      }
+      try {
+         a.queues.push_back(priv);
+      } catch (std::bad_alloc&) {
+         priv->deref();
+         xsink->outOfMemory();
+         return QoreValue();
+      }
+   }
+   pthread_attr_t attr;
+   pthread_attr_init(&attr);
+   pthread_attr_setstacksize(&attr, stack_size);
+   pthread_t thread;
+   int rc_create = pthread_create(&thread, &attr, &AQDbgNotifyArgs::run, &a);
+   pthread_attr_destroy(&attr);
+   if (rc_create) {
+      xsink->raiseErrnoException("THREAD-CREATION-FAILURE", rc_create, "could not create the notification thread");
+      return QoreValue();
+   }
+   pthread_join(thread, nullptr);
+   return static_cast<int64>(reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(a.thread)));
 }
 
 QoreValue aq_dbg_stop_and_post(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
