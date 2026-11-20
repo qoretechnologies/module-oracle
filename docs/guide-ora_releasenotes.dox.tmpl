@@ -84,6 +84,14 @@
 
 
     - Columnar selects and fetches return dense buffers for compatible numeric columns. See @ref oraclecapabilitiesguide.
+    - test suite: the session kill test makes a bounded number of logons, so that the Oracle listener no longer
+      refuses them with \c ORA-12516
+      (<a href="https://github.com/qoretechnologies/qore/issues/6922">issue 6922</a>)
+    - test suite: the CI start-up check fails at once when the Oracle service container has exited, instead of waiting
+      out its deadline, and the container's output is kept in the job log
+      (<a href="https://github.com/qoretechnologies/qore/issues/6923">issue 6923</a>)
+    - test suite: the lost AQ subscription tests lock the account of a temporary user of their own, never that of the
+      shared test user (<a href="https://github.com/qoretechnologies/qore/issues/6924">issue 6924</a>)
 
     @section oracle3_3_4 oracle Driver Version 3.3.4
     - fixed crashes and memory corruption when the connection to the server was lost while statements were active, for

@@ -43,6 +43,11 @@ variables:
     # cluster: 4Gi -> OOMKilled after 7s, 8Gi -> "DATABASE IS READY TO USE" after 41s)
     KUBERNETES_SERVICE_MEMORY_REQUEST: 4Gi
     KUBERNETES_SERVICE_MEMORY_LIMIT: 8Gi
+    # the output of the service container (the image's startup messages and the alert log) is copied to the job log:
+    # the container is deleted with the job's pod, and nothing else keeps its output.  In job 239973 the service
+    # container exited with status 24, 48 seconds after it started (the image's start script runs SQL*Plus with
+    # "WHENEVER SQLERROR EXIT SQL.SQLCODE", so this can be an ORA error modulo 256), and nothing showed why
+    CI_DEBUG_SERVICES: "true"
   script:
     # NOTE: "set +e" above means that a failure here would otherwise be ignored; the exit status must
     # be checked explicitly, otherwise the test suite runs against a DB that never came up and the

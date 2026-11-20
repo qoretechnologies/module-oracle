@@ -11,6 +11,13 @@
     requires a connection string for a user with the privileges to create users and kill sessions in the
     QORE_DB_CONNSTR_ORACLE_SYS environment variable; a temporary user is created for the test, so
     that sessions belonging to other users are not affected
+
+    every connection that the test makes is a logon through the listener, which admits a logon only while its estimate
+    of the instance's server processes is below the PROCESSES limit.  The estimate is the count that the instance last
+    reported plus every connection handed off since then, and the instance reports in its own time (on a loaded host,
+    seconds apart), so a burst of logons is refused with ORA-12516 although few processes exist.  The test therefore
+    makes a bounded number of logons: the privileged connection is opened once and kept, and the sessions of the pool
+    are killed in a fixed number of rounds
 */
 
 %modern
@@ -30,11 +37,28 @@ class SessionKillTest inherits QUnit::Test {
 
         #! the maximum number of connections in the pool for the concurrent kill test
         const PoolMax = 8;
+
+        #! the number of threads that use the pool in the concurrent kill test
+        const PoolThreads = 8;
+
+        #! the number of rounds in which every session of the pool is killed in the concurrent kill test
+        /** each round makes about PoolMax logons, as the pool's connections are made again
+        */
+        const KillRounds = 4;
+
+        #! the longest the concurrent kill test waits for the threads to use the pool again after a round
+        /** a guard against a hang, never an expected time
+        */
+        const ProgressTimeout = 120s;
     }
 
     private {
         #! the privileged connection string
         *string sys_connstr;
+
+        #! the privileged connection, opened once, so that administrative statements make no logons (see the file
+        #! header)
+        *Datasource sys;
 
         #! the test user's connection string
         string connstr;
@@ -72,6 +96,10 @@ class SessionKillTest inherits QUnit::Test {
             skip_reason = "no privileged connection string set in QORE_DB_CONNSTR_ORACLE_SYS";
             return;
         }
+
+        # a privileged connection string is given, so the test must run: an error is not a reason to skip it
+        sys = new Datasource(sys_connstr);
+        sys.open();
 
         hash<auto> h = parse_datasource(sys_connstr);
         user = sprintf("QORE_KILL_TEST_%d", getpid());
@@ -116,6 +144,9 @@ class SessionKillTest inherits QUnit::Test {
     }
 
     globalTearDown() {
+        on_exit if (sys) {
+            sys.close();
+        }
         if (skip_reason || !user) {
             return;
         }
@@ -148,18 +179,18 @@ class SessionKillTest inherits QUnit::Test {
                     printf("WARNING: cannot drop test user %s: %s: %s\n", user, ex.err, ex.desc);
                     break;
                 }
-                killUserSessions();
+                try {
+                    killUserSessions();
+                } catch (hash<ExceptionInfo> kex) {
+                    printf("WARNING: cannot kill the sessions of test user %s: %s: %s\n", user, kex.err, kex.desc);
+                }
                 usleep(500ms);
             }
         }
     }
 
     private sysExec(string sql) {
-        Datasource sys(sys_connstr);
-        on_exit {
-            sys.rollback();
-            sys.close();
-        }
+        on_error sys.rollback();
         sys.exec(sql);
         sys.commit();
     }
@@ -178,11 +209,7 @@ class SessionKillTest inherits QUnit::Test {
 
     #! kills the given session
     private killSession(int sid) {
-        Datasource sys(sys_connstr);
-        on_exit {
-            sys.rollback();
-            sys.close();
-        }
+        on_exit sys.rollback();
         hash<auto> row = sys.selectRow("select sid, serial# serial from v$session where sid = %v", sid);
         try {
             sys.exec(sprintf("alter system kill session '%d,%d' immediate", row.sid, row.serial));
@@ -197,19 +224,21 @@ class SessionKillTest inherits QUnit::Test {
 
     #! kills all sessions of the test user
     private int killUserSessions() {
-        Datasource sys(sys_connstr);
-        on_exit {
-            sys.rollback();
-            sys.close();
-        }
+        on_exit sys.rollback();
         int count = 0;
-        foreach hash<auto> row in (sys.select("select sid, serial# serial from v$session where username = %v",
-                user).contextIterator()) {
+        foreach hash<auto> row in (sys.select("select sid, serial# serial from v$session where username = %v "
+                "and status <> 'KILLED'", user).contextIterator()) {
             try {
                 sys.exec(sprintf("alter system kill session '%d,%d' immediate", row.sid, row.serial));
                 ++count;
             } catch (hash<ExceptionInfo> ex) {
-                # ignore errors for sessions that have already been killed
+                # ORA-00031: session marked for kill: the session is killed when its current call ends
+                if (ex.desc =~ /ORA-00031/) {
+                    ++count;
+                # ORA-00030: the session ended between the query and the kill
+                } else if (ex.desc !~ /ORA-00030/) {
+                    rethrow;
+                }
             }
         }
         return count;
@@ -433,38 +462,60 @@ class SessionKillTest inherits QUnit::Test {
     }
 
     #! simulates Oracle RAC rolling patching: all sessions are killed repeatedly while threads use a pool
+    /** the sessions are killed in KillRounds rounds; a round is made once every thread has used the pool successfully
+        since the previous round, so that each round kills sessions in use, and every thread recovers from every round
+    */
     poolConcurrentKills() {
         checkSkip();
         DatasourcePool pool(connstr + sprintf("{min=2,max=%d}", PoolMax));
-        date until = now_us() + 10s;
         # unexpected errors: error string -> count
         hash<string, int> errs = {};
         # lost connection errors: error string -> count
         hash<string, int> lost = {};
         Mutex m();
+        # signaled when a thread has used the pool successfully
+        Condition progress();
+        # the number of successful transactions of each thread
+        list<int> done = map 0, xrange(PoolThreads - 1);
+        # tells the threads to stop
+        bool stop = False;
         Counter c();
         int ok = 0;
         int base = 1000;
-        for (int t = 0; t < 8; ++t) {
+        for (int t = 0; t < PoolThreads; ++t) {
             c.inc();
             int tbase = base + t * 1000000;
+            int thread = t;
             background sub () {
                 on_exit c.dec();
                 int i = 0;
-                while (now_us() < until) {
+                while (True) {
+                    {
+                        m.lock();
+                        on_exit m.unlock();
+                        if (stop) {
+                            break;
+                        }
+                    }
                     ++i;
                     try {
-                        on_error pool.rollback();
-                        on_success pool.commit();
-                        pool.exec("insert into kt (id, c) values (%v, %v)", tbase + i, (i % 2) ? BigString : "x");
-                        SQLStatement stmt(pool);
-                        stmt.prepare("select level l from dual connect by level <= 50");
-                        while (stmt.next()) {
+                        {
+                            on_error pool.rollback();
+                            on_success pool.commit();
+                            pool.exec("insert into kt (id, c) values (%v, %v)", tbase + i,
+                                (i % 2) ? BigString : "x");
+                            SQLStatement stmt(pool);
+                            stmt.prepare("select level l from dual connect by level <= 50");
+                            while (stmt.next()) {
+                            }
+                            stmt.close();
                         }
-                        stmt.close();
+                        # the transaction is counted once it has been committed
                         m.lock();
                         on_exit m.unlock();
                         ++ok;
+                        ++done[thread];
+                        progress.broadcast();
                     } catch (hash<ExceptionInfo> ex) {
                         string key = ex.err + ": " + ((ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? ex.desc);
                         m.lock();
@@ -481,11 +532,60 @@ class SessionKillTest inherits QUnit::Test {
         }
 
         int kills = 0;
-        while (now_us() < until) {
-            usleep(500ms);
-            kills += killUserSessions();
+        {
+            # the threads are stopped however the rounds end
+            on_exit {
+                {
+                    m.lock();
+                    on_exit m.unlock();
+                    stop = True;
+                }
+                # a thread that does not stop is stuck in a call: a guard against a hang, never an expected time
+                if (c.waitForZero(ProgressTimeout)) {
+                    throw "POOL-THREADS-STUCK", sprintf("%d of %d threads did not stop within %y", c.getCount(),
+                        PoolThreads, ProgressTimeout);
+                }
+            }
+            # the number of successful transactions of each thread when the previous round was made
+            list<int> mark = map 0, xrange(PoolThreads - 1);
+            for (int round = 0; round <= KillRounds; ++round) {
+                # every thread has used the pool successfully since the previous round
+                {
+                    m.lock();
+                    on_exit m.unlock();
+                    date deadline = now_us() + ProgressTimeout;
+                    while (True) {
+                        bool all = True;
+                        for (int t = 0; t < PoolThreads; ++t) {
+                            if (done[t] <= mark[t]) {
+                                all = False;
+                                break;
+                            }
+                        }
+                        if (all) {
+                            break;
+                        }
+                        date remaining = deadline - now_us();
+                        if (remaining <= 0s) {
+                            throw "POOL-NO-PROGRESS", sprintf("before round %d: not every thread used the pool "
+                                "successfully within %y; transactions: %y (at the previous round: %y); lost: %y; "
+                                "unexpected: %y", round, ProgressTimeout, done, mark, lost, errs);
+                        }
+                        progress.wait(m, remaining);
+                    }
+                }
+                if (round == KillRounds) {
+                    break;
+                }
+                int k = killUserSessions();
+                # the threads use the pool's sessions: there are sessions to kill
+                assertGt(0, k, sprintf("the sessions killed in round %d", round));
+                kills += k;
+                m.lock();
+                on_exit m.unlock();
+                mark = done;
+            }
         }
-        c.waitForZero();
 
         if (m_options.verbose > 1) {
             printf("ok: %d kills: %d lost: %y unexpected: %y\n", ok, kills, lost, errs);
