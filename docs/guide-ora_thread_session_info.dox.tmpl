@@ -38,6 +38,13 @@ list<hash<auto>> rows = pool.selectRows("select * from invoices where batch_id =
     freed when the thread terminates; use @ref Qore::Oracle::getThreadSessionInfo() "Oracle::getThreadSessionInfo()"
     to save and restore it around nested code.
 
+    The AQ callbacks @ref Qore::Oracle::AQQueue::onAsyncMessage() "AQQueue::onAsyncMessage()" and
+    @ref Qore::Oracle::AQQueue::onSubscriptionLost() "AQQueue::onSubscriptionLost()" are made on threads that serve
+    every subscription in the process (see @ref oracleaqguide), so each callback starts without session
+    information, and the session information that it sets applies to its own statements only: it is discarded when the
+    callback returns or raises an exception, and the thread's own session information, if any, is restored.  A
+    callback therefore never executes statements with, or sees, the session information of another callback.
+
     @note The driver only tracks the values that it set itself; setting the same attributes directly with the
     \c DBMS_APPLICATION_INFO or \c DBMS_SESSION packages on a connection used with this API is not supported.
 */

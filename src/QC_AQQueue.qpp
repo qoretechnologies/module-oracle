@@ -352,9 +352,11 @@ AQSubscriptionManager aqSubscriptionManager;
     on musl (Alpine) although OCISubscriptionRegister() succeeds, while it is registered from any other thread.  So
     onSubscriptionLost() is called on this thread too, outside the watchdog's OCI processing, on every platform.
 
-    Each callback runs under the sandbox of the code that started the subscription (see
-    AQQueuePriv::deliverAsyncMessage() and AQQueuePriv::notifySubscriptionLost()).  The thread runs while callbacks
-    are queued; a finished thread is joined when the next callback starts a new one and when the module is deleted.
+    Each callback runs under the sandbox of the code that started the subscription, and without the session
+    information that the thread had before it, which is restored afterwards, so that no callback can use or see the
+    session information of another (see AQQueuePriv::deliverAsyncMessage(), AQQueuePriv::notifySubscriptionLost()
+    and OraThreadSessionInfoScope).  The thread runs while callbacks are queued; a finished thread is joined when the
+    next callback starts a new one and when the module is deleted.
 */
 class AQCallbackDispatcher {
 public:
@@ -1213,6 +1215,9 @@ void AQQueuePriv::notifySubscriptionLost() {
    {
       // onSubscriptionLost() runs under the sandbox of the code that started the subscription
       QoreSandboxCaptureHelper sch(*sandbox);
+      // and without the session information of the thread, which serves the callbacks of every subscription (see
+      // OraThreadSessionInfoScope)
+      OraThreadSessionInfoScope sis;
       // an exception that the method raises is reported when the sink goes out of scope
       ExceptionSink xsink;
       obj->evalMethod("onSubscriptionLost", 0, &xsink);
@@ -1266,6 +1271,9 @@ void AQQueuePriv::deliverAsyncMessage(QoreObject* obj, uint64_t subscription) {
    assert(sandbox);
    // the callback runs under the sandbox of the code that started the subscription
    QoreSandboxCaptureHelper sch(*sandbox);
+   // and without the session information of the thread, which serves the callbacks of every subscription (see
+   // OraThreadSessionInfoScope)
+   OraThreadSessionInfoScope sis;
    // an exception that the method raises is reported when the sink goes out of scope
    ExceptionSink xsink;
    obj->evalMethod("onAsyncMessage", 0, &xsink);
@@ -1293,6 +1301,68 @@ QoreValue aq_dbg_with_queue_lock(const QoreListNode* args, RuntimeConfig& rc, Ex
       return QoreValue();
    }
    return priv->dbgWithLock(code, xsink);
+}
+
+QoreValue AQQueuePriv::dbgCallback(bool lost, bool here, ExceptionSink* xsink) {
+   QoreObject* obj;
+   uint64_t subscription;
+   {
+      std::lock_guard<std::mutex> sl(m_sandbox_lock);
+      obj = m_self;
+      subscription = m_subscription;
+   }
+   if (!subscription) {
+      xsink->raiseException("AQQUEUE-ERROR", "the queue has no active subscription");
+      return QoreValue();
+   }
+   assert(obj);
+
+   AQCallbackDispatcher::PostResult rc;
+   if (lost) {
+      // as checkSubscription() reports a lost subscription
+      obj->tRef();
+      if (QoreObject* prev = m_lost.exchange(obj)) {
+         prev->tDeref();
+      }
+      if (here) {
+         notifySubscriptionLost();
+         return new QoreStringNode("made");
+      }
+      rc = aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::SubscriptionLost, this);
+      if (rc != AQCallbackDispatcher::PostResult::Queued) {
+         // the loss is not reported: the weak reference taken for it is released as notifySubscriptionLost() would
+         if (QoreObject* o = m_lost.exchange(nullptr)) {
+            o->tDeref();
+         }
+      }
+   } else {
+      if (here) {
+         // the caller holds the object and the private data while the callback is made
+         deliverAsyncMessage(obj, subscription);
+         return new QoreStringNode("made");
+      }
+      rc = aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::AsyncMessage, this, obj, subscription);
+   }
+   switch (rc) {
+      case AQCallbackDispatcher::PostResult::Queued:
+         return new QoreStringNode("queued");
+      case AQCallbackDispatcher::PostResult::Failed:
+         return new QoreStringNode("failed");
+      case AQCallbackDispatcher::PostResult::Stopped:
+         break;
+   }
+   return new QoreStringNode("stopped");
+}
+
+QoreValue aq_dbg_callback(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
+   QoreObject* obj = get_param_value(args, 0).get<QoreObject>();
+   bool lost = get_param_value(args, 1).getAsBool();
+   bool here = get_param_value(args, 2).getAsBool();
+   PrivateDataRefHolder<AQQueuePriv> priv(obj, CID_AQQUEUE, xsink);
+   if (!priv) {
+      return QoreValue();
+   }
+   return priv->dbgCallback(lost, here, xsink);
 }
 
 QoreValue aq_dbg_stop_and_post(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink) {
@@ -1554,7 +1624,10 @@ static void aqqueue_constructor_hash(const QoreStringNode* queueName, const Qore
  * @ref AQQueue::onAsyncMessage() runs (the client takes the same lock to start a subscription).  These
  * threads serve the subscriptions of all objects; each callback, and each reconnection made for a subscription, runs
  * under the sandbox (\c Qore::SandboxManager) of the code that called @ref AQQueue::startSubscription(), so it can
- * never do more than that code.
+ * never do more than that code.  Each callback also starts without session information (see
+ * @ref oracleora_thread_session_infoguide), and the session information that it sets with
+ * @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()" ends with it, so the callbacks of
+ * different subscriptions never share it.
  *
  * An AQQueue object cannot be used in a child process created with \c fork() after it was created: its session and
  * subscription belong to the parent, and every method raises \c AQQUEUE-FORK-ERROR in the child; when the child

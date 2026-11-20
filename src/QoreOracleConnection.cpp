@@ -135,6 +135,15 @@ void ora_thread_session_info_cleanup(void* arg) {
     ora_thread_session_info = nullptr;
 }
 
+OraThreadSessionInfoScope::OraThreadSessionInfoScope() noexcept : saved(ora_thread_session_info) {
+    ora_thread_session_info = nullptr;
+}
+
+OraThreadSessionInfoScope::~OraThreadSessionInfoScope() {
+    delete ora_thread_session_info;
+    ora_thread_session_info = saved;
+}
+
 int QoreOracleConnection::setSessionAttr(unsigned attr, const std::string& value, ExceptionSink* xsink) {
     assert(attr < ORA_SA_COUNT);
     const QoreEncoding* enc = ds.getQoreEncoding();
