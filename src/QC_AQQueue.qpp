@@ -330,8 +330,8 @@ public:
 
 #ifdef DEBUG
    //! Makes the watchdog check every subscription now and waits until it has; DEBUG builds only
-   /** @return the OS thread of the watchdog, or 0 if no watchdog thread is running (then nothing is checked) or if
-       it left its loop before it served the request
+   /** @return the OS thread of the watchdog, or 0 if no watchdog thread is running (then nothing is checked), if it
+       left its loop before it served the request, or if another watchdog thread was started meanwhile
    */
    DLLLOCAL int64 dbgCheckNow() {
       AutoLocker al(l);
@@ -345,7 +345,9 @@ public:
       while (running && threads_started == thread_gen && dbg_done < round) {
          dbg_c.wait(l);
       }
-      if (dbg_done < round) {
+      // once another thread has been started, dbg_done and dbg_thread can be its own: the request is reported as not
+      // served (also if the thread that it was made to served it before it left its loop)
+      if (threads_started != thread_gen || dbg_done < round) {
          return 0;
       }
       return static_cast<int64>(reinterpret_cast<uintptr_t>(reinterpret_cast<void*>(dbg_thread)));

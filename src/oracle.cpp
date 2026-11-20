@@ -70,7 +70,8 @@ DLLLOCAL QoreValue aq_dbg_fail_dispatch(const QoreListNode* args, RuntimeConfig&
 //! no active subscription; DEBUG builds only
 DLLLOCAL QoreValue aq_dbg_force_lost(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
 //! Qore::Oracle::dbg_aq_check_now(): makes the AQ watchdog check every subscription now, waits until it has, and
-//! returns the watchdog's OS thread (see dbg_native_thread_id()), or 0 if no watchdog runs; DEBUG builds only
+//! returns the watchdog's OS thread (see dbg_native_thread_id()), or 0 if no watchdog runs, if it left its loop
+//! before it served the request, or if another watchdog thread was started meanwhile; DEBUG builds only
 DLLLOCAL QoreValue aq_dbg_check_now(const QoreListNode* args, RuntimeConfig& rc, ExceptionSink* xsink);
 //! Qore::Oracle::dbg_aq_notify(list<AQQueue> queues): delivers a notification of each queue's subscription, in
 //! order, on a new thread that Qore did not start, as the Oracle client's notification thread does, waits for the
