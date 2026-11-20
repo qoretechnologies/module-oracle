@@ -255,7 +255,6 @@ public:
 #endif
 
    DLLLOCAL void run() {
-      QoreForeignThreadHelper qfth;
       //printd(5, "AQSubscriptionManager::run(): starting connection watchdog thread\n");
 
       AutoLocker al(l);
@@ -274,6 +273,11 @@ public:
          {
             AutoUnlocker aul(l);
             for (AQQueuePriv* o : snapshot) {
+               // each subscription is checked with a Qore thread context of its own, which ends with the check: the
+               // check can call onSubscriptionLost() (see checkSubscription()), and code that serves several
+               // subscriptions must not find the thread-local data of another subscription's callback (see
+               // AQCallbackDispatcher)
+               QoreForeignThreadHelper qfth;
                o->checkSubscription();
                o->deref();
             }
@@ -355,8 +359,10 @@ AQSubscriptionManager aqSubscriptionManager;
     Each callback runs under the sandbox of the code that started the subscription, and without the session
     information that the thread had before it, which is restored afterwards, so that no callback can use or see the
     session information of another (see AQQueuePriv::deliverAsyncMessage(), AQQueuePriv::notifySubscriptionLost()
-    and OraThreadSessionInfoScope).  The thread runs while callbacks are queued; a finished thread is joined when the
-    next callback starts a new one and when the module is deleted.
+    and OraThreadSessionInfoScope).  Each callback also runs with a Qore thread context of its own (see run()), so
+    that it never finds the thread-local data (\c save_thread_data(), \c thread_local variables) that the callback of
+    another subscription left, even if both run code of the same Program.  The thread runs while callbacks are queued;
+    a finished thread is joined when the next callback starts a new one and when the module is deleted.
 */
 class AQCallbackDispatcher {
 public:
@@ -504,7 +510,6 @@ private:
 #endif
 
    DLLLOCAL void run() {
-      QoreForeignThreadHelper qfth;
       AutoLocker al(l);
       while (!queue.empty()) {
          Callback cb = queue.front();
@@ -516,6 +521,10 @@ private:
          }
 #endif
          AutoUnlocker aul(l);
+         // each callback runs with a Qore thread context of its own, which ends with the callback (it is destroyed
+         // before the lock is taken again): the thread-local data that the callback leaves is destroyed then, and the
+         // next callback, which can run code of the same Program for another subscription, starts without it
+         QoreForeignThreadHelper qfth;
          if (cb.kind == Kind::AsyncMessage) {
             cb.priv->deliverAsyncMessage(cb.obj, cb.subscription);
             cb.obj->tDeref();
@@ -1627,7 +1636,12 @@ static void aqqueue_constructor_hash(const QoreStringNode* queueName, const Qore
  * never do more than that code.  Each callback also starts without session information (see
  * @ref oracleora_thread_session_infoguide), and the session information that it sets with
  * @ref Qore::Oracle::setThreadSessionInfo() "Oracle::setThreadSessionInfo()" ends with it, so the callbacks of
- * different subscriptions never share it.
+ * different subscriptions never share it.  Likewise each callback runs with Qore thread-local data of its own
+ * (\c save_thread_data(), \c thread_local variables), which is destroyed when the callback returns, so a callback never
+ * finds what the callback of another subscription left there, even if both run code of the same Program; thread-local
+ * data does not persist from one callback to the next.  For the same reason, the thread resources that a callback
+ * leaves (for example a lock that it did not release or a transaction that it did not end) are released when it
+ * returns, as when a thread terminates, and the Qore thread ID (\c gettid()) can differ from one callback to the next.
  *
  * An AQQueue object cannot be used in a child process created with \c fork() after it was created: its session and
  * subscription belong to the parent, and every method raises \c AQQUEUE-FORK-ERROR in the child; when the child

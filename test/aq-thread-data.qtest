@@ -1,0 +1,396 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+# Copyright (C) 2026 Qore Technologies, s.r.o.
+
+# The callbacks of every AQ subscription in the process, AQQueue::onAsyncMessage() and AQQueue::onSubscriptionLost(),
+# are made one after the other on the module's callback thread.  Qore thread-local data (save_thread_data() and
+# thread_local variables) is kept per thread and Program, so the callbacks of subscriptions whose code is in one
+# Program (for example a subscriber class of a user module), started by code with different sandboxes, would share it
+# if they shared the thread's Qore context: a callback could read what the callback of another subscription left in
+# it.  Each callback must therefore run with thread-local data of its own, which ends with the callback; an object that
+# a callback leaves in it is destroyed when the callback ends, under the sandbox of the code that created it.
+#
+# The subscriptions are started by sandboxed Programs (tenants) through code in one Program; the callbacks are made in
+# a known order with the debug hook Qore::Oracle::dbg_aq_callback(), which queues them for the callback thread with no
+# notification from the server.  A callback that is queued while another one runs is made on the same thread, as the
+# thread leaves its loop only when no callback is queued; the callbacks report the OS thread that they run on
+# (Qore::Oracle::dbg_native_thread_id(): the Qore thread ID changes, as each callback registers with Qore anew), and the
+# test checks that they share it.  The test needs a debug build of the module and an Oracle
+# database: QORE_DB_CONNSTR_ORACLE gives the connection of a user that can create types and use DBMS_AQADM and DBMS_AQ.
+
+%modern
+
+%requires QUnit
+%requires Util
+%requires oracle
+
+%exec-class AqThreadDataTest
+
+class AqThreadDataTest inherits QUnit::Test {
+    private {
+        #! the connection of the test user
+        *string connstr;
+        #! the connection of the test user, for setup
+        *Datasource ds;
+        #! why the queues could not be set up
+        *string setup_error;
+        #! true if the module has the debug hook
+        bool have_hook;
+        #! the test directory
+        string dir;
+        #! the file that the callbacks and the destructor read; the tenants' sandboxes deny the filesystem
+        string secret;
+    }
+
+    #! the queue of the first tenant
+    const QueueA = "QORE_TD_AQ_QA";
+    #! the queue of the second tenant
+    const QueueB = "QORE_TD_AQ_QB";
+    #! the queue table
+    const QueueTableName = "QORE_TD_AQ_QT";
+    #! the message type
+    const TypeName = "QORE_TD_AQ_MSG";
+
+    #! the longest a test waits for a callback; it is a guard against a hang, never an expected time
+    const CallbackTimeout = 120s;
+
+    #! the content of the secret file
+    const SecretContent = "the secret content";
+
+    #! the code of the subscribers of every tenant, in one Program
+    const SharedSource = "
+%requires oracle
+
+string sub read_file(string path) {
+    try {
+        return ReadOnlyFile::readTextFile(path);
+    } catch (hash<ExceptionInfo> ex) {
+        return ex.err;
+    }
+}
+
+#! an object that a callback leaves in its thread-local data; it reports its destruction
+class Probe {
+    private {
+        string name;
+        string path;
+        Queue results;
+    }
+
+    constructor(string name, string path, Queue results) {
+        self.name = name;
+        self.path = path;
+        self.results = results;
+    }
+
+    destructor() {
+        results.push({\"event\": \"destructor\", \"name\": name, \"read\": read_file(path)});
+    }
+}
+
+thread_local *string tl_value;
+
+class Subscriber inherits Oracle::AQQueue {
+    private {
+        string name;
+        string path;
+        Queue results;
+        #! if set, the callbacks wait for it before they return
+        *Queue gate;
+        #! if true, the callbacks set thread-local data
+        bool set;
+        #! if true, the callbacks leave a Probe in their thread-local data
+        bool probe;
+    }
+
+    constructor(string queue, string type, string conn, string name, string path, Queue results, *Queue gate,
+            bool set, bool probe) : Oracle::AQQueue(queue, type, conn) {
+        self.name = name;
+        self.path = path;
+        self.results = results;
+        self.gate = gate;
+        self.set = set;
+        self.probe = probe;
+    }
+
+    nothing onAsyncMessage() {
+        callback(\"message\");
+    }
+
+    nothing onSubscriptionLost() {
+        callback(\"lost\");
+    }
+
+    private callback(string event) {
+        hash<auto> h = {
+            \"event\": event,
+            \"name\": name,
+            \"tid\": Oracle::dbg_native_thread_id(),
+            \"seen_data\": get_thread_data(\"value\"),
+            \"seen_var\": tl_value,
+            \"seen_probe\": exists get_thread_data(\"probe\"),
+        };
+        if (set) {
+            save_thread_data(\"value\", name + \"-data\");
+            tl_value = name + \"-var\";
+            # the callback's own thread-local data is available to it
+            h.own_data = get_thread_data(\"value\");
+            h.own_var = tl_value;
+        }
+        if (probe) {
+            save_thread_data(\"probe\", new Probe(name, path, results));
+        }
+        results.push(h);
+        if (gate) {
+            gate.get();
+        }
+    }
+}
+
+Oracle::AQQueue sub subscribe(string queue, string type, string conn, string name, string path, Queue results,
+        *Queue gate, bool set, bool probe) {
+    Subscriber s(queue, type, conn, name, path, results, gate, set, probe);
+    s.startSubscription();
+    return s;
+}
+
+code sub get_subscribe() {
+    return \\subscribe();
+}
+";
+
+    #! the sandboxed code of a tenant: it starts its subscription through the shared code
+    const SandboxedSource = "
+auto sub run(code c, ...) {
+    return call_function_args(c, argv);
+}
+";
+
+    constructor() : QUnit::Test("AqThreadDataTest", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE;
+        addTestCase("a callback never sees the thread-local data of another subscription's callback",
+            \testThreadData());
+        addTestCase("onSubscriptionLost() never sees the thread-local data of another subscription's callback",
+            \testThreadDataLost());
+        addTestCase("an object left in thread-local data is destroyed when its callback ends, under its creator's "
+            "sandbox", \testLeftObject());
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        string tmp = tmp_location() + DirSep + "qore-aq-thread-data-" + get_random_string(8);
+        mkdir(tmp);
+        dir = realpath(tmp);
+        secret = dir + DirSep + "secret.txt";
+        File f();
+        f.open2(secret, O_CREAT | O_TRUNC | O_WRONLY);
+        f.write(SecretContent);
+        f.close();
+
+        have_hook = exists_function("dbg_aq_callback");
+        if (!connstr || !have_hook) {
+            return;
+        }
+        ds = new Datasource(connstr);
+        ds.open();
+        dropQueues();
+        try {
+            ds.exec("create or replace type " + TypeName + " as object (code number, text varchar2(100))");
+            ds.exec(sprintf("begin dbms_aqadm.create_queue_table(queue_table => '%s', queue_payload_type => '%s'); "
+                "end;", QueueTableName, TypeName));
+            foreach string queue in ((QueueA, QueueB)) {
+                ds.exec(sprintf("begin dbms_aqadm.create_queue(queue_name => '%s', queue_table => '%s'); "
+                    "dbms_aqadm.start_queue(queue_name => '%s'); end;", queue, QueueTableName, queue));
+            }
+            ds.commit();
+        } catch (hash<ExceptionInfo> ex) {
+            ds.rollback();
+            setup_error = sprintf("the AQ queues cannot be created with %s: %s: %s", connstr, ex.err, ex.desc);
+        }
+    }
+
+    globalTearDown() {
+        if (ds) {
+            dropQueues();
+        }
+        if (dir.val()) {
+            try {
+                unlink(secret);
+                rmdir(dir);
+            } catch (hash<ExceptionInfo> ex) {
+            }
+        }
+    }
+
+    #! drops the queues, their table and their type, if they exist
+    private dropQueues() {
+        foreach string queue in ((QueueA, QueueB)) {
+            try {
+                ds.exec(sprintf("begin dbms_aqadm.stop_queue(queue_name => '%s'); "
+                    "dbms_aqadm.drop_queue(queue_name => '%s'); end;", queue, queue));
+            } catch (hash<ExceptionInfo> ex) {
+            }
+        }
+        try {
+            ds.exec(sprintf("begin dbms_aqadm.drop_queue_table(queue_table => '%s', force => true); end;",
+                QueueTableName));
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        try {
+            ds.exec("drop type " + TypeName + " force");
+        } catch (hash<ExceptionInfo> ex) {
+        }
+        ds.commit();
+    }
+
+    #! skips the test case if there is no debug hook or no queue
+    private checkQueue() {
+        if (!have_hook) {
+            testSkip("the test needs a debug build of the module (%s)", "Qore::Oracle::dbg_aq_callback() is missing");
+        }
+        if (!connstr) {
+            testSkip("QORE_DB_CONNSTR_ORACLE is not set");
+        }
+        if (setup_error) {
+            testSkip("%s", setup_error);
+        }
+    }
+
+    #! returns a sandboxed Program whose manager allows the network but denies the filesystem
+    private Program getSandboxed(string name) {
+        Program p(PO_NEW_STYLE);
+        p.parse(SandboxedSource, name);
+        SandboxManager sm();
+        sm.setFilesystemDefaultPolicy(False);
+        sm.setNetworkDefaultPolicy(True);
+        p.setSandboxManager(sm);
+        return p;
+    }
+
+    #! returns the shared code of the subscribers
+    private Program getShared() {
+        Program p(PO_NEW_STYLE);
+        p.parse(SharedSource, "shared");
+        return p;
+    }
+
+    #! starts a subscription from the given sandboxed Program through the shared code
+    private AQQueue subscribe(Program shared, Program tenant, string queue, string name, Queue results, *Queue gate,
+            bool set = False, bool probe = False) {
+        return tenant.callFunction("run", shared.callFunction("get_subscribe"), queue, TypeName, connstr, name,
+            secret, results, gate, set, probe);
+    }
+
+    #! makes a callback of the queue's subscription on the callback thread
+    private callback(AQQueue q, bool lost) {
+        assertEq("queued", call_function("Qore::Oracle::dbg_aq_callback", q, lost, False));
+    }
+
+    #! the first tenant's callback sets thread-local data and is held while the second tenant's callback is queued
+    #! behind it on the callback thread; the second one is held in turn while the first tenant's next callback is
+    #! queued behind it, so that all three run on the same thread
+    private threadDataTest(bool lost_a, bool lost_b) {
+        checkQueue();
+        Program shared = getShared();
+        Program tenant_a = getSandboxed("tenant-a");
+        Program tenant_b = getSandboxed("tenant-b");
+        Queue results_a();
+        Queue results_b();
+        Queue gate_a();
+        Queue gate_b();
+        AQQueue a = subscribe(shared, tenant_a, QueueA, "a", results_a, gate_a, True);
+        on_exit {
+            # the callback may still be waiting for the gate
+            gate_a.push(True);
+            a.stopSubscription();
+            delete a;
+        }
+        AQQueue b = subscribe(shared, tenant_b, QueueB, "b", results_b, gate_b);
+        on_exit {
+            gate_b.push(True);
+            b.stopSubscription();
+            delete b;
+        }
+
+        callback(a, lost_a);
+        hash<auto> ha = results_a.get(CallbackTimeout);
+        # the second tenant's callback is queued while the first one runs on the callback thread
+        callback(b, lost_b);
+        gate_a.push(True);
+        hash<auto> hb = results_b.get(CallbackTimeout);
+        # the first tenant's next callback is queued while the second one runs on the callback thread
+        callback(a, False);
+        gate_b.push(True);
+        gate_a.push(True);
+        hash<auto> ha2 = results_a.get(CallbackTimeout);
+
+        assertEq(lost_a ? "lost" : "message", ha.event);
+        assertEq(lost_b ? "lost" : "message", hb.event);
+        assertEq("message", ha2.event);
+        # the three callbacks ran on the same thread
+        assertEq(ha.tid, hb.tid, "the callback thread");
+        assertEq(hb.tid, ha2.tid, "the callback thread");
+        # the first callback starts without thread-local data; what it sets is available to it
+        assertEq(NOTHING, ha.seen_data);
+        assertEq(NOTHING, ha.seen_var);
+        assertEq("a-data", ha.own_data);
+        assertEq("a-var", ha.own_var);
+        # the second callback sees none of it
+        assertEq(NOTHING, hb.seen_data, "the thread data that the second tenant's callback sees");
+        assertEq(NOTHING, hb.seen_var, "the thread-local variable that the second tenant's callback sees");
+        # the first tenant's next callback starts without the thread-local data of its previous one too
+        assertEq(NOTHING, ha2.seen_data);
+        assertEq(NOTHING, ha2.seen_var);
+        assertEq("a-data", ha2.own_data);
+        assertEq("a-var", ha2.own_var);
+    }
+
+    testThreadData() {
+        threadDataTest(False, False);
+    }
+
+    testThreadDataLost() {
+        threadDataTest(True, False);
+        threadDataTest(False, True);
+    }
+
+    # the first tenant's callback leaves an object in its thread-local data and is held while the second tenant's
+    # callback is queued behind it: the object is destroyed when the first callback ends, before the second one runs,
+    # and its destructor runs under the sandbox of the code that created it
+    testLeftObject() {
+        checkQueue();
+        Program shared = getShared();
+        Program tenant_a = getSandboxed("tenant-a");
+        Program tenant_b = getSandboxed("tenant-b");
+        # both tenants report to one queue, so that the order of the events is known
+        Queue results();
+        Queue gate();
+        AQQueue a = subscribe(shared, tenant_a, QueueA, "a", results, gate, False, True);
+        on_exit {
+            gate.push(True);
+            a.stopSubscription();
+            delete a;
+        }
+        AQQueue b = subscribe(shared, tenant_b, QueueB, "b", results);
+        on_exit {
+            b.stopSubscription();
+            delete b;
+        }
+
+        callback(a, False);
+        hash<auto> h = results.get(CallbackTimeout);
+        assertEq({"event": "message", "name": "a"}, h.("event", "name"));
+        int tid = h.tid;
+        callback(b, False);
+        gate.push(True);
+
+        h = results.get(CallbackTimeout);
+        assertEq({"event": "destructor", "name": "a", "read": "FILESYSTEM-ACCESS-DENIED"}, h,
+            "the destruction of the object that the first callback left");
+        h = results.get(CallbackTimeout);
+        assertEq({"event": "message", "name": "b"}, h.("event", "name"));
+        assertEq(tid, h.tid, "the callback thread");
+        assertEq(NOTHING, h.seen_data);
+        assertFalse(h.seen_probe, "the second callback sees the object that the first one left");
+    }
+}

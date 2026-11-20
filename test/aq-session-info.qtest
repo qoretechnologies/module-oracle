@@ -107,7 +107,7 @@ class Subscriber inherits Oracle::AQQueue {
     private callback(string event) {
         hash<auto> h = {
             \"event\": event,
-            \"tid\": gettid(),
+            \"tid\": Oracle::dbg_native_thread_id(),
             \"seen\": Oracle::getThreadSessionInfo(),
             \"session\": session(),
         };
@@ -232,7 +232,7 @@ auto sub run(code c, ...) {
             testSkip("QORE_DB_CONNSTR_ORACLE is not set");
         }
         if (setup_error) {
-            testSkip(setup_error);
+            testSkip("%s", setup_error);
         }
     }
 
@@ -354,7 +354,7 @@ auto sub run(code c, ...) {
         }
 
         Oracle::setThreadSessionInfo(InfoCaller);
-        int tid = gettid();
+        int tid = call_function("Qore::Oracle::dbg_native_thread_id");
 
         # the callback does not see the calling thread's session information
         callback(b, lost, True, "made");
