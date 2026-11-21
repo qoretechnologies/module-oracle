@@ -192,6 +192,39 @@ int QoreOracleConnection::applyThreadSessionInfo(ExceptionSink* xsink) {
     return 0;
 }
 
+//! adds the values of the service, SID and instance name parameters in a connect descriptor
+static void add_descriptor_names(const qore_oracle_targets::Param& p, std::vector<std::string>& names) {
+    if (!p.has_children && (p.name == "SERVICE_NAME" || p.name == "SID" || p.name == "INSTANCE_NAME")) {
+        std::string v = qore_oracle_targets::trim(p.value);
+        if (v.size() > 1 && v.front() == '"' && v.back() == '"') {
+            v = v.substr(1, v.size() - 2);
+        }
+        names.push_back(v);
+    }
+    for (const qore_oracle_targets::Param& c : p.children) {
+        add_descriptor_names(c, names);
+    }
+}
+
+void QoreOracleConnection::initSecrets() {
+    // a TNS alias: the server can name the service, SID or instance of its definition (ex: ORA-12514), so these
+    // are masked as well, if the alias can be resolved as the Oracle client resolves it
+    std::vector<std::string> names;
+    const char* db = ds.getDBName();
+    const char* host = ds.getHostName();
+    if (db && (!host || !*host)) {
+        std::string d = qore_oracle_targets::trim(db);
+        if (!d.empty() && d[0] != '(' && d.find_first_of("/:[,") == std::string::npos) {
+            qore_oracle_targets::Param root;
+            std::string err;
+            if (qore_oracle_targets::resolve_alias(d, root, err)) {
+                add_descriptor_names(root, names);
+            }
+        }
+    }
+    secrets = qore_oracle_redact::get_secrets(ds.getUsername(), ds.getPassword(), db, &names);
+}
+
 QoreOracleConnection::QoreOracleConnection(Datasource &n_ds, ExceptionSink *xsink)
   : errhp(0), svchp(0), srvhp(0), usrhp(0), ocilib_cn(0), ds(n_ds), ocilib_init(false),
     server_tz(currentTZ()),
@@ -204,6 +237,9 @@ QoreOracleConnection::QoreOracleConnection(Datasource &n_ds, ExceptionSink *xsin
    // the connection uses the Oracle client (see oracle_client_init())
    oracle_client_init();
 
+   // before anything can raise an Oracle error
+   initSecrets();
+
    int port = ds.getPort();
 
    if (port)
@@ -211,7 +247,7 @@ QoreOracleConnection::QoreOracleConnection(Datasource &n_ds, ExceptionSink *xsin
    else
       cstr.concat(ds.getDBName());
 
-   //printd(5, "QoreOracleConnection::QoreOracleConnection(): user: %s pass: %s db: %s (oracle encoding: %s) xsink: %d\n", ds.getUsername(), ds.getPassword(), cstr.getBuffer(), ds.getDBEncoding() ? ds.getDBEncoding() : "(none)", (bool)*xsink);
+   //printd(5, "QoreOracleConnection::QoreOracleConnection() (oracle encoding: %s) xsink: %d\n", ds.getDBEncoding() ? ds.getDBEncoding() : "(none)", (bool)*xsink);
 
    bool set_charset = false;
 
@@ -332,7 +368,8 @@ QoreOracleConnection::QoreOracleConnection(Datasource &n_ds, ExceptionSink *xsin
    ocilib_cn->nb_files = 0;                       // number of OCI_File opened by the connection
    ocilib_cn->mode = 0;                           // session mode
    ocilib_cn->cstate = 0;                         // connection state
-   ocilib_cn->usrdata = 0;                        // user data
+   // the connection, so that ocilib_err_handler() masks its values in messages
+   ocilib_cn->usrdata = this;                     // user data
 
    ocilib_cn->fmt_date = 0;                       // date string format for conversion
    ocilib_cn->fmt_num = 0;                        // numeric string format for conversion
@@ -350,7 +387,6 @@ QoreOracleConnection::~QoreOracleConnection() {
       return;
    }
    //printd(5, "QoreOracleConnection::~QoreOracleConnection() this=%p ds=%p envhp=%p svchp=%p ocilib envhp=%p\n", this, &ds, *env, svchp, ocilib.env);
-   //printd(5, "QoreOracleConnection::~QoreOracleConnection(): connection to %s closed.\n", ds.getDBName());
    //printd(5, "QoreOracleConnection::~QoreOracleConnection(): svchp, errhp: %p, %p\n", svchp, errhp);
 #ifdef QDBI_METHOD_BULK_LOAD_BEGIN
    if (bulk_load) {
@@ -371,7 +407,9 @@ QoreOracleConnection::~QoreOracleConnection() {
       if (ocilib_cn->trace)
          OCI_MemFree(ocilib_cn->trace);
 
+      ocilib_cn->usrdata = nullptr;
       delete ocilib_cn;
+      ocilib_cn = nullptr;
    }
 
    if (ocilib_init) {
@@ -408,7 +446,7 @@ int QoreOracleConnection::checkerr(sword status, const char* query_name, Excepti
             return 0;
 
         case OCI_SUCCESS_WITH_INFO: {
-            text errbuf[512];
+            text errbuf[QORE_OCI_ERROR_MSG_SIZE];
 
             OCIErrorGet((dvoid *)errhp, (ub4) 1, (text *) NULL, &errcode, errbuf, (ub4) sizeof(errbuf), OCI_HTYPE_ERROR);
             //printd(5, "WARNING: %s returned OCI_SUCCESS_WITH_INFO: %s\n", query_name ? query_name : "<unknown>", remove_trailing_newlines((char *)errbuf));
@@ -426,10 +464,11 @@ int QoreOracleConnection::checkerr(sword status, const char* query_name, Excepti
         }
 
         case OCI_INVALID_HANDLE:
+            // the message does not name the connection's values (user name, password, database)
             if (query_name)
-                xsink->raiseException("DBI:ORACLE:OCI-INVALID-HANDLE", "%s@%s: %s: an invalid OCI handle was used", ds.getUsername(), ds.getDBName(), query_name);
+                xsink->raiseException("DBI:ORACLE:OCI-INVALID-HANDLE", "%s: an invalid OCI handle was used", query_name);
             else
-                xsink->raiseException("DBI:ORACLE:OCI-INVALID-HANDLE", "%s@%s: an invalid OCI handle was used", ds.getUsername(), ds.getDBName());
+                xsink->raiseException("DBI:ORACLE:OCI-INVALID-HANDLE", "an invalid OCI handle was used");
             break;
 
         case OCI_NEED_DATA:
@@ -517,7 +556,8 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
 
     // get and save error information
     sb4 errcode;
-    text errbuf[512];
+    // the largest message of the Oracle client, so that no connection value in it is cut (and not masked)
+    text errbuf[QORE_OCI_ERROR_MSG_SIZE];
     OCIErrorGet((dvoid*)errhp, (ub4)1, (text*)nullptr, &errcode, errbuf, (ub4)sizeof(errbuf), OCI_HTYPE_ERROR);
 
     // an error while logging on is the logon's own: the session being made is not a lost connection (a ping on it
@@ -539,9 +579,8 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
     if (errcode == 12609) {
         doException(who, errbuf, errcode, xsink);
         if (ds.activeTransaction()) {
-            xsink->raiseException("DBI:ORACLE:TRANSACTION-ERROR", "the receive timeout of the connection to Oracle "
-                "database server %s@%s ended a call while in a transaction; transaction has been lost",
-                ds.getUsername(), ds.getDBName());
+            xsink->raiseException("DBI:ORACLE:TRANSACTION-ERROR", "the receive timeout of the connection to the "
+                "Oracle database server ended a call while in a transaction; transaction has been lost");
         }
         clearStatements(nullptr, xsink);
         ds.connectionLost(xsink);
@@ -584,11 +623,12 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
     // we can only recover a plain "exec" or "select" call
     if (ds.activeTransaction()) {
         // the original error is included, so that callers can see why the transaction was lost
+        std::string msg = remove_trailing_newlines((char*)errbuf);
+        redact(msg);
         QoreHashNode* arg = new QoreHashNode(autoTypeInfo);
         arg->setKeyValue("alterr", new QoreStringNodeMaker("OCI-%05d", (int)errcode), xsink);
-        xsink->raiseExceptionArg("DBI:ORACLE:TRANSACTION-ERROR", arg, "connection to Oracle database server %s@%s "
-            "lost while in a transaction; transaction has been lost: %s: %s", ds.getUsername(), ds.getDBName(),
-            who ? who : "<unknown>", remove_trailing_newlines((char*)errbuf));
+        xsink->raiseExceptionArg("DBI:ORACLE:TRANSACTION-ERROR", arg, "connection to the Oracle database server "
+            "lost while in a transaction; transaction has been lost: %s: %s", who ? who : "<unknown>", msg.c_str());
     }
 
     // free the session state of the statements while the driver-specific context data is still present
@@ -675,12 +715,16 @@ void QoreOracleConnection::clearStatements(QorePreparedStatement* stmt, Exceptio
 
 int QoreOracleConnection::doException(const char *query_name, text errbuf[], sb4 errcode, ExceptionSink *xsink) {
     // add ORA-xxxxx code to exception in arg hash in the "alterr" key
+    // the description does not name the connection's values (user name, password, database), and they are masked in
+    // the message of the Oracle client or server, which can name them (ex: a service name or a schema)
+    std::string msg = remove_trailing_newlines((char*)errbuf);
+    redact(msg);
     QoreHashNode* arg = new QoreHashNode(autoTypeInfo);
     arg->setKeyValue("alterr", new QoreStringNodeMaker("OCI-%05d", (int)errcode), xsink);
     if (query_name)
-       xsink->raiseExceptionArg("DBI:ORACLE:OCI-ERROR", arg, "%s@%s: %s: %s", ds.getUsername(), ds.getDBName(), query_name, remove_trailing_newlines((char *)errbuf));
+       xsink->raiseExceptionArg("DBI:ORACLE:OCI-ERROR", arg, "%s: %s", query_name, msg.c_str());
     else
-       xsink->raiseExceptionArg("DBI:ORACLE:OCI-ERROR", arg, "%s@%s: %s", ds.getUsername(), ds.getDBName(), remove_trailing_newlines((char*)errbuf));
+       xsink->raiseExceptionArg("DBI:ORACLE:OCI-ERROR", arg, "%s", msg.c_str());
     return -1;
 }
 
@@ -814,7 +858,7 @@ int QoreOracleConnection::logon(ExceptionSink *xsink) {
 
 //      return checkerr(OCILogon(*env, errhp, &svchp, (text *)user.c_str(), user.size(), (text *)pass.c_str(), pass.size(), (text *)cstr.getBuffer(), cstr.strlen()), "QoreOracleConnection::logon()", xsink);
 
-   //printd(5, "QoreOracleConnection::logon() %s/%s@%s succeeded\n", user.c_str(), pass.c_str(), dblink.getBuffer());
+   //printd(5, "QoreOracleConnection::logon() succeeded\n");
 
    // make sure we can read number characters
    QoreOracleSimpleStatement stmt(*this);

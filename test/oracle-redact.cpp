@@ -1,0 +1,147 @@
+/*  oracle-redact.cpp Copyright (C) 2026 Qore Technologies, s.r.o.
+
+    Unit tests of the masking of connection values in Oracle messages (src/OracleRedact.h, qore#6991); the header
+    has no dependencies, so the test needs neither Qore nor an Oracle client.  Run by test_oracle_redact.py.
+*/
+
+#include "../src/OracleRedact.h"
+
+#include <cstdio>
+#include <string>
+
+using namespace qore_oracle_redact;
+
+static int failures = 0;
+static int checks = 0;
+
+static void check(const char* user, const char* pass, const char* db, const std::string& in,
+        const std::string& expected, const char* label) {
+    ++checks;
+    std::string text = in;
+    redact(text, get_secrets(user, pass, db));
+    if (text != expected) {
+        ++failures;
+        printf("FAILED: %s\n  input:    %s\n  expected: %s\n  actual:   %s\n", label, in.c_str(), expected.c_str(),
+            text.c_str());
+    }
+}
+
+int main() {
+    // the cases of qore#6991
+    check("u_SECRET1", "p_SECRET2", "d_SECRET3",
+        "ORA-12514: Cannot connect to database. Service d_SECRET3 is not registered with the listener at host "
+        "127.0.0.1 port 1521.",
+        "ORA-12514: Cannot connect to database. Service **** is not registered with the listener at host "
+        "127.0.0.1 port 1521.", "unknown service");
+    check("u_SECRET1", "p_SECRET2", "d_SECRET3",
+        "ORA-12154: Cannot connect to database. Cannot find alias d_SECRET3 in /x/tnsnames.ora.",
+        "ORA-12154: Cannot connect to database. Cannot find alias **** in /x/tnsnames.ora.", "unknown alias");
+    check("u_SECRET1", "p_SECRET2", "FREEPDB1",
+        "ORA-00942: table or view \"U_SECRET1\".\"T\" does not exist\nHelp: https://docs.oracle.com/error-help/db/"
+        "ora-00942/",
+        "ORA-00942: table or view \"****\".\"T\" does not exist\nHelp: https://docs.oracle.com/error-help/db/"
+        "ora-00942/", "schema in upper case");
+
+    // the password is matched exactly and anywhere
+    check("scott", "Tiger1", "orcl", "x Tiger1 xTiger1x", "x **** x****x", "password anywhere");
+    check("scott", "Tiger1", "orcl", "TIGER1 tiger1", "TIGER1 tiger1", "password case-sensitive");
+
+    // names are matched without regard to case, as whole names only
+    check("scott", "pw", "orcl", "SCOTT scott Scott", "**** **** ****", "user any case");
+    check("scott", "pw", "orcl", "SCOTTY xscott scott_1 scott$ scott# $scott", "SCOTTY xscott scott_1 scott$ scott# $scott",
+        "user inside a longer name");
+    check("scott", "pw", "orcl", "(scott) 'scott'. scott.t", "(****) '****'. ****.t", "user next to punctuation");
+    check("a", "pw", "orcl", "a table at A.B", "**** table at ****.B", "one-letter user");
+
+    // message codes are kept
+    check("ora", "pw", "tns", "ORA-12154: TNS-03505: ora-12154 ora tns", "ORA-12154: TNS-03505: ora-12154 **** ****",
+        "user and db named like a code prefix");
+    check("scott", "ORA", "orcl", "ORA-00942 ORA", "ORA-00942 ****", "password named like a code prefix");
+    check("scott", "12514", "orcl", "ORA-12514: port 12514 x12514", "ORA-12514: port **** x****",
+        "password named like a code number");
+    check("12514", "pw", "00942", "ORA-12514 ORA-00942 12514 00942", "ORA-12514 ORA-00942 **** ****",
+        "names named like a code number");
+    check("scott", "Abc-12345", "orcl", "Abc-12345 xAbc-12345", "**** x****", "password that looks like a code");
+    check("prod", "pw", "orcl", "PROD-1 PROD-123456 prod-12345", "****-1 ****-123456 prod-12345",
+        "only a five-digit code is kept");
+    check("scott", "pw", "ERP-20240", "Service ERP-20240 is not registered; erp-20240", "Service **** is not registered; ****",
+        "a database named like a code");
+    check("scott", "pw", "erp-20240.example.com", "Service erp-20240.example.com is not registered",
+        "Service **** is not registered", "a database starting like a code");
+    check("scott", "00942: tab", "orcl", "ORA-00942: table", "ORA-****le", "a password running past a code");
+    check("scott", "pw", "dbhost:1521/svc", "dbhost:1521/svc dbhost 1521", "**** dbhost 1521",
+        "a host or port on its own is not masked");
+    {
+        ++checks;
+        std::vector<std::string> names = {"APP-12345"};
+        std::string text = "ORA-12514: Service APP-12345 is not registered";
+        redact(text, get_secrets("scott", "pw", "alias1", &names));
+        if (text != "ORA-12514: Service **** is not registered") {
+            ++failures;
+            printf("FAILED: alias service named like a code: %s\n", text.c_str());
+        }
+    }
+
+    // longer values are masked first
+    check("db", "pw", "db_prod", "db_prod db", "**** ****", "longer value first");
+    check("user", "user1pass", "orcl", "user1pass user", "**** ****", "password containing the user name");
+
+    // database values: Easy Connect strings and connect descriptors
+    check("scott", "pw", "dbhost:1521/svc.example.com",
+        "Service svc.example.com is not registered at host dbhost port 1521; dbhost:1521/svc.example.com",
+        "Service **** is not registered at host dbhost port 1521; ****", "Easy Connect service");
+    check("scott", "pw", "//dbhost/svc:dedicated/inst1", "svc inst1 dbhost", "**** **** dbhost",
+        "Easy Connect server type and instance");
+    check("scott", "pw", "[::1]:1521/svc?connect_timeout=5", "svc ::1", "**** ::1", "Easy Connect with IPv6 host");
+    check("scott", "pw", "tcps://dbhost:2484/svc", "Service svc on dbhost", "Service **** on dbhost",
+        "Easy Connect with the tcps protocol");
+    check("scott", "pw", "tcp://dbhost/svc/inst", "svc inst dbhost tcp", "**** **** dbhost tcp",
+        "Easy Connect with the tcp protocol and an instance");
+    check("scott", "pw",
+        "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=h)(PORT=1521))(CONNECT_DATA=(service_name = SvcA )(SID=sid1)"
+        "(INSTANCE_NAME=\"inst2\")))",
+        "Service svca and sid1 and inst2 on h", "Service **** and **** and **** on h", "connect descriptor values");
+    check("scott", "pw", "(DESCRIPTION=(XSERVICE_NAME=n1)(CONNECT_DATA=(MYSID=n2)))", "n1 n2 descriptor",
+        "n1 n2 descriptor", "only whole descriptor parameter names");
+
+    // proxy users
+    check("proxy[client]", "pw", "orcl", "PROXY and CLIENT and proxy[client]", "**** and **** and ****",
+        "proxy user parts");
+
+    // quoted user names
+    check("\"Scott\"", "pw", "orcl", "\"Scott\" Scott SCOTT", "**** **** ****", "quoted user name");
+
+    // other database names: the service of the TNS alias
+    {
+        ++checks;
+        std::vector<std::string> names = {"FREEPDB1", ""};
+        std::string text = "ORA-12514: Service FREEPDB1 is not registered; alias oracle";
+        redact(text, get_secrets("scott", "pw", "oracle", &names));
+        if (text != "ORA-12514: Service **** is not registered; alias ****") {
+            ++failures;
+            printf("FAILED: alias service names: %s\n", text.c_str());
+        }
+    }
+
+    // overlapping values: the longest is masked first
+    check("abc", "pw", "abcdef", "abcdef abc", "**** ****", "overlapping names");
+    check("svc", "svc_pw", "svc", "svc_pw svc", "**** ****", "a password containing a name");
+
+    // empty and missing values
+    check(nullptr, nullptr, nullptr, "nothing to mask", "nothing to mask", "no values");
+    check("", "", "", "nothing to mask", "nothing to mask", "empty values");
+    check("scott", "pw", "orcl", "", "", "empty text");
+
+    // a mask is not matched again
+    check("*", "pw", "orcl", "a * b", "a **** b", "a value that is part of the mask");
+
+    // non-ASCII letters are matched exactly
+    check("\xc3\xa9t\xc3\xa9", "pw", "orcl", "\xc3\xa9t\xc3\xa9 \xc3\x89T\xc3\x89", "**** \xc3\x89T\xc3\x89",
+        "non-ASCII letters");
+
+    printf("%d checks, %d failed\n", checks, failures);
+    if (!failures) {
+        printf("all redaction checks passed\n");
+    }
+    return failures ? 1 : 0;
+}

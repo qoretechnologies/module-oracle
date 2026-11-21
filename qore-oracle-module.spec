@@ -128,6 +128,7 @@ PYTHON
 python3 -B -W error rpm/test_fixture.py -v
 python3 -B -W error rpm/run-tests.py --build-dir "$PWD/build"
 ORACLE_BUILD_DIR="$PWD/build" python3 -B -W error test/test_ocilib_utf8_length.py -v
+python3 -B -W error test/test_oracle_redact.py -v
 %endif
 %files
 %license COPYING.MIT COPYING.LGPL debian/copyright

@@ -33,6 +33,40 @@
     The driver supports transactions, bound parameters, and prepared statements.
     See @ref oraclecapabilitiesguide for supported features and their requirements.
 
+    @section oracle_connection_values Connection Values in Error Messages
+
+    The driver's exceptions do not show the connection's user name, password or database name.  The driver's own
+    descriptions do not name them, and they are masked as \c **** in the messages of the Oracle client and server,
+    which can name them: for example, an unknown service or TNS alias (\c ORA-12514, \c ORA-12154), or the user as
+    the schema of an object (\c ORA-00942: <tt>table or view "****"."T" does not exist</tt>).  The \c ORA- code and the
+    rest of the message are kept, and a host or port on its own is not masked.
+
+    How the values are matched:
+    - the password is matched exactly (Oracle passwords are case-sensitive) wherever it occurs in a message;
+    - the user name and the database values are matched without regard to the case of ASCII letters (the server
+      shows unquoted names in upper case), and only as whole names: a value is not masked where it is a part of a
+      longer name (letters, digits, \c _, \c $ and \c #), so that, for example, the user \c scott does not mask
+      \c SCOTTY;
+    - the database values are the database string as given and the service, SID and instance names in it (of an
+      Easy Connect string or a connect descriptor), or in the definition of the TNS alias that it names (from the
+      \c tnsnames.ora files that the Oracle client reads); the parts of a proxy user name (<tt>user[client]</tt>) and
+      the name in a quoted user name are matched as well;
+    - message codes (for example \c ORA-00942) are kept whole, unless a connection value occurs in one across its
+      \c - or past its end (for example a service named \c ERP-20240, which is masked).
+
+    Limits:
+    - a value that is a common word also masks that word where it stands alone in a message (for example, a user
+      named \c table masks \c TABLE, a database named \c oracle masks \c Oracle in a message, and a password \c a
+      masks every \c a);
+    - letters other than ASCII letters are matched exactly, and a value is masked only where it occurs as given;
+    - the service of a TNS alias is masked only if the alias can be resolved from \c tnsnames.ora as described in
+      @ref oracleora_sandbox_connectionsguide (for example, not with an LDAP naming method or
+      \c NAMES.DEFAULT_DOMAIN);
+    - the Oracle client's own trace and log files (for example \c sqlnet.log, which the client can write to the
+      current directory of the process for a failed connection, or its ADR directory) are written by the client and
+      are not masked; see the Oracle Net documentation for \c LOG_DIRECTORY_CLIENT, \c DIAG_ADR_ENABLED and
+      related \c sqlnet.ora parameters.
+
     @section oracleqlibmodules Qore User Modules
 
     - @ref oracleextensionsintro "OracleExtensions" — Extended functionality for Oracle Db driver

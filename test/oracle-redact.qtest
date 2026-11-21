@@ -1,0 +1,48 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+/*  oracle-redact.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
+
+    Builds and runs the unit tests of the masking of connection values in Oracle messages (test/oracle-redact.cpp for
+    src/OracleRedact.h, qore#6991); they need a C++ compiler (CXX, or c++), but neither an Oracle client nor a server.
+*/
+
+%modern
+%no-child-restrictions
+
+%requires QUnit
+%requires Util
+
+%exec-class OracleRedactTest
+
+class OracleRedactTest inherits QUnit::Test {
+    constructor() : QUnit::Test("oracle redact", "1.0", \ARGV) {
+        addTestCase("masking of connection values in messages", \redactTest());
+        set_return_value(main());
+    }
+
+    redactTest() {
+        string cxx = ENV.CXX ?? "c++";
+        int rc;
+        backquote(sprintf("command -v %s >/dev/null 2>&1", cxx), \rc);
+        if (rc) {
+            testSkip(sprintf("no C++ compiler %y found", cxx));
+        }
+        string src = normalize_dir(get_script_dir() + "/oracle-redact.cpp");
+        string dir = sprintf("%s/oracle-redact-%d", tmp_location(), getpid());
+        if (mkdir(dir, 0700)) {
+            throw "TEST-ERROR", sprintf("cannot create %y: %s", dir, strerror());
+        }
+        string exe = dir + "/oracle-redact";
+        on_exit {
+            unlink(exe);
+            rmdir(dir);
+        }
+        string out = backquote(sprintf("%s -g -std=c++11 -Wall -Wextra -Werror '%s' -o '%s' 2>&1", cxx, src, exe),
+            \rc);
+        assertEq(0, rc, "the unit tests were built: " + out);
+        out = backquote(sprintf("'%s' 2>&1", exe), \rc);
+        assertEq(0, rc, "the unit tests passed: " + out);
+        assertRegex("all redaction checks passed", out);
+    }
+}

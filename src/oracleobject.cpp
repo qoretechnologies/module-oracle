@@ -27,18 +27,33 @@
 #include "oracle.h"
 #include "ocilib_types.h"
 
+//! returns the message of the error with the values of its connection (user name, password, database) masked
+static std::string ocilib_err_message(OCI_Error* err) {
+   const mtext* str = OCI_ErrorGetString(err);
+   std::string msg = str ? str : "";
+   // the connection of the error, or of its statement; the connection's user data is its QoreOracleConnection
+   OCI_Connection* con = err->con;
+   if (!con && err->stmt) {
+      con = err->stmt->con;
+   }
+   if (con && con->usrdata) {
+      static_cast<const QoreOracleConnection*>(con->usrdata)->redact(msg);
+   }
+   return msg;
+}
+
 void ocilib_err_handler(OCI_Error *err, ExceptionSink* xsink) {
    if (xsink && !err->warning) {
-      QoreStringNode* desc = new QoreStringNode();
+      QoreStringNodeHolder desc(new QoreStringNode);
       int ocicode = OCI_ErrorGetOCICode(err);
       if (ocicode)
          desc->sprintf("ORA-%05d: ", ocicode);
       int ocilibcode = OCI_ErrorGetInternalCode2(err);
       if (ocilibcode)
          desc->sprintf("ocilib error %d: ", ocilibcode);
-      desc->concat(OCI_ErrorGetString(err));
+      desc->concat(ocilib_err_message(err).c_str());
       desc->trim_trailing();
-      xsink->raiseException("ORACLE-OCI-ERROR", desc);
+      xsink->raiseException("ORACLE-OCI-ERROR", desc.release());
    }
    else {
       // TODO/FIXME: xsink handling here.
@@ -49,7 +64,7 @@ void ocilib_err_handler(OCI_Error *err, ExceptionSink* xsink) {
              //"  sql   : %s\n",
              OCI_ErrorGetOCICode(err),
              OCI_ErrorGetInternalCode2(err),
-             OCI_ErrorGetString(err)
+             ocilib_err_message(err).c_str()
              //OCI_GetSql(OCI_ErrorGetStatement(err))
              //"<not available>"
          );

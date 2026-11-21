@@ -312,7 +312,7 @@ static int oracle_open(Datasource* ds, ExceptionSink* xsink) {
     }
 
     if (!port && ds->getHostName()) {
-        xsink->raiseException("DATASOURCE-MISSING-PORT", "hostname is set to '%s', but no port is set; both hostname and port must be set to make a direct connection without TNS", ds->getHostName());
+        xsink->raiseException("DATASOURCE-MISSING-PORT", "a hostname is set, but no port is set; both hostname and port must be set to make a direct connection without TNS");
         return -1;
     }
 
