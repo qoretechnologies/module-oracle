@@ -2215,8 +2215,14 @@ int QorePreparedStatement::define(ExceptionSink* xsink) {
 
     if (!columns) {
         columns = new OraResultSet(*this, "QorePreparedStatement::define()", xsink);
-        if (*xsink)
+        if (*xsink) {
+            // the columns described before the error are not kept: a later call must describe the statement again
+            // and fail again, and not define and return only those columns
+            columns->del(xsink);
+            delete columns;
+            columns = nullptr;
             return -1;
+        }
     }
 
     defined = true;

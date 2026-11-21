@@ -1,0 +1,610 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+/*  oracle-nested-type-schema.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
+
+    Tests selecting object types whose attributes (or elements) are object types of their own, when the types are
+    owned by another schema than the connected user's (qore#7057): the type of each attribute and element must be
+    resolved in the schema that owns it, with its exact name; a type that cannot be resolved must raise an
+    exception, and never be decoded with a missing or another type.
+
+    Needs a privileged connection in QORE_DB_CONNSTR_ORACLE_SYS (for example "oracle:system/pass@db") to create two
+    temporary users on the same database; the test cases are skipped with the reason otherwise.  The users are
+    dropped at the end, also when a test case fails.
+*/
+
+%modern
+
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires oracle
+
+%exec-class OracleNestedTypeSchemaTest
+
+class OracleNestedTypeSchemaTest inherits QUnit::Test {
+    private {
+        *string sys_connstr;
+        hash<auto> sys_h;
+        #! the owner of the types
+        string owner;
+        #! the user that selects the owner's types
+        string other;
+        #! the owner of a type that is an attribute of a type of the owner
+        string third;
+        #! the users that were created, dropped at the end
+        list<string> created;
+        #! why the test cases are skipped
+        *string skip_reason;
+    }
+
+    #! the password of the test users
+    const UserPass = "Nest_pw_7057";
+
+    #! a type name that is longer than the 30 bytes that the driver supports
+    const LongName = "INNER_" + strmul("L", 25);
+
+    #! the length of a chain of types that can be resolved
+    const ShallowChain = 20;
+    #! the longest chain of types that the driver follows (the number in the type name; it has one more level)
+    const MaxChain = 127;
+    #! a chain of types within the limit that is described first on a connection
+    const CachedChain = 100;
+    #! the number of references back to a type; more than the limit of levels when each would count as one or two
+    const BackRefs = 130;
+    #! the length of a chain of types that is longer than the driver follows
+    const DeepChain = 130;
+    #! the longest chain through collections (the number in the name): 127 levels of objects and collections
+    const MaxCollChain = 63;
+    #! one step more than the longest chain through collections: 129 levels
+    const CollChainTooDeep = 64;
+
+    #! the length of the chain by value that is reached through a reference; below the limit on its own
+    const MixedChain = 120;
+
+    #! the value of the attribute of the outer types
+    const InnerValue = {"N": 1, "S": "abc"};
+
+    constructor() : QUnit::Test("oracle nested type schema", "1.0", \ARGV) {
+        sys_connstr = ENV.QORE_DB_CONNSTR_ORACLE_SYS;
+        # unique for the run, also across hosts and containers that use the same database and can have the same
+        # process IDs: each run creates and drops only its own users
+        string id = sprintf("%d_%08d", getpid(), clock_getmicros() % 100000000);
+        # the user names, with their 5-byte prefix, must fit the driver's limit of 30 bytes for a schema name
+        @assert(id.size() <= 25);
+        owner = "QNTO_" + id;
+        other = "QNTU_" + id;
+        third = "QNTT_" + id;
+
+        addTestCase("another schema's type, no type of the same name", \noSameName());
+        addTestCase("another schema's type, a different type of the same name", \differentSameName());
+        addTestCase("another schema's collection of objects, a different type of the same name",
+            \collectionSameName());
+        addTestCase("the owner selects its own type", \ownerCase());
+        addTestCase("an attribute type with a quoted lower-case name", \quotedName());
+        addTestCase("an attribute type that cannot be resolved", \unresolvable());
+        addTestCase("types that refer to each other, one cannot be resolved", \unresolvableCycle());
+        addTestCase("an attribute or element of an unsupported type", \unsupportedType());
+        addTestCase("a selected type with a quoted lower-case name", \topLevelQuoted());
+        addTestCase("types of the same name on one connection", \sameConnection());
+        addTestCase("types that refer to each other", \resolvableCycle());
+        addTestCase("an attribute type with a name that is too long", \longAttributeName());
+        addTestCase("an attribute type of a third schema", \thirdSchema());
+        addTestCase("a chain of types that is too deep", \deepChain());
+        addTestCase("the depth of types is checked with described types", \deepChainCached());
+        addTestCase("the error for a type does not show the user", \errorMasksUser());
+        addTestCase("a statement fails again after a failed describe", \statementRetry());
+        addTestCase("an attribute after an object attribute", \attributeAfterObject());
+        addTestCase("references back to a type do not count as depth", \backReferences());
+        addTestCase("a chain of types held by value", \byValueChain());
+        addTestCase("a chain by value that is reached through a reference", \mixedChain());
+        addTestCase("a chain through collections", \collectionChain());
+
+        set_return_value(main());
+    }
+
+    globalSetUp() {
+        if (!sys_connstr) {
+            skip_reason = "QORE_DB_CONNSTR_ORACLE_SYS not set";
+            return;
+        }
+        sys_h = parse_datasource(sys_connstr);
+
+        Datasource sys(sys_connstr);
+        try {
+            sys.open();
+        } catch (hash<ExceptionInfo> ex) {
+            skip_reason = sprintf("the Oracle server is not available: %s: %s", ex.err, ex.desc);
+            return;
+        }
+        on_exit sys.rollback();
+        foreach string user in ((third, owner, other)) {
+            try {
+                sys.exec(sprintf("create user %s identified by \"%s\"", user, UserPass));
+            } catch (hash<ExceptionInfo> ex) {
+                # ex: ORA-65096 in a CDB root, or ORA-01031 without the privilege
+                skip_reason = sprintf("the test users cannot be created with QORE_DB_CONNSTR_ORACLE_SYS: %s: %s",
+                    ex.err, ex.desc);
+                return;
+            }
+            created += user;
+            sys.exec(sprintf("grant create session, create type, create procedure to %s", user));
+        }
+        sys.commit();
+
+        # the third schema's type, which the owner can use in its own types and grant
+        {
+            Datasource ds = getConnection(third);
+            on_exit ds.close();
+            ds.exec("create type inner_c as object (n number, s varchar2(20))");
+            ds.exec(sprintf("grant execute on inner_c to %s with grant option", owner));
+            ds.exec(sprintf("grant execute on inner_c to %s", other));
+            ds.commit();
+        }
+        # the owner's types
+        {
+            Datasource ds = getConnection(owner);
+            on_exit ds.close();
+            list<string> sql = (
+                # (a): the other user has no type named INNER_A
+                "create type inner_a as object (n number, s varchar2(20))",
+                "create type outer_a as object (i inner_a)",
+                # (b): the other user has its own INNER_B, of another structure
+                "create type inner_b as object (n number, s varchar2(20))",
+                "create type outer_b as object (i inner_b)",
+                # a collection of objects: the other user has its own INNER_B
+                "create type tab_b as table of inner_b",
+                # an attribute type with a quoted lower-case name; INNER_Q has another structure
+                "create type \"inner_q\" as object (n number, s varchar2(20))",
+                "create type inner_q as object (d date)",
+                "create type outer_q as object (i \"inner_q\")",
+                # (d): execute is not granted on INNER_D; the other user gets the value through a function
+                "create type inner_d as object (n number, s varchar2(20))",
+                "create type outer_d as object (i inner_d)",
+                "create function make_d return outer_d is begin return outer_d(inner_d(1, 'abc')); end;",
+                # types that refer to each other; execute is not granted on INNER_M, an attribute of M1_T
+                "create type inner_m as object (n number)",
+                "create type m1_t",
+                "create type m2_t as object (r ref m1_t)",
+                "create or replace type m1_t as object (r ref m2_t, x inner_m)",
+                "create function make_m1 return m1_t is begin return m1_t(null, inner_m(1)); end;",
+                "create function make_m2 return m2_t is begin return m2_t(null); end;",
+                # types that refer to each other, all of which can be resolved
+                "create type cyc1_t",
+                "create type cyc2_t as object (r ref cyc1_t, n number)",
+                "create or replace type cyc1_t as object (r ref cyc2_t, n number)",
+                # an attribute type whose name is longer than the driver supports
+                sprintf("create type %s as object (n number)", LongName),
+                sprintf("create type outer_l as object (i %s)", LongName),
+                sprintf("create function make_l return outer_l is begin return outer_l(%s(1)); end;", LongName),
+                # an attribute that follows an object attribute
+                "create type after_a as object (i inner_a, z number)",
+                # an attribute type of a third schema
+                sprintf("create type outer_c as object (i %s.inner_c)", third),
+                # an attribute and an element of a type that the driver does not support
+                "create type raw_obj as object (r raw(4))",
+                "create type raw_tab as table of raw(4)",
+            );
+            map ds.exec($1), sql;
+            foreach string type in (("inner_a", "outer_a", "inner_b", "outer_b", "tab_b", "\"inner_q\"", "inner_q",
+                    "outer_q", "outer_d", "make_d", "m1_t", "m2_t", "make_m1", "make_m2", "cyc1_t", "cyc2_t", LongName, "outer_l", "make_l", "outer_c", "after_a")) {
+                ds.exec(sprintf("grant execute on %s to %s", type, other));
+            }
+            # a chain of objects that each hold a collection of the object before it
+            ds.exec("create type co_0 as object (n number)");
+            ds.exec(sprintf("grant execute on co_0 to %s", other));
+            for (int i = 1; i <= CollChainTooDeep; ++i) {
+                ds.exec(sprintf("create type ct_%d as table of co_%d", i, i - 1));
+                ds.exec(sprintf("create type co_%d as object (c ct_%d, n number)", i, i));
+                ds.exec(sprintf("grant execute on ct_%d to %s", i, other));
+                ds.exec(sprintf("grant execute on co_%d to %s", i, other));
+            }
+            # a type with many references to itself
+            ds.exec("create type self_t");
+            ds.exec(sprintf("create or replace type self_t as object (n number, %s)",
+                (map sprintf("r%d ref self_t", $1), xrange(BackRefs)).join(", ")));
+            ds.exec(sprintf("grant execute on self_t to %s", other));
+            # a type with references to many types that each refer back to it
+            ds.exec("create type hub_t");
+            for (int i = 0; i < BackRefs; ++i) {
+                ds.exec(sprintf("create type spoke_%d as object (r ref hub_t)", i));
+                ds.exec(sprintf("grant execute on spoke_%d to %s", i, other));
+            }
+            ds.exec(sprintf("create or replace type hub_t as object (n number, %s)",
+                (map sprintf("r%d ref spoke_%d", $1, $1), xrange(BackRefs)).join(", ")));
+            ds.exec(sprintf("grant execute on hub_t to %s", other));
+            # a chain of types, each holding the one before it by value
+            ds.exec("create type bv_0 as object (n number)");
+            ds.exec(sprintf("grant execute on bv_0 to %s", other));
+            for (int i = 1; i <= DeepChain; ++i) {
+                ds.exec(sprintf("create type bv_%d as object (i bv_%d, n number)", i, i - 1));
+                ds.exec(sprintf("grant execute on bv_%d to %s", i, other));
+            }
+            # a chain by value on top of a type that has a reference to the end of the chain and a deep attribute:
+            # each path that is walked is within the limit, but the end of the chain holds more levels by value
+            ds.exec(sprintf("create type mu_%d", MixedChain));
+            ds.exec(sprintf("create type mv_t as object (r ref mu_%d, c bv_%d, n number)", MixedChain, MixedChain));
+            ds.exec(sprintf("grant execute on mv_t to %s", other));
+            ds.exec("create type mu_1 as object (v mv_t, n number)");
+            ds.exec(sprintf("grant execute on mu_1 to %s", other));
+            for (int i = 2; i < MixedChain; ++i) {
+                ds.exec(sprintf("create type mu_%d as object (u mu_%d, n number)", i, i - 1));
+                ds.exec(sprintf("grant execute on mu_%d to %s", i, other));
+            }
+            ds.exec(sprintf("create or replace type mu_%d as object (u mu_%d, n number)", MixedChain, MixedChain - 1));
+            ds.exec(sprintf("grant execute on mu_%d to %s", MixedChain, other));
+            # a chain of types, each with a reference to the one before it
+            ds.exec("create type ch_0 as object (n number)");
+            ds.exec(sprintf("grant execute on ch_0 to %s", other));
+            for (int i = 1; i <= DeepChain; ++i) {
+                ds.exec(sprintf("create type ch_%d as object (r ref ch_%d, n number)", i, i - 1));
+                ds.exec(sprintf("grant execute on ch_%d to %s", i, other));
+            }
+            ds.commit();
+        }
+        # the other user's type of the same name as the owner's INNER_B, of another structure
+        {
+            Datasource ds = getConnection(other);
+            on_exit ds.close();
+            ds.exec("create type inner_b as object (d date)");
+            ds.commit();
+        }
+    }
+
+    globalTearDown() {
+        if (!created) {
+            return;
+        }
+        Datasource sys(sys_connstr);
+        on_exit sys.rollback();
+        # every user is dropped even if dropping another one fails; a failure fails the test run
+        list<string> failed = ();
+        foreach string user in (reverse(created)) {
+            try {
+                dropUser(sys, user);
+            } catch (hash<ExceptionInfo> ex) {
+                failed += sprintf("%s: %s: %s", user, ex.err, ex.desc);
+            }
+        }
+        sys.commit();
+        if (failed) {
+            throw "TEST-CLEANUP-ERROR", sprintf("test users were not dropped: %y", failed);
+        }
+    }
+
+    #! drops the user, ending any session that it still has
+    private static dropUser(Datasource sys, string user) {
+        try {
+            sys.exec(sprintf("drop user %s cascade", user));
+            return;
+        } catch (hash<ExceptionInfo> ex) {
+            # ORA-01940: a session of the user is still there
+            if (ex.desc !~ /ORA-01940/) {
+                rethrow;
+            }
+        }
+        *hash<auto> q = sys.select("select sid, serial# as serial from v$session where username = %v", user.upr());
+        for (int i = 0; i < q.sid.size(); ++i) {
+            try {
+                sys.exec(sprintf("alter system kill session '%d,%d' immediate", q.sid[i], q.serial[i]));
+            } catch (hash<ExceptionInfo> ex) {
+                # ORA-00030: the session ended in the meantime
+                if (ex.desc !~ /ORA-00030/) {
+                    rethrow;
+                }
+            }
+        }
+        sys.exec(sprintf("drop user %s cascade", user));
+    }
+
+    private checkSkip() {
+        if (skip_reason) {
+            testSkip(skip_reason);
+        }
+    }
+
+    #! returns an open connection of the given test user
+    private Datasource getConnection(string user) {
+        Datasource ds(sys_h - ("user", "pass") + {"user": user, "pass": UserPass});
+        ds.open();
+        return ds;
+    }
+
+    #! returns the value of the given object selected by the given user on a new connection (no cached types)
+    private auto selectObject(string user, string expr) {
+        Datasource ds = getConnection(user);
+        on_exit ds.close();
+        hash<auto> row = ds.selectRow(sprintf("select %s as o from dual", expr));
+        # the connection still works
+        assertEq(1, ds.selectRow("select 1 as x from dual").x, user + ": the connection works");
+        return row.o;
+    }
+
+    #! returns the exception raised by the select, or nothing if it succeeded
+    private *hash<ExceptionInfo> getError(Datasource ds, string sql, auto arg) {
+        try {
+            ds.selectRow(sql, arg);
+        } catch (hash<ExceptionInfo> ex) {
+            return ex;
+        }
+    }
+
+    #! returns the expression of an outer type of the owner with the inner value
+    private string outerExpr(string outer, string inner) {
+        return sprintf("%s.%s(%s.%s(1, 'abc'))", owner, outer, owner, inner);
+    }
+
+    noSameName() {
+        checkSkip();
+        assertEq({"I": InnerValue}, selectObject(other, outerExpr("outer_a", "inner_a")));
+    }
+
+    differentSameName() {
+        checkSkip();
+        assertEq({"I": InnerValue}, selectObject(other, outerExpr("outer_b", "inner_b")));
+        # the other user's own type is still its own
+        assertEq({"D": 2026-01-02}, selectObject(other, "inner_b(date '2026-01-02')"));
+    }
+
+    collectionSameName() {
+        checkSkip();
+        assertEq((InnerValue, InnerValue + {"N": 2}),
+            selectObject(other, sprintf("%s.tab_b(%s.inner_b(1, 'abc'), %s.inner_b(2, 'abc'))", owner, owner,
+                owner)));
+    }
+
+    ownerCase() {
+        checkSkip();
+        assertEq({"I": InnerValue}, selectObject(owner, "outer_a(inner_a(1, 'abc'))"));
+        assertEq({"I": InnerValue}, selectObject(owner, "outer_b(inner_b(1, 'abc'))"));
+        assertEq({"I": InnerValue}, selectObject(owner, outerExpr("outer_b", "inner_b")));
+    }
+
+    quotedName() {
+        checkSkip();
+        string expr = sprintf("%s.outer_q(%s.\"inner_q\"(1, 'abc'))", owner, owner);
+        assertEq({"I": InnerValue}, selectObject(owner, expr));
+        assertEq({"I": InnerValue}, selectObject(other, expr));
+    }
+
+    unresolvable() {
+        checkSkip();
+        Datasource ds = getConnection(other);
+        on_exit ds.close();
+        string sql = sprintf("select %s.make_d() as o from dual", owner);
+        # the select is refused the same way on each attempt
+        for (int i = 0; i < 2; ++i) {
+            *hash<ExceptionInfo> ex = getError(ds, sql);
+            assertEq("ORACLE-OCI-ERROR", ex.err, sprintf("attempt %d", i + 1));
+            assertRegex("^ORA-[0-9]+", ex.desc ?? "", sprintf("attempt %d: the server's error", i + 1));
+        }
+        # the connection still works
+        assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works");
+    }
+
+    #! a failed description leaves no description behind that refers to it
+    unresolvableCycle() {
+        checkSkip();
+        Datasource ds = getConnection(other);
+        on_exit ds.close();
+        # the first select fails on INNER_M after M2_T was described as an attribute of M1_T; M2_T must fail the
+        # same way afterwards on this connection, and not be found as a description that refers to the failed one
+        foreach string func in (("make_m1", "make_m2", "make_m1")) {
+            *hash<ExceptionInfo> ex = getError(ds, sprintf("select %s.%s() as o from dual", owner, func));
+            assertEq("ORACLE-OCI-ERROR", ex.err, func);
+        }
+        assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works");
+    }
+
+    topLevelQuoted() {
+        checkSkip();
+        string expr = sprintf("%s.\"inner_q\"(1, 'abc')", owner);
+        assertEq(InnerValue, selectObject(owner, expr));
+        assertEq(InnerValue, selectObject(other, expr));
+    }
+
+    #! the descriptions of a connection are kept apart by their schema and exact name
+    sameConnection() {
+        checkSkip();
+        Datasource ds = getConnection(other);
+        on_exit ds.close();
+        date d = 2026-01-02;
+        # twice, so that the second round uses the descriptions that the connection already has
+        for (int i = 0; i < 2; ++i) {
+            assertEq({"o": {"D": d}}, ds.selectRow("select inner_b(date '2026-01-02') as o from dual"));
+            assertEq({"o": {"I": InnerValue}},
+                ds.selectRow(sprintf("select %s as o from dual", outerExpr("outer_b", "inner_b"))));
+            assertEq({"o": {"D": d}}, ds.selectRow(sprintf("select %s.inner_q(date '2026-01-02') as o from dual",
+                owner)));
+            assertEq({"o": InnerValue}, ds.selectRow(sprintf("select %s.\"inner_q\"(1, 'abc') as o from dual",
+                owner)));
+        }
+    }
+
+    resolvableCycle() {
+        checkSkip();
+        auto v = selectObject(other, sprintf("%s.cyc1_t(null, 5)", owner));
+        assertEq(5, v.N);
+    }
+
+    longAttributeName() {
+        checkSkip();
+        Datasource ds = getConnection(other);
+        on_exit ds.close();
+        *hash<ExceptionInfo> ex = getError(ds, sprintf("select %s.make_l() as o from dual", owner));
+        assertEq("ORACLE-OCI-ERROR", ex.err);
+        assertRegex("longer than the supported maximum", ex.desc ?? "");
+        assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works");
+    }
+
+    thirdSchema() {
+        checkSkip();
+        assertEq({"I": InnerValue}, selectObject(other, sprintf("%s.outer_c(%s.inner_c(1, 'abc'))", owner, third)));
+    }
+
+    deepChain() {
+        checkSkip();
+        auto v = selectObject(other, sprintf("%s.ch_%d(null, 7)", owner, ShallowChain));
+        assertEq(7, v.N, "a chain within the limit");
+
+        Datasource ds = getConnection(other);
+        on_exit ds.close();
+        string sql = sprintf("select %s.ch_%d(null, 7) as o from dual", owner, DeepChain);
+        for (int i = 0; i < 2; ++i) {
+            *hash<ExceptionInfo> ex = getError(ds, sql);
+            assertEq("ORACLE-OCI-ERROR", ex.err, sprintf("attempt %d", i + 1));
+            assertRegex("nested too deeply", ex.desc ?? "", sprintf("attempt %d: the reason", i + 1));
+        }
+        assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works");
+
+        # the limit itself
+        v = selectObject(other, sprintf("%s.ch_%d(null, 7)", owner, MaxChain));
+        assertEq(7, v.N, "the longest chain");
+        Datasource ds1 = getConnection(other);
+        on_exit ds1.close();
+        *hash<ExceptionInfo> ex = getError(ds1, sprintf("select %s.ch_%d(null, 7) as o from dual", owner,
+            MaxChain + 1));
+        assertEq("ORACLE-OCI-ERROR", ex.err, "one level more than the longest chain");
+        assertRegex("nested too deeply", ex.desc ?? "", "one level more than the longest chain: the reason");
+    }
+
+    #! a chain is refused also when a part of it was already described on the connection
+    deepChainCached() {
+        checkSkip();
+        Datasource ds = getConnection(other);
+        on_exit ds.close();
+        hash<auto> row = ds.selectRow(sprintf("select %s.bv_%d(null, 7) as o from dual", owner, CachedChain));
+        assertEq(7, row.o.N, "the part of the chain");
+        for (int i = 0; i < 2; ++i) {
+            *hash<ExceptionInfo> ex = getError(ds, sprintf("select %s.bv_%d(null, 7) as o from dual", owner,
+                DeepChain));
+            assertEq("ORACLE-OCI-ERROR", ex.err, sprintf("attempt %d", i + 1));
+            assertRegex("nested too deeply", ex.desc ?? "", sprintf("attempt %d: the reason", i + 1));
+        }
+        row = ds.selectRow(sprintf("select %s.bv_%d(null, 8) as o from dual", owner, CachedChain));
+        assertEq(8, row.o.N, "the described part still works");
+
+        # the exact limit on top of the described part of the chain
+        row = ds.selectRow(sprintf("select %s.bv_%d(null, 9) as o from dual", owner, MaxChain));
+        assertEq(9, row.o.N, "the longest chain");
+        *hash<ExceptionInfo> ex = getError(ds, sprintf("select %s.bv_%d(null, 7) as o from dual", owner,
+            MaxChain + 1));
+        assertEq("ORACLE-OCI-ERROR", ex.err, "one level more than the longest chain");
+        assertRegex("nested too deeply", ex.desc ?? "", "one level more than the longest chain: the reason");
+    }
+
+    errorMasksUser() {
+        checkSkip();
+        Datasource ds = getConnection(owner);
+        on_exit ds.close();
+        *hash<ExceptionInfo> ex = getError(ds, sprintf("select ch_%d(null, 7) as o from dual", DeepChain));
+        assertEq("ORACLE-OCI-ERROR", ex.err);
+        assertEq(-1, (ex.desc ?? owner).upr().find(owner), "the user is not in the message");
+
+        # the error for a collection element of an unsupported type
+        ex = getError(ds, "select raw_tab(hextoraw('01020304')) as o from dual");
+        assertEq("FETCH-NTY-ERROR", ex.err, "collection");
+        assertEq(-1, (ex.desc ?? owner).upr().find(owner), "collection: the user is not in the message");
+    }
+
+    #! a statement whose description failed never returns the columns that were described before the error
+    statementRetry() {
+        checkSkip();
+        Datasource ds = getConnection(other);
+        on_exit ds.close();
+        SQLStatement stmt(ds);
+        on_exit {
+            stmt.close();
+            ds.rollback();
+        }
+        stmt.prepare(sprintf("select 1 as a, %s.make_d() as b, 3 as c from dual", owner));
+        for (int i = 0; i < 3; ++i) {
+            *hash<auto> row;
+            *string err;
+            try {
+                if (stmt.next()) {
+                    row = stmt.fetchRow();
+                }
+            } catch (hash<ExceptionInfo> ex) {
+                err = ex.err;
+            }
+            assertEq("ORACLE-OCI-ERROR", err, sprintf("attempt %d: the error", i + 1));
+            assertEq(NOTHING, row, sprintf("attempt %d: no row", i + 1));
+        }
+    }
+
+    backReferences() {
+        checkSkip();
+        foreach string type in (("self_t", "hub_t")) {
+            string nulls = (map "null", xrange(BackRefs)).join(", ");
+            auto v = selectObject(other, sprintf("%s.%s(4, %s)", owner, type, nulls));
+            assertEq(4, v.N, type);
+        }
+    }
+
+    byValueChain() {
+        checkSkip();
+        auto v = selectObject(other, sprintf("%s.bv_%d(null, 7)", owner, MaxChain));
+        assertEq(7, v.N, "the longest chain");
+        Datasource ds = getConnection(other);
+        on_exit ds.close();
+        *hash<ExceptionInfo> ex = getError(ds, sprintf("select %s.bv_%d(null, 7) as o from dual", owner,
+            MaxChain + 1));
+        assertEq("ORACLE-OCI-ERROR", ex.err, "one level more than the longest chain");
+        assertRegex("nested too deeply", ex.desc ?? "", "one level more: the reason");
+    }
+
+    #! the result does not depend on which type of the chain is described first on a connection
+    mixedChain() {
+        checkSkip();
+        string start = sprintf("select %s.mv_t(null, null, 7) as o from dual", owner);
+        string end = sprintf("select %s.mu_%d(null, 7) as o from dual", owner, MixedChain);
+        foreach list<string> order in (((start, end), (end, start))) {
+            Datasource ds = getConnection(other);
+            on_exit ds.close();
+            foreach string sql in (order) {
+                *hash<ExceptionInfo> ex = getError(ds, sql);
+                assertEq("ORACLE-OCI-ERROR", ex.err, sql);
+                assertRegex("nested too deeply", ex.desc ?? "", sql + ": the reason");
+            }
+            assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works");
+        }
+    }
+
+    #! the limit holds when the chain is described in steps, each of which is short
+    collectionChain() {
+        checkSkip();
+        Datasource ds = getConnection(other);
+        on_exit ds.close();
+        foreach int step in ((20, 40, MaxCollChain)) {
+            hash<auto> row = ds.selectRow(sprintf("select %s.co_%d(null, %d) as o from dual", owner, step, step));
+            assertEq(step, row.o.N, sprintf("a chain of %d", step));
+        }
+        for (int i = 0; i < 2; ++i) {
+            *hash<ExceptionInfo> ex = getError(ds, sprintf("select %s.co_%d(null, 7) as o from dual", owner,
+                CollChainTooDeep));
+            assertEq("ORACLE-OCI-ERROR", ex.err, sprintf("attempt %d", i + 1));
+            assertRegex("nested too deeply", ex.desc ?? "", sprintf("attempt %d: the reason", i + 1));
+        }
+        assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works");
+    }
+
+    attributeAfterObject() {
+        checkSkip();
+        assertEq({"I": InnerValue, "Z": 9},
+            selectObject(other, sprintf("%s.after_a(%s.inner_a(1, 'abc'), 9)", owner, owner)));
+    }
+
+    unsupportedType() {
+        checkSkip();
+        Datasource ds = getConnection(owner);
+        on_exit ds.close();
+        *hash<ExceptionInfo> ex = getError(ds, "select raw_obj(hextoraw('01020304')) as o from dual");
+        assertEq("FETCH-NTY-ERROR", ex.err, "fetch");
+        assertRegex("unsupported", ex.desc ?? "", "fetch: the reason");
+        ex = getError(ds, "select %v as o from dual", bindOracleCollection("RAW_TAB", (binary("ab"),)));
+        assertEq("BIND-COLLECTION-ERROR", ex.err, "bind");
+        assertRegex("unsupported", ex.desc ?? "", "bind: the reason");
+        # the connection still works
+        assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works");
+    }
+}

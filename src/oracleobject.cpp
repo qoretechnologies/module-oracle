@@ -6,7 +6,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -133,9 +133,16 @@ OCI_Object* objPlaceholderQore(QoreOracleConnection * conn, const char * tname, 
             xsink->raiseException("ORACLE-OBJECT-ERROR", "could not get type info for object type '%s'", tname);
         return nullptr;
     }
+    return objPlaceholderQore(conn, info, tname, xsink);
+}
+
+OCI_Object* objPlaceholderQore(QoreOracleConnection * conn, OCI_TypeInfo * info, const char * tname,
+        ExceptionSink *xsink) {
+    assert(info);
     OCI_Object * obj = OCI_ObjectCreate2(&conn->ocilib, conn->ocilib_cn, info, xsink);
-    if (!obj && !*xsink)
+    if (!obj && !*xsink) {
         xsink->raiseException("ORACLE-OBJECT-ERROR", "could not create placeholder buffer for object type '%s'", tname);
+    }
     return obj;
 }
 
@@ -936,7 +943,8 @@ QoreHashNode* objToQore(QoreOracleConnection* conn, OCI_Object* obj, ExceptionSi
                 break;
 
             default:
-                xsink->raiseException("FETCH-NTY-ERROR", "Object of type %s.%s unknown datatype to fetch as an attribute (unsupported): %s", get_typinf_schema(obj), get_typinf_name(obj), col->typinf->name);
+                // only the columns of named types have type information
+                xsink->raiseException("FETCH-NTY-ERROR", "Object of type %s unknown datatype to fetch as an attribute (unsupported): attribute '%s' (type code %d)", get_typinf_name(obj), cname, (int)col->ocode);
                 return nullptr;
         } // switch
     }
@@ -1340,7 +1348,8 @@ OCI_Coll* collBindQore(QoreOracleConnection * d, const QoreHashNode * h, Excepti
          }
 
          default:
-            xsink->raiseException("BIND-COLLECTION-ERROR", "unknown datatype to bind as an attribute (unsupported): %s", col->typinf->name);
+            // only the columns of named types have type information
+            xsink->raiseException("BIND-COLLECTION-ERROR", "unknown datatype to bind as an element of collection '%s' (unsupported): type code %d", tname, (int)col->ocode);
             return 0;
       } // switch
 
@@ -1627,7 +1636,7 @@ QoreListNode* collToQore(QoreOracleConnection* conn, OCI_Coll* obj, ExceptionSin
                 break;
 
             default:
-                xsink->raiseException("FETCH-NTY-ERROR", "Collection %s.%s unknown datatype to fetch as an attribute: %d (define SQLT_...)", get_typinf_schema(obj), get_typinf_name(obj), col->ocode);
+                xsink->raiseException("FETCH-NTY-ERROR", "Collection %s unknown datatype to fetch as an attribute: %d (define SQLT_...)", get_typinf_name(obj), col->ocode);
                 return nullptr;
         } // switch
 
@@ -1644,8 +1653,15 @@ OCI_Coll* collPlaceholderQore(QoreOracleConnection *conn, const char * tname, Ex
             xsink->raiseException("PLACEHOLDER-ORACLE-COLLECTION-ERROR", "No type '%s' defined in the DB", tname);
         return nullptr;
     }
+    return collPlaceholderQore(conn, info, tname, xsink);
+}
+
+OCI_Coll* collPlaceholderQore(QoreOracleConnection *conn, OCI_TypeInfo * info, const char * tname,
+        ExceptionSink *xsink) {
+    assert(info);
     OCI_Coll* obj = OCI_CollCreate2(&conn->ocilib, info, xsink);
-    if (!obj && !*xsink)
+    if (!obj && !*xsink) {
         xsink->raiseException("ORACLE-COLLECTION-ERROR", "could not create placeholder buffer for object type '%s'", tname);
+    }
     return obj;
 }
