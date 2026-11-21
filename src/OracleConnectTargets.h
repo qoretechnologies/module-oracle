@@ -617,14 +617,15 @@ static inline bool resolve_alias(const std::string& alias, Param& root, std::str
                     std::string v = upper(e.value);
                     size_t b = v.find_first_not_of("( \t");
                     if (b == std::string::npos || v.compare(b, 8, "TNSNAMES") != 0) {
+                        // the messages do not name the alias, which is the datasource's database name
                         err = "the naming methods in '" + f + "' (NAMES.DIRECTORY_PATH = " + e.value + ") do not "
-                            "resolve the TNS alias '" + alias + "' from tnsnames.ora first";
+                            "resolve the TNS alias from tnsnames.ora first";
                         return false;
                     }
                 } else if (n == "NAMES.DEFAULT_DOMAIN" && alias.find('.') == std::string::npos
                         && !trim(e.value).empty()) {
-                    err = "'" + f + "' sets NAMES.DEFAULT_DOMAIN, with which the client looks up '" + alias + "."
-                        + trim(e.value) + "' instead of the TNS alias '" + alias + "'";
+                    err = "'" + f + "' sets NAMES.DEFAULT_DOMAIN, with which the client looks up the TNS alias with "
+                        "the domain '" + trim(e.value) + "' appended instead of the TNS alias";
                     return false;
                 }
             }
@@ -640,18 +641,18 @@ static inline bool resolve_alias(const std::string& alias, Param& root, std::str
         }
     }
     if (defs.empty()) {
-        err = "the TNS alias '" + alias + "' is not defined in any tnsnames.ora that the Oracle client reads";
+        err = "the TNS alias is not defined in any tnsnames.ora that the Oracle client reads";
         return false;
     }
     for (size_t i = 1; i < defs.size(); ++i) {
         if (normalize(defs[i]) != normalize(defs[0])) {
-            err = "the TNS alias '" + alias + "' has different definitions in the tnsnames.ora files that the "
+            err = "the TNS alias has different definitions in the tnsnames.ora files that the "
                 "Oracle client reads";
             return false;
         }
     }
     if (!parse_descriptor(defs[0], root, err)) {
-        err = "the TNS alias '" + alias + "': " + err;
+        err = "the TNS alias: " + err;
         return false;
     }
     return true;

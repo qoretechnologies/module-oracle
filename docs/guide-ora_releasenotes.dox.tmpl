@@ -5,8 +5,20 @@
     @tableofcontents
 
     @section oracle3_4_1 oracle Driver Version 3.4.1
+    - <b>Security</b>: the driver's exceptions no longer show the connection's user name, password or database name:
+      the driver's own error descriptions no longer start with <tt>user\@db</tt>, and the user name, password and
+      database values (including the service, SID and instance names of an Easy Connect string, a connect descriptor or the
+      definition of a TNS alias) are masked as \c **** in the messages of the Oracle client and server, which can
+      name them (for example an unknown service or TNS alias, or the user as the schema of an object); the \c ORA-
+      code and the rest of the message are kept.  The password is masked only if it is unlikely to be text of a
+      message template (at least 8 characters, with letters and digits in one run, and not shaped like a message
+      code), as masking template text would show the password.
+      The sandbox's TNS alias errors no longer name the alias.  See
+      @ref oracle_connection_values for how the values are matched and for the limits
+      (<a href="https://github.com/qoretechnologies/qore/issues/6991">issue 6991</a>)
     - fixed a memory leak when binding a named type (an object or a collection) that cannot be found: the type
       description that could not be made was not freed
+      (<a href="https://github.com/qoretechnologies/qore/issues/7026">issue 7026</a>)
     - <b>Security</b>: the driver reports the destinations of its connections, so that code under a sandbox that
       restricts the network can connect where the policy of the sandbox allows, and connects only to the checked
       addresses; a connection whose destinations cannot be determined exactly (an unresolvable TNS alias, \c TCPS) is
