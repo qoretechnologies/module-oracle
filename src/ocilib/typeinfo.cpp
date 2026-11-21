@@ -48,9 +48,13 @@ boolean OCI_TypeInfoClose(OCI_TypeInfo *typinf)
 
     OCI_CHECK(typinf == NULL, FALSE);
 
-    for (i=0; i < typinf->nb_cols; i++)
+    // the columns are not allocated if the description could not be made
+    if (typinf->cols != NULL)
     {
-        OCI_FREE(typinf->cols[i].name);
+        for (i=0; i < typinf->nb_cols; i++)
+        {
+            OCI_FREE(typinf->cols[i].name);
+        }
     }
 
     OCI_FREE(typinf->cols);

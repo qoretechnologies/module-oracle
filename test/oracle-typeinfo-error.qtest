@@ -64,6 +64,16 @@ class OracleTypeInfoErrorTest inherits QUnit::Test {
             testSkip(sprintf("the Oracle server is not available: %s: %s", ex.err, ex.desc));
         }
         on_exit ds.close();
+        # a type left by an earlier run with the same process ID is dropped
+        try {
+            ds.exec("drop type " + type_name);
+        } catch (hash<ExceptionInfo> ex) {
+            # ORA-04043: the type does not exist
+            if (ex.desc !~ /ORA-04043/) {
+                rethrow;
+            }
+        }
+        ds.commit();
         # every bind looks the type up again, as the description that could not be made is not kept
         for (int i = 0; i < 3; ++i) {
             hash<ExceptionInfo> ex = bindError(ds, bindOracleObject(type_name, {"A": 1}));
