@@ -5,7 +5,10 @@ set -x
 
 ENV_FILE=/tmp/env.sh
 
-. ${ENV_FILE}
+# the environment file holds credentials: see ci_env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/ci_env.sh"
+
+ci_source_env "${ENV_FILE}"
 
 # setup MODULE_SRC_DIR env var
 cwd=`pwd`
@@ -21,7 +24,7 @@ echo "export MODULE_SRC_DIR=${MODULE_SRC_DIR}" >> ${ENV_FILE}
 echo "export QORE_UID=1000" >> ${ENV_FILE}
 echo "export QORE_GID=1000" >> ${ENV_FILE}
 
-. ${ENV_FILE}
+ci_source_env "${ENV_FILE}"
 
 export MAKE_JOBS=4
 

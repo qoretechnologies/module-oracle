@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# the environment file holds credentials: see ci_env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/ci_env.sh"
+
 if [ -n "$DOCKER_ORACLE" ]; then
     # default PDB for gvenzl/oracle-free image
     if [ -z "$ORACLE_PDB" ]; then
@@ -18,7 +21,8 @@ if [ -n "$DOCKER_ORACLE" ]; then
   )
 )" >> /usr/lib/oracle/tnsnames.ora
 
-    # setup environment
+    # setup environment; everything from here on handles credentials, so it is not traced
+    { init_oracle_flags=$-; set +x; } 2>/dev/null
     echo export ORACLE_SID=FREE >> /tmp/env.sh
     echo export ORACLE_PDB=${ORACLE_PDB} >> /tmp/env.sh
     echo export ORACLE_PWD=qore >> /tmp/env.sh
@@ -26,7 +30,7 @@ if [ -n "$DOCKER_ORACLE" ]; then
     echo export QORE_DB_CONNSTR_ORACLE_SYS=oracle:system/qore@oracle >> /tmp/env.sh
     echo export QORE_DB_CONNSTR_ORACLE=oracle:qore/qore@oracle >> /tmp/env.sh
 
-    . /tmp/env.sh
+    ci_source_env /tmp/env.sh
     set +e
     . "$(dirname "$0")/oracle_wait.sh"
     # a connection attempt to the PDB as SYSTEM: the readiness signal of the service
@@ -59,11 +63,11 @@ ds.commit();
     # otherwise every test reports an unrelated connection error instead of the real cause
     out=`qore -ne "Datasource d(\"${QORE_DB_CONNSTR_ORACLE}\"); auto x=d.getServerVersion();" 2>&1`
     if [ $? != 0 ]; then
-        echo "ERROR: cannot connect to the Oracle DB with ${QORE_DB_CONNSTR_ORACLE}:"
+        echo "ERROR: cannot connect to the Oracle DB as the test user:"
         echo "$out"
         exit 1
     fi
-    echo "Oracle DB ready; verified the test connection with ${QORE_DB_CONNSTR_ORACLE}"
+    echo "Oracle DB ready; verified the test connection as the test user"
 else
     echo "rippy =
 (DESCRIPTION =
@@ -75,7 +79,9 @@ else
   )
 )" >> /usr/lib/oracle/tnsnames.ora
 
-    . /tmp/env.sh
+    # everything from here on handles credentials, so it is not traced
+    { init_oracle_flags=$-; set +x; } 2>/dev/null
+    ci_source_env /tmp/env.sh
 
     # setup new env vars
     export ORACLE_USER=qore_test_`qore -lUtil -ne 'printf("%s", get_random_string());'`
@@ -89,4 +95,10 @@ else
     qore -ne "Datasource ds(\"oracle:system/qore@rippy%rippy:1521\"); ds.exec(\"create user ${ORACLE_USER} identified by qore\"); ds.exec(\"grant create session, create procedure, create sequence, create table, create trigger, create type, create view, unlimited tablespace to ${ORACLE_USER}\"); ds.exec(\"grant execute on dbms_aqadm to ${ORACLE_USER}\"); ds.exec(\"grant execute on dbms_aq to ${ORACLE_USER}\"); ds.commit();"
     echo created oracle user ${ORACLE_USER}
 fi
+# restore the tracing state of the caller
+{
+    case $init_oracle_flags in
+        *x*) set -x ;;
+    esac
+} 2>/dev/null
 set -e
