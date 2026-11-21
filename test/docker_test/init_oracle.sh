@@ -40,7 +40,7 @@ if [ -n "$DOCKER_ORACLE" ]; then
     echo "Waiting for Oracle DB to start."
     if ! oracle_wait_for_db probe_sys 60 10; then
         echo "aborting the build; last error from the DB connection attempt:"
-        echo "$ORACLE_WAIT_OUT"
+        oracle_error_codes "$ORACLE_WAIT_OUT" "(no error code in the output)"
         exit 1
     fi
     echo "Creating the test user..."
@@ -55,7 +55,7 @@ ds.commit();
     if [ $? != 0 ]; then
         # not necessarily fatal; the objects may already exist when run against an existing DB
         echo "warning: error creating the Oracle test user:"
-        echo "$out"
+        oracle_error_codes "$out" "(no error code in the output)"
     else
         echo "Oracle test user created."
     fi
@@ -64,7 +64,7 @@ ds.commit();
     out=`qore -ne "Datasource d(\"${QORE_DB_CONNSTR_ORACLE}\"); auto x=d.getServerVersion();" 2>&1`
     if [ $? != 0 ]; then
         echo "ERROR: cannot connect to the Oracle DB as the test user:"
-        echo "$out"
+        oracle_error_codes "$out" "(no error code in the output)"
         exit 1
     fi
     echo "Oracle DB ready; verified the test connection as the test user"

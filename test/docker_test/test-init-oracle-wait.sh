@@ -89,4 +89,35 @@ scenario "a listener gone once at the deadline" 2 3 2 ORA-12514 ORA-12514 ORA-12
 scenario "a listener gone twice at the deadline" 1 3 2 ORA-12514 ORA-12541 ORA-12541
 scenario "an error that is not a start-up error" 3 2 60 ORA-12541 ORA-28000
 scenario "an attempt without an Oracle error" 3 1 60 "x"
+
+# only the codes of a failed attempt are reported: the rest of its output can hold the connection string
+fake_secret=FAKE-SENTINEL-NOT-A-CREDENTIAL
+check_codes() {
+    local got
+    got=$(oracle_error_codes "$2" none)
+    if [ "$got" != "$1" ]; then
+        echo "FAIL: error codes: expected '$1', got another result"
+        fail=1
+    else
+        echo "ok: error codes -> $1"
+    fi
+}
+check_codes DATASOURCE-PARSE-ERROR "unhandled exception
+DATASOURCE-PARSE-ERROR: missing database name in 'oracle:u/$fake_secret'"
+check_codes "DBI:ORACLE:OCI-ERROR ORA-12154" "DBI:ORACLE:OCI-ERROR: $fake_secret@db: logon: ORA-12154: cannot connect"
+check_codes "ORA-00001 ORA-12154" "ORA-12154: one ORA-00001 two ORA-12154"
+check_codes none "XORA-00001 ORA-00001X"
+check_codes none "oracle:u/$fake_secret@db"
+leak_probe() {
+    printf "DATASOURCE-PARSE-ERROR: missing database name in 'oracle:u/%s'\n" "$fake_secret"
+    return 1
+}
+oracle_wait_for_db leak_probe 1 0 > "$work/out" 2>&1
+rc=$?
+if [ $rc != 3 ] || grep -q -F "$fake_secret" "$work/out" || ! grep -q DATASOURCE-PARSE-ERROR "$work/out"; then
+    echo "FAIL: the log of a failed attempt: status $rc, or it has the output instead of the code"
+    fail=1
+else
+    echo "ok: the log of a failed attempt has only its code"
+fi
 exit $fail
