@@ -1,0 +1,85 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+/*  oracle-typeinfo-error.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
+
+    Tests binding a named type that cannot be found: each bind raises the error, the connection and its cache of
+    type descriptions still work, and a type created later can be bound.  The type description that could not be
+    made was not freed (valgrind showed it lost on every bind).
+
+    Needs QORE_DB_CONNSTR_ORACLE for a user that can create types; the cases are skipped with the reason otherwise.
+*/
+
+%modern
+
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires oracle
+
+%exec-class OracleTypeInfoErrorTest
+
+class OracleTypeInfoErrorTest inherits QUnit::Test {
+    private {
+        *string connstr;
+        #! the type, unique for the run
+        string type_name;
+        #! true if the type was created
+        bool type_created;
+    }
+
+    constructor() : QUnit::Test("oracle type info errors", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE;
+        type_name = sprintf("QORE_TINFO_%d_T", getpid());
+        addTestCase("binding a named type that cannot be found", \missingType());
+        set_return_value(main());
+    }
+
+    globalTearDown() {
+        if (type_created) {
+            Datasource ds(connstr);
+            on_exit ds.rollback();
+            ds.exec("drop type " + type_name);
+            ds.commit();
+        }
+    }
+
+    #! returns the exception raised by the bind
+    private hash<ExceptionInfo> bindError(Datasource ds, auto arg) {
+        try {
+            ds.select("select %v from dual", arg);
+        } catch (hash<ExceptionInfo> ex) {
+            return ex;
+        }
+        throw "TEST-ERROR", "the bind succeeded";
+    }
+
+    missingType() {
+        if (!connstr) {
+            testSkip("QORE_DB_CONNSTR_ORACLE not set");
+        }
+        Datasource ds(connstr);
+        try {
+            ds.open();
+        } catch (hash<ExceptionInfo> ex) {
+            testSkip(sprintf("the Oracle server is not available: %s: %s", ex.err, ex.desc));
+        }
+        on_exit ds.close();
+        # every bind looks the type up again, as the description that could not be made is not kept
+        for (int i = 0; i < 3; ++i) {
+            hash<ExceptionInfo> ex = bindError(ds, bindOracleObject(type_name, {"A": 1}));
+            assertEq("ORACLE-OCI-ERROR", ex.err, "object " + i);
+            assertRegex("ORA-22303", ex.desc, "object " + i);
+            ex = bindError(ds, bindOracleCollection(type_name, (1,)));
+            assertEq("ORACLE-OCI-ERROR", ex.err, "collection " + i);
+            assertRegex("ORA-22303", ex.desc, "collection " + i);
+        }
+        assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works after the errors");
+
+        # the type can be bound once it exists
+        ds.exec(sprintf("create type %s as object (a number)", type_name));
+        type_created = True;
+        ds.commit();
+        hash<auto> row = ds.selectRow("select %v as o from dual", bindOracleObject(type_name, {"A": 42}));
+        assertEq(42, row.o.A, "the type created after the errors is bound");
+    }
+}

@@ -5,6 +5,8 @@
     @tableofcontents
 
     @section oracle3_4_1 oracle Driver Version 3.4.1
+    - fixed a memory leak when binding a named type (an object or a collection) that cannot be found: the type
+      description that could not be made was not freed
     - <b>Security</b>: the driver reports the destinations of its connections, so that code under a sandbox that
       restricts the network can connect where the policy of the sandbox allows, and connects only to the checked
       addresses; a connection whose destinations cannot be determined exactly (an unresolvable TNS alias, \c TCPS) is

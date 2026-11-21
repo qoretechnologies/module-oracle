@@ -398,11 +398,18 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
 
     if (res == FALSE)
     {
-       OCI_TypeInfoFree2(pOCILib, typinf);
-       // delete item from item list
-       if (found == FALSE)
-	  OCI_ListRemove(pOCILib, con->tinfs, item->data);
-       typinf = NULL;
+        // the description that was being made is removed from the list and freed; it has no references yet, so
+        // OCI_TypeInfoFree2() (which frees it when its last reference is released) cannot free it; a description
+        // that was found in the list is kept
+        if (found == FALSE && item != NULL)
+        {
+            OCI_TypeInfo *newinf = (OCI_TypeInfo *) item->data;
+            // frees the list item
+            OCI_ListRemove(pOCILib, con->tinfs, newinf);
+            OCI_TypeInfoClose(newinf);
+            OCI_FREE(newinf);
+        }
+        typinf = NULL;
     }
 
     OCI_RESULT(pOCILib, res);
