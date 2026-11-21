@@ -3,9 +3,14 @@
 
 /*  oracle-typeinfo-error.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
 
-    Tests binding a named type that cannot be found: each bind raises the error, the connection and its cache of
-    type descriptions still work, and a type created later can be bound.  The type description that could not be
-    made was not freed (valgrind showed it lost on every bind).
+    Tests binding a named type that cannot be found: each bind raises the error, and the connection and its cache of
+    type descriptions still work: a type that was described before the errors is still bound.  The type description
+    that could not be made was not freed (valgrind showed it lost on every bind).
+
+    The type that is bound has a name that is never looked up in vain, and the missing type is never created: with
+    Oracle 23.26 (client 23.26.3, servers 23.26.3 and 23.26.4), a type created with a name that was looked up in vain
+    before is often not found afterwards (ORA-22303), by any session of any process.  The names are unique for each
+    run (a container can give each run the same process ID, and a database can outlive the runs).
 
     Needs QORE_DB_CONNSTR_ORACLE for a user that can create types; the cases are skipped with the reason otherwise.
 */
@@ -23,13 +28,18 @@ class OracleTypeInfoErrorTest inherits QUnit::Test {
         *string connstr;
         #! the type, unique for the run
         string type_name;
+        #! a type that does not exist, unique for the run
+        string missing_name;
         #! true if the type was created
         bool type_created;
     }
 
     constructor() : QUnit::Test("oracle type info errors", "1.0", \ARGV) {
         connstr = ENV.QORE_DB_CONNSTR_ORACLE;
-        type_name = sprintf("QORE_TINFO_%d_T", getpid());
+        # at most 30 characters (OCI_SIZE_OBJ_NAME in OCILIB): at most 4 + 7 + 1 + 9 + 2
+        string id = sprintf("%d_%d", getpid(), clock_getmicros() % 1000000000);
+        type_name = sprintf("QTI_%s_T", id);
+        missing_name = sprintf("QTI_%s_M", id);
         addTestCase("binding a named type that cannot be found", \missingType());
         set_return_value(main());
     }
@@ -64,32 +74,26 @@ class OracleTypeInfoErrorTest inherits QUnit::Test {
             testSkip(sprintf("the Oracle server is not available: %s: %s", ex.err, ex.desc));
         }
         on_exit ds.close();
-        # a type left by an earlier run with the same process ID is dropped
-        try {
-            ds.exec("drop type " + type_name);
-        } catch (hash<ExceptionInfo> ex) {
-            # ORA-04043: the type does not exist
-            if (ex.desc !~ /ORA-04043/) {
-                rethrow;
-            }
-        }
+        # the type is created and described (and its description kept) before any lookup fails
+        ds.exec(sprintf("create type %s as object (a number)", type_name));
+        type_created = True;
         ds.commit();
-        # every bind looks the type up again, as the description that could not be made is not kept
+        hash<auto> row = ds.selectRow("select %v as o from dual", bindOracleObject(type_name, {"A": 42}));
+        assertEq(42, row.o.A, "the type is bound before the errors");
+
+        # every bind looks the missing type up again, as the description that could not be made is not kept
         for (int i = 0; i < 3; ++i) {
-            hash<ExceptionInfo> ex = bindError(ds, bindOracleObject(type_name, {"A": 1}));
+            hash<ExceptionInfo> ex = bindError(ds, bindOracleObject(missing_name, {"A": 1}));
             assertEq("ORACLE-OCI-ERROR", ex.err, "object " + i);
             assertRegex("ORA-22303", ex.desc, "object " + i);
-            ex = bindError(ds, bindOracleCollection(type_name, (1,)));
+            ex = bindError(ds, bindOracleCollection(missing_name, (1,)));
             assertEq("ORACLE-OCI-ERROR", ex.err, "collection " + i);
             assertRegex("ORA-22303", ex.desc, "collection " + i);
         }
         assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works after the errors");
 
-        # the type can be bound once it exists
-        ds.exec(sprintf("create type %s as object (a number)", type_name));
-        type_created = True;
-        ds.commit();
-        hash<auto> row = ds.selectRow("select %v as o from dual", bindOracleObject(type_name, {"A": 42}));
-        assertEq(42, row.o.A, "the type created after the errors is bound");
+        # the description kept before the errors is still used: the cache of descriptions is intact
+        row = ds.selectRow("select %v as o from dual", bindOracleObject(type_name, {"A": 7}));
+        assertEq(7, row.o.A, "the type described before the errors is bound after them");
     }
 }
