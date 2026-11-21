@@ -71,7 +71,8 @@ class OracleTypeInfoErrorTest inherits QUnit::Test {
         try {
             ds.open();
         } catch (hash<ExceptionInfo> ex) {
-            testSkip(sprintf("the Oracle server is not available: %s: %s", ex.err, ex.desc));
+            testSkip(sprintf("the Oracle server is not available: %s: %s", ex.err,
+                (ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? "no ORA code"));
         }
         on_exit ds.close();
         # the type is created and described (and its description kept) before any lookup fails

@@ -6,6 +6,7 @@
 #
 # Sources <file> with shell tracing off and restores the caller's tracing state afterwards.  The file is not sourced
 # as part of an AND-OR list, so that "set -e" stays in effect inside it.  Returns the status of the sourced file.
+# The file must set its variables with "export": it runs inside this function, so "declare -x" would make them local.
 ci_source_env() {
     { local ci_source_env_flags=$-; set +x; } 2>/dev/null
     local ci_source_env_status=0

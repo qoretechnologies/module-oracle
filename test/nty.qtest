@@ -524,7 +524,7 @@ class OracleNtyTest inherits Test {
                     db.getDriverName());
             db.open();
         } catch (hash<ExceptionInfo> ex) {
-            printf("Oracle connection failed: %s: %s\n", ex.err, ex.desc);
+            printf("Oracle connection failed: %s: %s\n", ex.err, (ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? "no ORA code");
             delete db;
             # a connection string is configured, so an unreachable DB is an error and not a reason to
             # skip; skipping here would report the test run as successful without a single assertion
@@ -540,7 +540,8 @@ class OracleNtyTest inherits Test {
                 #system("sqlplus " + ora_conn + " < " + dir + "/" + script + " > /dev/null");
             }
         } catch (hash<ExceptionInfo> ex) {
-            printf("error setting up Oracle objects: %s: %s\n", ex.err, ex.desc);
+            printf("error setting up Oracle objects: %s: %s\n", ex.err,
+                (ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? "no ORA code");
             delete db;
             rethrow;
         }

@@ -2,7 +2,6 @@
 
 sub test(string $connstr, string $sql)
 {
-    printf("\n%s\n", $connstr);
     my Datasource $ds($connstr);
     my SQLStatement $s($ds);
     $s.prepare($sql);
