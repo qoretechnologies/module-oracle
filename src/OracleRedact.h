@@ -230,7 +230,7 @@ static inline secret_list_t get_secrets(const char* user, const char* pass, cons
             add_secret(secrets, n, false);
         }
     }
-    // longer values first, so that a value that contains another one is masked whole
+    // longer values first (redact() does not depend on the order; this keeps the list stable for callers)
     std::stable_sort(secrets.begin(), secrets.end(), [](const Secret& a, const Secret& b) {
         return a.value.size() > b.value.size();
     });
@@ -268,7 +268,8 @@ static inline size_t message_code_len(const std::string& text, size_t pos) {
         return 0;
     }
     size_t i = pos;
-    while (i < text.size() && i - pos < 6 && ((text[i] >= 'A' && text[i] <= 'Z') || (text[i] >= 'a' && text[i] <= 'z'))) {
+    while (i < text.size() && i - pos < 6
+            && ((text[i] >= 'A' && text[i] <= 'Z') || (text[i] >= 'a' && text[i] <= 'z'))) {
         ++i;
     }
     if (i - pos < 2 || i - pos > 5 || i >= text.size() || text[i] != '-') {
@@ -305,8 +306,8 @@ static inline bool value_overlaps_code(const std::string& text, size_t pos, size
 
 //! replaces every occurrence of the values in \a text with MASK
 /** Every occurrence of every value is found first, and each run of text covered by one or more occurrences
-    (including values that overlap each other, ex: "foo-bar" and "bar-baz" in "foo-bar-baz") is replaced with one
-    MASK, so that no part of a value remains.
+    (including values that overlap or follow each other, ex: "foo-bar" and "bar-baz" in "foo-bar-baz") is
+    replaced with one MASK, so that no part of a value remains.
 
     @param text the text to redact
     @param secrets the values to mask, from get_secrets()

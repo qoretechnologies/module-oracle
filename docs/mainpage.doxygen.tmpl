@@ -51,7 +51,7 @@
       Easy Connect string or a connect descriptor), or in the definition of the TNS alias that it names (from the
       \c tnsnames.ora files that the Oracle client reads); the parts of a proxy user name (<tt>user[client]</tt>) and
       the name in a quoted user name are matched as well;
-    - values that overlap each other in a message are masked together, as one \c ****;
+    - values that overlap or follow each other directly in a message are masked together, as one \c ****;
     - message codes (for example \c ORA-00942) are kept whole, unless a connection value occurs in one across its
       \c - or past its end (for example a service named \c ERP-20240, which is masked).
 

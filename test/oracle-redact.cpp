@@ -124,7 +124,7 @@ int main() {
         }
     }
 
-    // overlapping values: the longest is masked first
+    // overlapping values: every value is masked whole
     check("abc", "pw", "abcdef", "abcdef abc", "**** ****", "overlapping names");
     check("bar-baz", "pw", "foo-bar", "foo-bar-baz; foo-bar; bar-baz", "****; ****; ****",
         "values that overlap each other");
