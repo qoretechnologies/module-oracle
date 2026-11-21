@@ -22,7 +22,9 @@
     - <b>Security</b>: an over-long object type name or AQ subscription name could overflow a fixed-size buffer; a
       type name whose schema or object part is longer than 30 bytes, or an AQ subscription name longer than 92
       bytes, now raises an \c ORACLE-OCI-ERROR exception, and such a name is no longer cut, which could find another
-      object; these are limits of the driver, below the 128 bytes that Oracle 12.2 and later allow for names
+      object.  The 30-byte limit for the parts of a type name is the driver's, below the 128 bytes that Oracle 12.2
+      and later allow: binding, or selecting a column of, an object type whose schema or type name is longer than 30
+      bytes raises this exception
       (<a href="https://github.com/qoretechnologies/qore/issues/7047">issue 7047</a>)
     - <b>Security</b>: the driver reports the destinations of its connections, so that code under a sandbox that
       restricts the network can connect where the policy of the sandbox allows, and connects only to the checked

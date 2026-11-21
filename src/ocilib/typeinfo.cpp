@@ -141,9 +141,11 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
         if (schema_len > (size_t) OCI_SIZE_OBJ_NAME || name_len > (size_t) OCI_SIZE_OBJ_NAME)
         {
             if (xsink)
-                xsink->raiseException("ORACLE-OCI-ERROR", "the schema name (%d bytes) or the object name "
-                    "(%d bytes) of the given type, table or view name is longer than the supported maximum of "
-                    "%d bytes", (int) schema_len, (int) name_len, (int) OCI_SIZE_OBJ_NAME);
+                xsink->raiseException("ORACLE-OCI-ERROR", "the %s name (%d bytes) of the given type, table or view "
+                    "name is longer than the supported maximum of %d bytes",
+                    schema_len > (size_t) OCI_SIZE_OBJ_NAME ? "schema" : "object",
+                    (int) (schema_len > (size_t) OCI_SIZE_OBJ_NAME ? schema_len : name_len),
+                    (int) OCI_SIZE_OBJ_NAME);
             OCI_RESULT(pOCILib, FALSE);
             return NULL;
         }
