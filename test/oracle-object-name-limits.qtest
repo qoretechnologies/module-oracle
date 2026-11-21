@@ -1,0 +1,188 @@
+#!/usr/bin/env qore
+# -*- mode: qore; indent-tabs-mode: nil -*-
+
+/*  oracle-object-name-limits.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
+
+    Tests object names that are longer than the driver supports (qore#7047): a type name whose schema or object part
+    is longer than 30 bytes, and an AQ subscription name that is longer than 92 bytes, are refused with an
+    exception; they are neither cut (a cut name could be the name of another object) nor copied past the end of a
+    buffer.
+
+    Needs QORE_DB_CONNSTR_ORACLE for a user that can create types; the cases are skipped with the reason otherwise.
+*/
+
+%modern
+
+%prepend-module-path "${SCRIPT_DIR}/../build"
+%requires QUnit
+%requires oracle
+
+%exec-class OracleObjectNameLimitsTest
+
+class LongNameQueue inherits Oracle::AQQueue {
+    constructor(string queue, string type, string conn) : Oracle::AQQueue(queue, type, conn) {
+    }
+
+    nothing onAsyncMessage() {
+    }
+}
+
+class OracleObjectNameLimitsTest inherits QUnit::Test {
+    private {
+        *string connstr;
+        #! unique for the run
+        string id;
+        #! the types that were created, dropped at the end
+        list<string> created;
+    }
+
+    #! the longest schema or object part of a type name that the driver supports
+    const MaxNameLen = 30;
+    #! the longest AQ subscription name that the driver supports ("schema.queue:consumer")
+    const MaxSubscrNameLen = 92;
+    #! the description of the error for a name that is too long
+    const TooLongRx = "longer than the supported maximum";
+
+    constructor() : QUnit::Test("oracle object name limits", "1.0", \ARGV) {
+        connstr = ENV.QORE_DB_CONNSTR_ORACLE;
+        # 11 characters
+        id = sprintf("%03d%08d", getpid() % 1000, clock_getmicros() % 100000000);
+        addTestCase("schema part of a type name", \schemaPart());
+        addTestCase("object part of a type name", \objectPart());
+        addTestCase("AQ subscription name", \subscriptionName());
+        set_return_value(main());
+    }
+
+    globalTearDown() {
+        if (!created) {
+            return;
+        }
+        Datasource ds(connstr);
+        on_exit ds.rollback();
+        foreach string type in (created) {
+            try {
+                ds.exec("drop type " + type);
+            } catch (hash<ExceptionInfo> ex) {
+                # the other types are dropped in any case
+                printf("cannot drop type %s: %s: %s\n", type, ex.err, ex.desc);
+            }
+        }
+        ds.commit();
+    }
+
+    #! returns an open connection, or skips the test case
+    private Datasource getConnection() {
+        if (!connstr) {
+            testSkip("QORE_DB_CONNSTR_ORACLE not set");
+        }
+        Datasource ds(connstr);
+        try {
+            ds.open();
+        } catch (hash<ExceptionInfo> ex) {
+            testSkip(sprintf("the Oracle server is not available: %s: %s", ex.err, ex.desc));
+        }
+        return ds;
+    }
+
+    #! creates an object type with one number attribute "A"
+    private createType(Datasource ds, string name) {
+        ds.exec(sprintf("create type %s as object (a number)", name));
+        created += name;
+        ds.commit();
+    }
+
+    #! returns the exception raised by binding an object and a collection of the given type name
+    private list<hash<ExceptionInfo>> bindErrors(Datasource ds, string type_name) {
+        list<hash<ExceptionInfo>> rv;
+        foreach auto arg in ((bindOracleObject(type_name, {"A": 1}), bindOracleCollection(type_name, (1,)))) {
+            try {
+                ds.select("select %v from dual", arg);
+                rv += cast<hash<ExceptionInfo>>({"err": "NONE", "desc": "the bind succeeded"});
+            } catch (hash<ExceptionInfo> ex) {
+                rv += ex;
+            }
+        }
+        return rv;
+    }
+
+    #! checks the errors of binding the given type name
+    private checkBind(Datasource ds, string type_name, bool too_long, string label) {
+        foreach hash<ExceptionInfo> ex in (bindErrors(ds, type_name)) {
+            string what = label + ($# ? " (collection)" : " (object)");
+            assertEq("ORACLE-OCI-ERROR", ex.err, what);
+            if (too_long) {
+                assertRegex(TooLongRx, ex.desc, what + ": refused as too long");
+            } else {
+                # a name that fits is looked up, and the type does not exist
+                assertRegex("ORA-22303", ex.desc, what + ": looked up");
+            }
+        }
+        # the connection still works
+        assertEq(1, ds.selectRow("select 1 as x from dual").x, label + ": the connection works");
+    }
+
+    schemaPart() {
+        Datasource ds = getConnection();
+        on_exit ds.close();
+        # the longest first
+        foreach int len in ((200, 128, MaxNameLen + 1, MaxNameLen)) {
+            checkBind(ds, strmul("S", len) + ".T" + id, len > MaxNameLen, sprintf("schema of %d bytes", len));
+        }
+    }
+
+    objectPart() {
+        Datasource ds = getConnection();
+        on_exit ds.close();
+        # a type whose name is the first 30 characters of the longer names below: a name that was cut would find it
+        string prefix = "Q" + id;
+        string type30 = prefix + strmul("X", MaxNameLen - prefix.size());
+        createType(ds, type30);
+        hash<auto> row = ds.selectRow("select %v as o from dual", bindOracleObject(type30, {"A": 30}));
+        assertEq(30, row.o.A, "the type with a name of 30 bytes is bound");
+
+        foreach int len in ((MaxNameLen + 1, 128, 200)) {
+            string name = type30 + strmul("X", len - MaxNameLen);
+            checkBind(ds, name, True, sprintf("type name of %d bytes", len));
+            checkBind(ds, "SCHEMA." + name, True, sprintf("type name of %d bytes with a schema", len));
+        }
+        # a missing type with a name of 30 characters is looked up
+        checkBind(ds, prefix + strmul("Y", MaxNameLen - prefix.size()), False, "type name of 30 bytes");
+    }
+
+    subscriptionName() {
+        Datasource ds = getConnection();
+        ds.close();
+        string type = "Q" + id + "_AQ";
+        {
+            Datasource ds2 = getConnection();
+            on_exit ds2.close();
+            createType(ds2, type);
+        }
+        # a name of the maximum length is not refused by the driver (the server can refuse it: the queue does not
+        # exist)
+        {
+            LongNameQueue q(strmul("Q", MaxSubscrNameLen), type, connstr);
+            on_exit delete q;
+            try {
+                q.startSubscription();
+                q.stopSubscription();
+            } catch (hash<ExceptionInfo> ex) {
+                assertFalse(regex(ex.desc, TooLongRx), sprintf("subscription name of %d bytes: %s: %s",
+                    MaxSubscrNameLen, ex.err, ex.desc));
+            }
+        }
+        foreach int len in ((MaxSubscrNameLen + 1, 200)) {
+            # the queue does not need to exist: the name is checked before the subscription is made
+            LongNameQueue q(strmul("Q", len), type, connstr);
+            on_exit delete q;
+            try {
+                q.startSubscription();
+                q.stopSubscription();
+                fail(sprintf("a subscription name of %d bytes was accepted", len));
+            } catch (hash<ExceptionInfo> ex) {
+                assertEq("ORACLE-OCI-ERROR", ex.err, sprintf("subscription name of %d bytes", len));
+                assertRegex(TooLongRx, ex.desc, sprintf("subscription name of %d bytes", len));
+            }
+        }
+    }
+}
