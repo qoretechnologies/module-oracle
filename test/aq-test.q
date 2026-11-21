@@ -6,14 +6,12 @@
 const MSG_COUNT = 5;
 const THREAD_COUNT = 5;
 
-const CONNS = (
-    "qube" : "omquser2/omquser2@qube",
-    "stimpy" : "omquser/omquser@stimpy",
-    "rimmer.local" : "omquser/omquser@xe%oraclexe11:1521",
-    "vladkyne-karen" : "test/test@orcl%192.168.2.107:1521"
-);
-our string conn = CONNS{gethostname()};
-printf("Hostname: %s; Connection: %s\n", gethostname(), conn);
+if (!ENV.QORE_DB_CONNSTR_ORACLE) {
+    stderr.printf("ERROR: QORE_DB_CONNSTR_ORACLE is not set\n");
+    exit(1);
+}
+our string conn = ENV.QORE_DB_CONNSTR_ORACLE;
+printf("Hostname: %s\n", gethostname());
 
 our hash h;
 our Counter c();

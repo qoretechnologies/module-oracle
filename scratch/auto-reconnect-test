@@ -17,13 +17,16 @@
 
 class Script {
     public {
-        const ConnStr = "oracle:omquser/omquser@el7";
-
         string connstr;
     }
 
     constructor() {
-        connstr = ARGV[0] ?? ConnStr;
+        *string conn = ARGV[0] ?? ENV.QORE_DB_CONNSTR_ORACLE;
+        if (!conn) {
+            stderr.printf("ERROR: QORE_DB_CONNSTR_ORACLE is not set\n");
+            exit(1);
+        }
+        connstr = conn;
 
         Datasource ds(connstr);
 

@@ -15,8 +15,9 @@ sub test(string $connstr, string $sql)
     }
 }
 
-test("oracle:omq/omq@xbox", "select rowid, p.* from step_type p");
-#test("pgsql:omq/omq@omq%localhost:5432", "select * from step_type");
-#test("pgsql:omq/omq@omq%localhost:5432", "select count(1) from step_type");
-#test("mysql:omq/omq@omq", "select * from step_type");
+if (!$ENV.QORE_DB_CONNSTR_ORACLE) {
+    stderr.printf("ERROR: QORE_DB_CONNSTR_ORACLE is not set\n");
+    exit(1);
+}
+test($ENV.QORE_DB_CONNSTR_ORACLE, "select rowid, p.* from step_type p");
 
