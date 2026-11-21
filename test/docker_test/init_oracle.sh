@@ -69,31 +69,9 @@ ds.commit();
     fi
     echo "Oracle DB ready; verified the test connection as the test user"
 else
-    echo "rippy =
-(DESCRIPTION =
-  (ADDRESS_LIST =
-    (ADDRESS = (PROTOCOL = TCP)(HOST = rippy)(PORT = 1521))
-  )
-  (CONNECT_DATA =
-    (SERVICE_NAME = rippy)
-  )
-)" >> /usr/lib/oracle/tnsnames.ora
-
-    # everything from here on handles credentials, so it is not traced
-    { init_oracle_flags=$-; set +x; } 2>/dev/null
-    ci_source_env /tmp/env.sh
-
-    # setup new env vars
-    export ORACLE_USER=qore_test_`qore -lUtil -ne 'printf("%s", get_random_string());'`
-    echo unset ORACLE_PDB >> /tmp/env.sh
-    echo export ORACLE_SID=rippy >> /tmp/env.sh
-    echo export ORACLE_PWD=qore >> /tmp/env.sh
-    echo export ORACLE_USER=${ORACLE_USER} >> /tmp/env.sh
-    echo export QORE_DB_CONNSTR_ORACLE=oracle:${ORACLE_USER}/qore@rippy%rippy:1521 >> /tmp/env.sh
-
-    # create user for test
-    qore -ne "Datasource ds(\"oracle:system/qore@rippy%rippy:1521\"); ds.exec(\"create user ${ORACLE_USER} identified by qore\"); ds.exec(\"grant create session, create procedure, create sequence, create table, create trigger, create type, create view, unlimited tablespace to ${ORACLE_USER}\"); ds.exec(\"grant execute on dbms_aqadm to ${ORACLE_USER}\"); ds.exec(\"grant execute on dbms_aq to ${ORACLE_USER}\"); ds.commit();"
-    echo created oracle user ${ORACLE_USER}
+    # only the service container of the CI job is set up here
+    echo "ERROR: DOCKER_ORACLE is not set: this script only sets up the Oracle service container of a CI job; other setups must provide QORE_DB_CONNSTR_ORACLE in the environment and not run this script" >&2
+    exit 1
 fi
 # restore the tracing state of the caller
 {
