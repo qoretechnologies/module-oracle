@@ -7,6 +7,8 @@ ENV_FILE=/tmp/env.sh
 
 # the environment file holds credentials: see ci_env.sh
 . "$(dirname "${BASH_SOURCE[0]}")/ci_env.sh"
+# the helper keeps credentials out of the trace: a failure here fails the job before it is relied on
+"$(dirname "${BASH_SOURCE[0]}")/test-ci-env-trace.sh"
 
 ci_source_env "${ENV_FILE}"
 
