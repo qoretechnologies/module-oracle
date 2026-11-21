@@ -92,7 +92,6 @@ sub start() {
 
 	parse_command_line();
 
-	#my string $connstr = "oracle:omqtest/omqtest@xbox";
     our Datasource $db($connstr);
     $db.open();
 
@@ -176,18 +175,11 @@ sub parse_command_line() {
     }
 	if(!exists $o.iters)
 	{
-		switch (gethostname()) {
-		    case /^quasar/: $connstr = "oracle:omquser/omquser@el7"; break;
-		    case /^quark/: $connstr = "oracle:omquser/omquser@el6"; break;
-		    case /^qube/: $connstr = "oracle:omquser2/omquser2@qube"; break;
-		    case /^el6/:
-		    case /^quark/: $connstr = "oracle:omquser/omquser@el6"; break;
-		    case /^el5/:
-		    case /^manatee/:
-		    case /^xbox/: $connstr = "oracle:omquser/omquser@xbox"; break;
-		    case /^ren/: $connstr = "oracle:omqtest/omqtest@xbox"; break;
-		    default: $connstr = "oracle:omquser/omquser@xbox"; break;
+		if (!$ENV.QORE_DB_CONNSTR_ORACLE) {
+		    stderr.printf("ERROR: QORE_DB_CONNSTR_ORACLE is not set\n");
+		    exit(1);
 		}
+		$connstr = $ENV.QORE_DB_CONNSTR_ORACLE;
 	} else {
 		$connstr = $o.iters;
 	}
