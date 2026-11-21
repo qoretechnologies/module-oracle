@@ -3,9 +3,9 @@
 
 /*  oracle-typeinfo-error.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
 
-    Tests binding a named type that cannot be found: each bind raises the error, and the connection and its cache of
-    type descriptions still work: a type that was described before the errors is still bound.  The type description
-    that could not be made was not freed (valgrind showed it lost on every bind).
+    Tests binding a named type that cannot be found: each bind raises the error, the connection still works, and a
+    type that was described before the errors can still be bound.  The type description that could not be made was
+    not freed (valgrind showed it lost on every bind; the leak and any use of freed memory show only under valgrind).
 
     The type that is bound has a name that is never looked up in vain, and the missing type is never created: with
     Oracle 23.26 (client 23.26.3, servers 23.26.3 and 23.26.4), a type created with a name that was looked up in vain
@@ -92,7 +92,7 @@ class OracleTypeInfoErrorTest inherits QUnit::Test {
         }
         assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works after the errors");
 
-        # the description kept before the errors is still used: the cache of descriptions is intact
+        # the type described before the errors can still be bound
         row = ds.selectRow("select %v as o from dual", bindOracleObject(type_name, {"A": 7}));
         assertEq(7, row.o.A, "the type described before the errors is bound after them");
     }
