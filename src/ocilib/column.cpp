@@ -328,38 +328,80 @@ boolean OCI_ColumnDescribe2(OCI_Library *pOCILib, OCI_Column *col, OCI_Connectio
 
     if (col->ocode == SQLT_NTY || col->ocode == SQLT_REF)
     {
+        /* the type is resolved with its schema and its name exactly as Oracle gives them: without the schema, a
+           type of the same name in the schema of the connection would be found; the names are read with their
+           lengths, as they are not terminated */
+        void *tname   = NULL;
+        void *sname   = NULL;
+        int   tsize   = 0;
+        int   ssize   = 0;
+
         OCI_CALL1Q
         (
             pOCILib, res, con, stmt,
-        
-            OCIAttrGet((dvoid *) param, (ub4) OCI_DTYPE_PARAM, 
-                       (dvoid *) &ostr, (ub4 *) &osize, 
+
+            OCIAttrGet((dvoid *) param, (ub4) OCI_DTYPE_PARAM,
+                       (dvoid *) &tname, (ub4 *) &tsize,
                        (ub4) OCI_ATTR_TYPE_NAME, con->err),
 
 	    xsink
         )
-      
-        if ((res == TRUE) && (ostr != NULL))
-        {   
-            mtext *tmp = (mtext *) OCI_MemAlloc2(pOCILib, OCI_IPC_STRING, sizeof(mtext),
-                                                (size_t)((osize / (int) sizeof(omtext)) + 1),
-                                                TRUE);
-        
-            if (tmp != NULL)
+
+        OCI_CALL1Q
+        (
+            pOCILib, res, con, stmt,
+
+            OCIAttrGet((dvoid *) param, (ub4) OCI_DTYPE_PARAM,
+                       (dvoid *) &sname, (ub4 *) &ssize,
+                       (ub4) OCI_ATTR_SCHEMA_NAME, con->err),
+
+	    xsink
+        )
+
+        if ((res == TRUE) && (tname != NULL) && (tsize > 0) && (sname != NULL) && (ssize > 0))
+        {
+            mtext *tmp_name   = (mtext *) OCI_MemAlloc2(pOCILib, OCI_IPC_STRING, sizeof(mtext),
+                                                       (size_t)((tsize / (int) sizeof(omtext)) + 1),
+                                                       TRUE);
+            mtext *tmp_schema = (mtext *) OCI_MemAlloc2(pOCILib, OCI_IPC_STRING, sizeof(mtext),
+                                                       (size_t)((ssize / (int) sizeof(omtext)) + 1),
+                                                       TRUE);
+
+            if ((tmp_name != NULL) && (tmp_schema != NULL))
             {
-               OCI_CopyString(ostr, tmp, &osize, sizeof(omtext), sizeof(mtext));
-               col->typinf = OCI_TypeInfoGet2(pOCILib, con, tmp, OCI_SCHEMA_TYPE, xsink);
+                /* the sizes are the sizes in bytes of the copies */
+                OCI_CopyString(tname, tmp_name, &tsize, sizeof(omtext), sizeof(mtext));
+                OCI_CopyString(sname, tmp_schema, &ssize, sizeof(omtext), sizeof(mtext));
+
+                col->typinf = OCI_TypeInfoGetExact2(pOCILib, con,
+                                                    tmp_schema, (size_t) ssize / sizeof(mtext),
+                                                    tmp_name, (size_t) tsize / sizeof(mtext), xsink);
             }
 
-            res = (col->typinf != NULL);
-            
-            OCI_FREE(tmp);
+            OCI_FREE(tmp_name);
+            OCI_FREE(tmp_schema);
+        }
+
+        /* the column cannot be used without the description of its type */
+        if (col->typinf == NULL)
+        {
+            if (xsink && !*xsink)
+            {
+                /* the names are not in the message: a schema can be the user of the connection */
+                xsink->raiseException("ORACLE-OCI-ERROR", "the type of column, attribute or element %d could not "
+                    "be resolved", index);
+            }
+            res = FALSE;
         }
     }
 
     if (param != NULL)
     {
-        res = (OCI_SUCCESS == OCIDescriptorFree(param, OCI_DTYPE_PARAM));
+        /* a failure to free the descriptor does not hide an error above */
+        if (OCIDescriptorFree(param, OCI_DTYPE_PARAM) != OCI_SUCCESS)
+        {
+            res = FALSE;
+        }
     }
 
     return res;
@@ -625,6 +667,13 @@ boolean OCI_ColumnMap2(OCI_Library *pOCILib, OCI_Column *col, OCI_Statement *stm
             col->icode   = SQLT_NTY;
             col->bufsize = (ub4) sizeof(void *);
 
+            /* a named type cannot be used without the description of its type */
+            if (col->typinf == NULL)
+            {
+                res = FALSE;
+                break;
+            }
+
             if (col->typinf->tcode == SQLT_NCO)
                 col->type = OCI_CDT_COLLECTION;                    
             else
@@ -637,6 +686,12 @@ boolean OCI_ColumnMap2(OCI_Library *pOCILib, OCI_Column *col, OCI_Statement *stm
             col->icode   = SQLT_REF;
             col->bufsize = (ub4) sizeof(OCIRef *);
             col->type    = OCI_CDT_REF;                    
+
+            /* a reference cannot be used without the description of its type */
+            if (col->typinf == NULL)
+            {
+                res = FALSE;
+            }
 
             break;
 

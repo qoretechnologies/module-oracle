@@ -34,6 +34,11 @@
 
 #include "ocilib_internal.h"
 
+/* the deepest chain of named types that is followed in one description, and the most levels of objects and
+   collections in a type (the code that lays out and decodes values recurses once per level of the type; binding
+   recurses on the bound value instead, so this limit does not apply to it) */
+#define OCI_MAX_TYPE_DEPTH 128
+
 /* ************************************************************************ *
  *                             PRIVATE FUNCTIONS
  * ************************************************************************ */
@@ -80,8 +85,107 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet(OCI_Connection *con, const mtext *name,
 }
 */
 
-OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *con, const mtext *name,
-					unsigned int type, ExceptionSink* xsink)
+/* ------------------------------------------------------------------------ *
+ * OCI_TypeInfoCheckNameLen
+ * ------------------------------------------------------------------------ */
+
+/* the schema and the name must each fit in their buffers; a longer one is refused, not cut, as a cut name could be
+   the name of another object; returns FALSE (with an exception) if one of them is too long */
+static boolean OCI_TypeInfoCheckNameLen(OCI_Library *pOCILib, size_t schema_len, size_t name_len,
+                                        ExceptionSink* xsink)
+{
+    if (schema_len > (size_t) OCI_SIZE_OBJ_NAME || name_len > (size_t) OCI_SIZE_OBJ_NAME)
+    {
+        if (xsink)
+        {
+            xsink->raiseException("ORACLE-OCI-ERROR", "the %s name (%d bytes) of the given type, table or view "
+                "name is longer than the supported maximum of %d bytes",
+                schema_len > (size_t) OCI_SIZE_OBJ_NAME ? "schema" : "object",
+                (int) (schema_len > (size_t) OCI_SIZE_OBJ_NAME ? schema_len : name_len),
+                (int) OCI_SIZE_OBJ_NAME);
+        }
+        OCI_RESULT(pOCILib, FALSE);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/* ------------------------------------------------------------------------ *
+ * OCI_TypeInfoRaiseTooDeep
+ * ------------------------------------------------------------------------ */
+
+/* the names are not in the message, as a schema name can be the user name of the connection */
+static void OCI_TypeInfoRaiseTooDeep(ExceptionSink* xsink)
+{
+    if (xsink)
+    {
+        xsink->raiseException("ORACLE-OCI-ERROR", "a named type is nested too deeply: more than %d levels of named "
+            "types", OCI_MAX_TYPE_DEPTH);
+    }
+}
+
+/* ------------------------------------------------------------------------ *
+ * OCI_TypeInfoCheckLayout
+ * ------------------------------------------------------------------------ */
+
+/* sets the number of levels of objects and collections in a completely described type; returns FALSE if there are
+   more than OCI_MAX_TYPE_DEPTH; references are not followed when values are converted, so they are not counted, and
+   Oracle refuses types that hold themselves other than through a reference (ORA-04055); the level check also bounds
+   this recursion, and refuses such a cycle if one is ever seen */
+static boolean OCI_TypeInfoCheckLayout(OCI_TypeInfo *typinf, unsigned int level)
+{
+    if (typinf->depth != 0)
+    {
+        return TRUE;
+    }
+
+    if (level > OCI_MAX_TYPE_DEPTH)
+    {
+        return FALSE;
+    }
+
+    unsigned int max_depth = 0;
+
+    for (ub2 i = 0; i < typinf->nb_cols; i++)
+    {
+        OCI_TypeInfo *child = typinf->cols[i].typinf;
+
+        if (((typinf->cols[i].type == OCI_CDT_OBJECT) || (typinf->cols[i].type == OCI_CDT_COLLECTION))
+            && (child != NULL))
+        {
+            if (OCI_TypeInfoCheckLayout(child, level + 1) == FALSE)
+            {
+                return FALSE;
+            }
+
+            if (child->depth > max_depth)
+            {
+                max_depth = child->depth;
+            }
+        }
+    }
+
+    if (max_depth >= OCI_MAX_TYPE_DEPTH)
+    {
+        return FALSE;
+    }
+
+    typinf->depth = max_depth + 1;
+
+    return TRUE;
+}
+
+/* ------------------------------------------------------------------------ *
+ * OCI_TypeInfoFind
+ * ------------------------------------------------------------------------ */
+
+/* returns the description of the type, table or view with exactly the given schema and object names (as they are
+   stored by Oracle; the schema can be empty for the schema of the connection), from the list of the connection or
+   made and added to it; each name is at most OCI_SIZE_OBJ_NAME characters; returns NULL with an exception if the
+   object cannot be described */
+static OCI_TypeInfo * OCI_TypeInfoFind(OCI_Library *pOCILib, OCI_Connection *con, const mtext *obj_schema,
+                                       const mtext *obj_name, unsigned int type, ExceptionSink* xsink)
 {
     OCI_TypeInfo *typinf = NULL;
     OCI_Item     *item   = NULL;
@@ -98,14 +202,6 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
     boolean found        = FALSE;
     ub2 i;
 
-    mtext obj_schema[OCI_SIZE_OBJ_NAME+1];
-    mtext obj_name[OCI_SIZE_OBJ_NAME+1];
-
-    OCI_CHECK_INITIALIZED2(pOCILib, NULL);
-
-    OCI_CHECK_PTRQ(pOCILib, OCI_IPC_CONNECTION, con, NULL, xsink);
-    OCI_CHECK_PTRQ(pOCILib, OCI_IPC_STRING, name, NULL, xsink);
-
     if (type == OCI_TIF_TABLE)
         item_type = OCI_PTYPE_TABLE;
     else if (type == OCI_TIF_VIEW)
@@ -114,57 +210,6 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
         item_type = OCI_PTYPE_TYPE;
     else
         return NULL;
-
-    /* is the schema provided in the object name ? ("schema.name"; without a name after the '.', the whole string is
-       the name) */
-    {
-        const mtext *obj = name;
-        size_t schema_len = 0;
-
-        for (str = (mtext *) name; *str != 0; str++)
-        {
-            if (*str == MT('.'))
-            {
-                if (str[1] != 0)
-                {
-                    schema_len = (size_t) (str - name);
-                    obj = str + 1;
-                }
-                break;
-            }
-        }
-
-        size_t name_len = mtslen(obj);
-
-        /* the schema and the name must each fit in their buffers; a longer one is refused, not cut, as a cut name
-           could be the name of another object */
-        if (schema_len > (size_t) OCI_SIZE_OBJ_NAME || name_len > (size_t) OCI_SIZE_OBJ_NAME)
-        {
-            if (xsink)
-                xsink->raiseException("ORACLE-OCI-ERROR", "the %s name (%d bytes) of the given type, table or view "
-                    "name is longer than the supported maximum of %d bytes",
-                    schema_len > (size_t) OCI_SIZE_OBJ_NAME ? "schema" : "object",
-                    (int) (schema_len > (size_t) OCI_SIZE_OBJ_NAME ? schema_len : name_len),
-                    (int) OCI_SIZE_OBJ_NAME);
-            OCI_RESULT(pOCILib, FALSE);
-            return NULL;
-        }
-
-        memcpy(obj_schema, name, schema_len * sizeof(mtext));
-        obj_schema[schema_len] = 0;
-        memcpy(obj_name, obj, name_len * sizeof(mtext));
-        obj_name[name_len] = 0;
-    }
-
-    /* type name must be uppercase */
-
-    for (str = obj_name; *str != 0; str++)
-        *str = (mtext) mttoupper(*str);
-
-    /* schema name must be uppercase */
-
-    for (str = obj_schema; *str != 0; str++)
-        *str = (mtext) mttoupper(*str);
 
     /* first try to find it in list */
 
@@ -178,8 +223,10 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
 
         if ((typinf != NULL) && (typinf->type == type))
         {
-            if ((mtscasecmp(typinf->name,   obj_name  ) == 0) &&
-                (mtscasecmp(typinf->schema, obj_schema) == 0))
+            /* the names are compared exactly: names that differ only in case (quoted names) are the names of
+               different objects */
+            if ((mtscmp(typinf->name,   obj_name  ) == 0) &&
+                (mtscmp(typinf->schema, obj_schema) == 0))
             {
                 found = TRUE;
                 break;
@@ -207,10 +254,16 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
             typinf->schema      = mtsdup(pOCILib, obj_schema);
             typinf->struct_size = 0;
 
-            res = (OCI_SUCCESS == OCI_HandleAlloc2(pOCILib, pOCILib->env,
-                                                  (dvoid **) (void *) &dschp,
-                                                  OCI_HTYPE_DESCRIBE, (size_t) 0,
-                                                  (dvoid **) NULL));
+            /* the names are compared when the list is searched */
+            res = (typinf->name != NULL) && (typinf->schema != NULL);
+
+            if (res == TRUE)
+            {
+                res = (OCI_SUCCESS == OCI_HandleAlloc2(pOCILib, pOCILib->env,
+                                                      (dvoid **) (void *) &dschp,
+                                                      OCI_HTYPE_DESCRIBE, (size_t) 0,
+                                                      (dvoid **) NULL));
+            }
         }
 
         if (res == TRUE)
@@ -367,9 +420,9 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
                 )
             }
 
-            /* allocates memory for cached offsets */
+            /* allocates memory for cached offsets; an error above is not overwritten */
 
-            if (typinf->nb_cols > 0)
+            if ((res == TRUE) && (typinf->nb_cols > 0))
             {
                 typinf->offsets = (int *) OCI_MemAlloc2(pOCILib, OCI_IPC_ARRAY,
                                                        sizeof(*typinf->offsets),
@@ -386,7 +439,7 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
 
             /* allocates memory for children */
 
-            if (typinf->nb_cols > 0)
+            if ((res == TRUE) && (typinf->nb_cols > 0))
             {
                 typinf->cols = (OCI_Column *) OCI_MemAlloc2(pOCILib, OCI_IPC_COLUMN,
                                                            sizeof(*typinf->cols),
@@ -397,6 +450,15 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
 
                 if (typinf->cols != NULL)
                 {
+                    /* the chain of descriptions is limited, as each level uses the stack */
+                    if (con->type_depth >= OCI_MAX_TYPE_DEPTH)
+                    {
+                        OCI_TypeInfoRaiseTooDeep(xsink);
+                        res = FALSE;
+                    }
+
+                    con->type_depth++;
+
                     for (i = 0; i < typinf->nb_cols; i++)
                     {
 		        res = res && OCI_ColumnDescribe2(pOCILib, &typinf->cols[i], con,
@@ -405,8 +467,20 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
 		        res = res && OCI_ColumnMap2(pOCILib, &typinf->cols[i], NULL);
 
                         if (res == FALSE)
+                        {
+                            /* the type is not used if one of its attributes cannot be described; an exception
+                               is raised if the failure did not raise one */
+                            if (xsink && !*xsink)
+                            {
+                                /* the names are not in the message: a schema can be the user of the connection */
+                                xsink->raiseException("ORACLE-OCI-ERROR", "attribute %d of a type, table or view "
+                                    "cannot be described", (int) (i + 1));
+                            }
                             break;
+                        }
                    }
+
+                   con->type_depth--;
                 }
                 else
                     res = FALSE;
@@ -419,6 +493,23 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
         }
     }
 
+    /* when the outermost description is done, all the types that it added are complete: each one is checked, so that
+       every description in the list of the connection has a known depth within the limit, whatever order the types
+       were described in */
+
+    if ((res == TRUE) && (found == FALSE) && (con->type_depth == 0))
+    {
+        for (OCI_Item *added = item; added != NULL; added = added->next)
+        {
+            if (OCI_TypeInfoCheckLayout((OCI_TypeInfo *) added->data, 1) == FALSE)
+            {
+                OCI_TypeInfoRaiseTooDeep(xsink);
+                res = FALSE;
+                break;
+            }
+        }
+    }
+
    /* handle errors */
 
     if (res == FALSE)
@@ -428,6 +519,17 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
         // that was found in the list is kept
         if (found == FALSE && item != NULL)
         {
+            // the descriptions after it in the list were made while describing it, and can refer to it (types can
+            // refer to each other); they are removed with it, so that none is left with a reference to a freed
+            // description; nothing else can hold them yet
+            while (item->next != NULL)
+            {
+                OCI_TypeInfo *later = (OCI_TypeInfo *) item->next->data;
+                OCI_ListRemove(pOCILib, con->tinfs, later);
+                OCI_TypeInfoClose(later);
+                OCI_FREE(later);
+            }
+
             OCI_TypeInfo *newinf = (OCI_TypeInfo *) item->data;
             // frees the list item
             OCI_ListRemove(pOCILib, con->tinfs, newinf);
@@ -445,6 +547,102 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
         typinf->refcount++;
 
     return typinf;
+}
+
+OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *con, const mtext *name,
+					unsigned int type, ExceptionSink* xsink)
+{
+    mtext *str = NULL;
+
+    mtext obj_schema[OCI_SIZE_OBJ_NAME+1];
+    mtext obj_name[OCI_SIZE_OBJ_NAME+1];
+
+    OCI_CHECK_INITIALIZED2(pOCILib, NULL);
+
+    OCI_CHECK_PTRQ(pOCILib, OCI_IPC_CONNECTION, con, NULL, xsink);
+    OCI_CHECK_PTRQ(pOCILib, OCI_IPC_STRING, name, NULL, xsink);
+
+    /* is the schema provided in the object name ? ("schema.name"; without a name after the '.', the whole string is
+       the name) */
+    {
+        const mtext *obj = name;
+        size_t schema_len = 0;
+
+        for (str = (mtext *) name; *str != 0; str++)
+        {
+            if (*str == MT('.'))
+            {
+                if (str[1] != 0)
+                {
+                    schema_len = (size_t) (str - name);
+                    obj = str + 1;
+                }
+                break;
+            }
+        }
+
+        size_t name_len = mtslen(obj);
+
+        if (OCI_TypeInfoCheckNameLen(pOCILib, schema_len, name_len, xsink) == FALSE)
+        {
+            return NULL;
+        }
+
+        memcpy(obj_schema, name, schema_len * sizeof(mtext));
+        obj_schema[schema_len] = 0;
+        memcpy(obj_name, obj, name_len * sizeof(mtext));
+        obj_name[name_len] = 0;
+    }
+
+    /* type name must be uppercase */
+
+    for (str = obj_name; *str != 0; str++)
+        *str = (mtext) mttoupper(*str);
+
+    /* schema name must be uppercase */
+
+    for (str = obj_schema; *str != 0; str++)
+        *str = (mtext) mttoupper(*str);
+
+    return OCI_TypeInfoFind(pOCILib, con, obj_schema, obj_name, type, xsink);
+}
+
+/* ------------------------------------------------------------------------ *
+ * OCI_TypeInfoGetExact2
+ * ------------------------------------------------------------------------ */
+
+OCI_TypeInfo * OCI_API OCI_TypeInfoGetExact2(OCI_Library *pOCILib, OCI_Connection *con, const mtext *schema,
+                                             size_t schema_len, const mtext *name, size_t name_len,
+                                             ExceptionSink* xsink)
+{
+    mtext obj_schema[OCI_SIZE_OBJ_NAME+1];
+    mtext obj_name[OCI_SIZE_OBJ_NAME+1];
+
+    OCI_CHECK_INITIALIZED2(pOCILib, NULL);
+
+    OCI_CHECK_PTRQ(pOCILib, OCI_IPC_CONNECTION, con, NULL, xsink);
+    OCI_CHECK_PTRQ(pOCILib, OCI_IPC_STRING, name, NULL, xsink);
+
+    if (schema == NULL)
+    {
+        schema_len = 0;
+    }
+
+    if (OCI_TypeInfoCheckNameLen(pOCILib, schema_len, name_len, xsink) == FALSE)
+    {
+        return NULL;
+    }
+
+    /* the names are used as they are: they are not parsed, and their case is kept */
+    if (schema_len > 0)
+    {
+        memcpy(obj_schema, schema, schema_len * sizeof(mtext));
+    }
+    obj_schema[schema_len] = 0;
+    memcpy(obj_name, name, name_len * sizeof(mtext));
+    obj_name[name_len] = 0;
+
+    return OCI_TypeInfoFind(pOCILib, con, obj_schema, obj_name, OCI_TIF_TYPE, xsink);
 }
 
 /* ------------------------------------------------------------------------ *

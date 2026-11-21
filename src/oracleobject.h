@@ -67,6 +67,18 @@ OCI_Object* objPlaceholderQore(QoreOracleConnection * conn,
                                const char * tname,
                                ExceptionSink *xsink);
 
+/*! Creates a placeholder for an object of an already resolved type.
+    \param conn the connection
+    \param info the description of the type
+    \param tname the name of the type for error messages
+    \param xsink exception hanlder
+    \retval OCI_Object* the new object, or nullptr with an exception
+ */
+OCI_Object* objPlaceholderQore(QoreOracleConnection * conn,
+                               OCI_TypeInfo * info,
+                               const char * tname,
+                               ExceptionSink *xsink);
+
 /*! Convert an Oracle Object into Qore Hash node.
     The hash is plain Qore hash - no Object-hash structure is set.
     \param obj Oracle Object instance
@@ -102,6 +114,18 @@ OCI_Coll* collBindQore(QoreOracleConnection * d,
                         elsewhere. The instance has to be freed in any case.
  */
 OCI_Coll* collPlaceholderQore(QoreOracleConnection * conn,
+                              const char * tname,
+                              ExceptionSink *xsink);
+
+/*! Creates a placeholder for a collection of an already resolved type.
+    \param conn the connection
+    \param info the description of the type
+    \param tname the name of the type for error messages
+    \param xsink exception hanlder
+    \retval OCI_Coll* the new collection, or nullptr with an exception
+ */
+OCI_Coll* collPlaceholderQore(QoreOracleConnection * conn,
+                              OCI_TypeInfo * info,
                               const char * tname,
                               ExceptionSink *xsink);
 

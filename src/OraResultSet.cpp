@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -74,6 +74,20 @@ static sb4 q_long_callback(q_lng* lng, OCIDefine *defnp, ub4 iter, void **bufpp,
    return OCI_CONTINUE;
 }
 
+//! returns the description of the named type of a column, or nullptr with an exception
+static OCI_TypeInfo* get_column_type(QoreOracleConnection* conn, const OraColumnBuffer* w, ExceptionSink* xsink) {
+   const char* name = w->subdtypename.c_str();
+   size_t schema_len = w->subdtschema_len;
+   assert(w->subdtypename.size() > schema_len + 1);
+   OCI_TypeInfo* info = OCI_TypeInfoGetExact2(&conn->ocilib, conn->ocilib_cn, name, schema_len,
+      name + schema_len + 1, w->subdtypename.size() - schema_len - 1, xsink);
+   if (!info && !*xsink) {
+      // the type is not named in the message: its schema can be the user of the connection
+      xsink->raiseException("ORACLE-OCI-ERROR", "the type of column '%s' could not be described", w->name.c_str());
+   }
+   return info;
+}
+
 OraResultSet::OraResultSet(QoreOracleStatement &n_stmt, const char *str, ExceptionSink *xsink) : stmt(n_stmt), defined(false) {
    QORE_TRACE("OraResultSet::OraResultSet()");
 
@@ -118,22 +132,40 @@ OraResultSet::OraResultSet(QoreOracleStatement &n_stmt, const char *str, Excepti
       if (dtype == SQLT_NTY) {
           char *tname; // type name
           char *sname; // schema name
+          // the names are not terminated: only their lengths give their ends
+          ub4 tname_len = 0;
+          ub4 sname_len = 0;
 
-          if (stmt.attrGet(parmp, &sname, OCI_ATTR_SCHEMA_NAME, xsink))
+          if (stmt.attrGet(parmp, &sname, sname_len, OCI_ATTR_SCHEMA_NAME, xsink))
              return;
 
-          if (stmt.attrGet(parmp, &tname, OCI_ATTR_TYPE_NAME, xsink))
+          if (stmt.attrGet(parmp, &tname, tname_len, OCI_ATTR_TYPE_NAME, xsink))
              return;
 
-          // printd(0, "OraResultSet::OraResultSet() SQLT_NTY type=%s.%s\n", sname, tname);
+          // without both names, the type could only be looked up in the schema of the connection
+          if (!sname || !sname_len || !tname || !tname_len) {
+             xsink->raiseException("ORACLE-OCI-ERROR", "the schema or type name of column %d is not available",
+                (int)clist.size() + 1);
+             return;
+          }
+
+          // printd(0, "OraResultSet::OraResultSet() SQLT_NTY type=%.*s.%.*s\n", (int)sname_len, sname, (int)tname_len, tname);
           QoreString s(stmt.getEncoding());
-          s.concat(sname);
+          s.concat(sname, sname_len);
           s.concat(".");
-          s.concat(tname);
+          s.concat(tname, tname_len);
 
-          OCI_TypeInfo * info = OCI_TypeInfoGet2(&conn->ocilib, conn->ocilib_cn, s.getBuffer(), OCI_TIF_TYPE, xsink);
-          if (*xsink) {
+          // the names are used exactly as Oracle stores them
+          OCI_TypeInfo * info = OCI_TypeInfoGetExact2(&conn->ocilib, conn->ocilib_cn, sname, sname_len, tname,
+             tname_len, xsink);
+          if (!info || *xsink) {
+             // the column is not used without the description of its type
              assert(!info);
+             if (!*xsink) {
+                // the type is not named in the message: its schema can be the user of the connection
+                xsink->raiseException("ORACLE-OCI-ERROR", "the type of column %d could not be described",
+                    (int)clist.size() + 1);
+             }
              return;
           }
 
@@ -142,7 +174,7 @@ OraResultSet::OraResultSet(QoreOracleStatement &n_stmt, const char *str, Excepti
           // object/collection resolution method.
           int dsubtype = info->ccode ? SQLT_NTY_COLLECTION : SQLT_NTY_OBJECT;
           add((char *)col_name, col_name_len, col_max_size, dtype, col_char_len, col_precision, col_scale,
-              dsubtype, s);
+              dsubtype, s, sname_len);
           continue;
       }
       if (dtype == SQLT_NCO) {
@@ -274,9 +306,14 @@ int OraResultSet::define(const char *str, ExceptionSink *xsink) {
             // Real NULL is handled in getValue() for NTY.
             w->ind = 0;
             if (w->subdtype == SQLT_NTY_OBJECT) {
-                w->buf.oraObj = objPlaceholderQore(conn, w->subdtypename.getBuffer(), xsink);
-                if (*xsink)
+                OCI_TypeInfo* info = get_column_type(conn, w, xsink);
+                if (!info) {
                    return -1;
+                }
+                w->buf.oraObj = objPlaceholderQore(conn, info, w->subdtypename.c_str(), xsink);
+                if (*xsink) {
+                   return -1;
+                }
 
                 stmt.defineByPos(w->defp, i + 1, 0, 0, w->dtype, &w->ind, xsink);
                 conn->checkerr(OCIDefineObject((OCIDefine *) w->defp,
@@ -288,7 +325,14 @@ int OraResultSet::define(const char *str, ExceptionSink *xsink) {
                                                 (ub4   *) NULL),
                                 str, xsink);
             } else if (w->subdtype == SQLT_NTY_COLLECTION) {
-                w->buf.oraColl = collPlaceholderQore(conn, w->subdtypename.getBuffer(), xsink);
+                OCI_TypeInfo* info = get_column_type(conn, w, xsink);
+                if (!info) {
+                   return -1;
+                }
+                w->buf.oraColl = collPlaceholderQore(conn, info, w->subdtypename.c_str(), xsink);
+                if (*xsink) {
+                   return -1;
+                }
                 stmt.defineByPos(w->defp, i + 1, 0, 0, w->dtype, &w->ind, xsink);
                 conn->checkerr(OCIDefineObject((OCIDefine *) w->defp,
                                                 conn->errhp,

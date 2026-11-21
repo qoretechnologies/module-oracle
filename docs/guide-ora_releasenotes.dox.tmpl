@@ -26,6 +26,15 @@
       and later allow: binding, or selecting a column of, an object type whose schema or type name is longer than 30
       bytes raises this exception
       (<a href="https://github.com/qoretechnologies/qore/issues/7047">issue 7047</a>)
+    - <b>Security</b>: selecting an object type of another schema whose attributes or collection elements are object
+      types could crash the process or decode an attribute with the wrong type; the type of each column, attribute
+      and element is now resolved in the schema that owns it, with its exact name (also a quoted mixed-case name),
+      and a type that cannot be resolved raises an \c ORACLE-OCI-ERROR exception instead of being used.  The same
+      exception is raised for a type whose description follows more than 128 levels of named types, or that holds
+      more than 128 levels of objects and collections.  Fetching or binding an attribute or element of a type
+      that the driver does not support now raises the driver's exception for an unsupported type instead of
+      crashing the process
+      (<a href="https://github.com/qoretechnologies/qore/issues/7057">issue 7057</a>)
     - <b>Security</b>: the driver reports the destinations of its connections, so that code under a sandbox that
       restricts the network can connect where the policy of the sandbox allows, and connects only to the checked
       addresses; a connection whose destinations cannot be determined exactly (an unresolvable TNS alias, \c TCPS) is

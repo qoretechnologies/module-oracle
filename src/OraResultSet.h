@@ -4,7 +4,7 @@
 
     Qore Programming Language
 
-    Copyright (C) 2003 - 2022 Qore Technologies, s.r.o.
+    Copyright (C) 2003 - 2026 Qore Technologies, s.r.o.
 
     This library is free software; you can redistribute it and/or
     modify it under the terms of the GNU Lesser General Public
@@ -33,12 +33,17 @@ public:
     ub2 charlen;
     sb2 precision;
     sb1 scale;
+    //! the name of a named type: "schema.name", with both parts exactly as Oracle stores them
     QoreString subdtypename;
+    //! the length of the schema in subdtypename; the name is not parsed, as a quoted name can contain a '.'
+    size_t subdtschema_len;
 
     DLLLOCAL OraColumnBuffer(QoreOracleStatement &stmt, const char *n, int len, int ms, ub2 dt, ub2 n_charlen,
-            sb2 n_precision = 0, sb1 n_scale = 0, int subdt = SQLT_NTY_NONE, QoreString subdttn = "")
+            sb2 n_precision = 0, sb1 n_scale = 0, int subdt = SQLT_NTY_NONE, QoreString subdttn = "",
+            size_t n_subdtschema_len = 0)
         : OraColumnValue(stmt, dt, subdt), name(n, len, stmt.getEncoding()), maxsize(ms), defp(0),
-            charlen(n_charlen), precision(n_precision), scale(n_scale), subdtypename(subdttn) {
+            charlen(n_charlen), precision(n_precision), scale(n_scale), subdtypename(subdttn),
+            subdtschema_len(n_subdtschema_len) {
         name.tolwr();
     }
 
@@ -86,9 +91,9 @@ public:
     }
 
     DLLLOCAL void add(const char *name, int nlen, int maxsize, ub2 dtype, ub2 char_len, sb2 precision = 0,
-            sb1 scale = 0, int subtype=SQLT_NTY_NONE, QoreString subdtn = "") {
+            sb1 scale = 0, int subtype=SQLT_NTY_NONE, QoreString subdtn = "", size_t subdtschema_len = 0) {
         OraColumnBuffer *c = new OraColumnBuffer(stmt, name, nlen, maxsize, dtype, char_len, precision, scale,
-            subtype, subdtn);
+            subtype, subdtn, subdtschema_len);
 
         clist.push_back(c);
         // printd(5, "column: '%s'\n", c->name);
