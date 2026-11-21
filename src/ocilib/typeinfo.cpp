@@ -35,10 +35,10 @@
 #include "ocilib_internal.h"
 
 /* the deepest chain of named types that is followed in one description, and the most levels of objects and
-   collections in a type: the layout code recurses once per level of objects held by value (a collection attribute
-   is a pointer in the layout), and decoding recurses once per level of objects and collections; binding recurses on
-   the nesting of the bound value, which this limit does not bound, although each type named in the value is checked
-   against it when it is described */
+   collections in a type: OCI_TypeInfoCheckLayout() and decoding recurse once per level of objects and collections;
+   OCI_ObjectGetStructSize() and OCI_ObjectGetIndOffset() recurse once per level of objects held by value; binding
+   recurses on the nesting of the bound value, which this limit does not bound, although each type named in the value
+   is checked against it when it is described */
 #define OCI_MAX_TYPE_DEPTH 128
 
 /* ************************************************************************ *
@@ -185,8 +185,7 @@ static boolean OCI_TypeInfoCheckLayout(OCI_TypeInfo *typinf, unsigned int level)
 /* returns the description of the type, table or view with exactly the given schema and object names (as they are
    stored by Oracle; the schema can be empty for the schema of the connection), from the list of the connection or
    made and added to it; each name is at most OCI_SIZE_OBJ_NAME characters; returns NULL if the object cannot be
-   described: an error from Oracle or an exceeded limit raises an exception, but an unknown type argument or a failed
-   allocation here returns NULL without one, so callers must check the return value */
+   described, not always with an exception, so callers must check the return value */
 static OCI_TypeInfo * OCI_TypeInfoFind(OCI_Library *pOCILib, OCI_Connection *con, const mtext *obj_schema,
                                        const mtext *obj_name, unsigned int type, ExceptionSink* xsink)
 {
