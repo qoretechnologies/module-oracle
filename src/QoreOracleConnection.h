@@ -365,14 +365,20 @@ public:
 
     DLLLOCAL void clearWarnings() {
         ub4 ix = 1;
-        int errcode;
+        sb4 errcode = 0;
         // the largest message of the Oracle client, so that no connection value in it is cut (and not masked)
         text errbuf[QORE_OCI_ERROR_MSG_SIZE];
 
-        while (OCIErrorGet(errhp, ix, (text*)0, &errcode, errbuf, (ub4)sizeof(errbuf), OCI_HTYPE_ERROR) != OCI_NO_DATA) {
+        while (true) {
+            // empty unless the call sets it
+            errbuf[0] = 0;
+            if (OCIErrorGet(errhp, ix, (text*)0, &errcode, errbuf, (ub4)sizeof(errbuf), OCI_HTYPE_ERROR)
+                    != OCI_SUCCESS) {
+                break;
+            }
             std::string desc = remove_trailing_newlines((char*)errbuf);
             redact(desc);
-            doWarning(errcode, "ORACLE-WARNING", desc.c_str());
+            doWarning((int)errcode, "ORACLE-WARNING", desc.c_str());
             ++ix;
         }
     }

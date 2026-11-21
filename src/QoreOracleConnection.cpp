@@ -447,6 +447,8 @@ int QoreOracleConnection::checkerr(sword status, const char* query_name, Excepti
 
         case OCI_SUCCESS_WITH_INFO: {
             text errbuf[QORE_OCI_ERROR_MSG_SIZE];
+            // empty if there is no error record (OCI_NO_DATA)
+            errbuf[0] = 0;
 
             OCIErrorGet((dvoid *)errhp, (ub4) 1, (text *) NULL, &errcode, errbuf, (ub4) sizeof(errbuf), OCI_HTYPE_ERROR);
             //printd(5, "WARNING: %s returned OCI_SUCCESS_WITH_INFO: %s\n", query_name ? query_name : "<unknown>", remove_trailing_newlines((char *)errbuf));
@@ -555,9 +557,11 @@ bool QoreOracleConnection::handleError(ExceptionSink* xsink, const char* who, bo
     int ping = -1;
 
     // get and save error information
-    sb4 errcode;
-    // the largest message of the Oracle client, so that no connection value in it is cut (and not masked)
+    sb4 errcode = 0;
+    // the largest message of the Oracle client, so that no connection value in it is cut (and not masked); empty if
+    // there is no error record (OCIErrorGet() returns OCI_NO_DATA and leaves the buffer as it is)
     text errbuf[QORE_OCI_ERROR_MSG_SIZE];
+    errbuf[0] = 0;
     OCIErrorGet((dvoid*)errhp, (ub4)1, (text*)nullptr, &errcode, errbuf, (ub4)sizeof(errbuf), OCI_HTYPE_ERROR);
 
     // an error while logging on is the logon's own: the session being made is not a lost connection (a ping on it

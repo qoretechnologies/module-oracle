@@ -35,11 +35,16 @@
     occurrence of a value is replaced with MASK; the rest of the message, including its ORA- code, is kept.
 
     How the values are matched:
-    - the password is matched exactly (Oracle passwords are case-sensitive) wherever it occurs;
+    - every value is matched only where it is not a part of a longer name: a value that starts or ends with a
+      letter, digit, \c _, \c $ or \c # is not matched where the text next to it is one of those characters too, so
+      that a short value does not mask parts of other words;
+    - the password is matched exactly (Oracle passwords are case-sensitive), and only if it is unlikely to be text
+      of a message template (see password_maskable()): Oracle messages are fixed, public templates, so masking a
+      password that is also template text (for example \c 1521, \c Service or \c connect) would show the password to
+      anyone who compares the message with its template.  The Oracle client and server do not show the password in
+      their messages; it is masked where it can still occur, for example in SQL text that a message repeats;
     - the user name and the database values are matched without regard to the case of ASCII letters (the server
-      shows unquoted names in upper case), and only where they are not part of a longer name: a value that starts or
-      ends with a letter, digit, \c _, \c $ or \c # is not matched where the text next to it is one of those
-      characters too, so that a short name does not mask parts of other words;
+      shows unquoted names in upper case);
     - the database values are the database string as given, and the service, SID and instance names in it (of an
       Easy Connect string or a connect descriptor) or in the definition of the TNS alias that it names (given by the
       caller); the parts of a proxy user name (\c "user[client]") and the name in a quoted user name are matched as
@@ -66,7 +71,7 @@ static constexpr const char* MASK = "****";
 //! a value to mask
 struct Secret {
     std::string value;
-    //! true: matched exactly, anywhere; false: matched without regard to ASCII case, as a whole name
+    //! true: matched exactly; false: matched without regard to ASCII case; both are matched as whole names only
     bool exact;
 };
 
@@ -93,6 +98,55 @@ static inline void add_secret(secret_list_t& secrets, const std::string& value, 
         }
     }
     secrets.push_back({value, exact});
+}
+
+//! the shortest password that is masked; see password_maskable()
+static constexpr size_t PASSWORD_MIN_MASK_LEN = 8;
+
+static inline size_t message_code_len(const std::string& text, size_t pos);
+
+//! returns true if the password can be masked without showing it, i.e. if it is unlikely
+//! to be text of a message template
+/** Oracle messages are fixed, public templates: words and identifiers made of letters and punctuation (for example
+    \c Service, \c connect, \c error-help, \c docs.oracle.com), numbers and addresses made of digits and punctuation
+    (for example \c 1521, \c 127.0.0.1), and message codes (for example \c ORA-12514); a mask where template text was
+    shows that the password is that text.  Template text is made of runs of letters only or digits only, separated
+    by spaces and punctuation (\c ORA-00942: \c table, \c port \c 1521, \c db/ora-12514), also where it spans several
+    words.  A password is therefore masked only if it is unlikely to be template text, i.e. if it:
+    - has at least PASSWORD_MIN_MASK_LEN characters;
+    - has a run of letters and digits (characters between spaces and punctuation, including \c _, \c - and \c .)
+      that has both letters and digits;
+    - is not shaped like a message code (a defensive check: a code has no run with both letters and digits).
+
+    It is matched as a whole name, so a password that is a part of a longer word of a message is not masked either.
+
+    Limits:
+    - a password that meets Oracle's password complexity rules is not masked if no single run has both letters and
+      digits (for example \c Summer_2024 or \c My.Pass.99);
+    - template words that mix letters and digits (for example \c VARCHAR2, character set names such as
+      \c AL32UTF8, \c x86_64, or the names in internal errors such as ORA-00600) can make a password of template
+      text maskable, for example <tt>VARCHAR2 column</tt>; such a password is not a credible secret.
+*/
+static inline bool password_maskable(const std::string& pass) {
+    if (pass.size() < PASSWORD_MIN_MASK_LEN || message_code_len(pass, 0) == pass.size()) {
+        return false;
+    }
+    bool letter = false, digit = false;
+    for (char c : pass) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+            letter = true;
+        } else if (c >= '0' && c <= '9') {
+            digit = true;
+        } else {
+            // the end of a run
+            letter = digit = false;
+            continue;
+        }
+        if (letter && digit) {
+            return true;
+        }
+    }
+    return false;
 }
 
 //! adds the values of every occurrence of the parameter \a name (ex: SERVICE_NAME) in a connect descriptor
@@ -195,7 +249,8 @@ static inline void add_ezconnect_values(secret_list_t& secrets, const std::strin
 static inline secret_list_t get_secrets(const char* user, const char* pass, const char* db,
         const std::vector<std::string>* db_names = nullptr) {
     secret_list_t secrets;
-    if (pass) {
+    // a password that may be template text is not masked, as the mask would show it
+    if (pass && password_maskable(pass)) {
         add_secret(secrets, pass, true);
     }
     if (user) {
@@ -243,14 +298,17 @@ static inline bool matches_at(const std::string& text, size_t pos, const Secret&
         return false;
     }
     if (s.exact) {
-        return !text.compare(pos, s.value.size(), s.value);
-    }
-    for (size_t i = 0; i < s.value.size(); ++i) {
-        if (ascii_lower(text[pos + i]) != ascii_lower(s.value[i])) {
+        if (text.compare(pos, s.value.size(), s.value)) {
             return false;
         }
+    } else {
+        for (size_t i = 0; i < s.value.size(); ++i) {
+            if (ascii_lower(text[pos + i]) != ascii_lower(s.value[i])) {
+                return false;
+            }
+        }
     }
-    // a name is matched only where it is not a part of a longer name
+    // a value is matched only where it is not a part of a longer name
     if (is_name_char(s.value.front()) && pos > 0 && is_name_char(text[pos - 1])) {
         return false;
     }

@@ -43,13 +43,51 @@ int main() {
         "ORA-00942: table or view \"****\".\"T\" does not exist\nHelp: https://docs.oracle.com/error-help/db/"
         "ora-00942/", "schema in upper case");
 
-    // the password is matched exactly and anywhere
-    check("scott", "Tiger1", "orcl", "x Tiger1 xTiger1x", "x **** x****x", "password anywhere");
-    check("scott", "Tiger1", "orcl", "TIGER1 tiger1", "TIGER1 tiger1", "password case-sensitive");
+    // a password that is unlikely to be template text is matched exactly, as a whole name
+    check("scott", "Tiger123", "orcl", "x Tiger123 (Tiger123) xTiger123 Tiger1234", "x **** (****) xTiger123 Tiger1234",
+        "password as a whole name");
+    check("scott", "Tiger123", "orcl", "TIGER123 tiger123", "TIGER123 tiger123", "password case-sensitive");
+    check("scott", "s3cr3t!pw", "orcl", "ORA-00900: invalid SQL statement: alter user x identified by s3cr3t!pw",
+        "ORA-00900: invalid SQL statement: alter user x identified by ****", "password in SQL text");
+
+    // a password that may be template text is not masked, as the mask would show it (qore#6991)
+    check("scott", "Service", "orcl", "ORA-12514: Service svc is not registered",
+        "ORA-12514: Service svc is not registered", "password that is a template word");
+    check("scott", "1521", "orcl", "port 1521", "port 1521", "password that is a template number");
+    check("scott", "connect_identifier", "orcl", "could not resolve the connect_identifier",
+        "could not resolve the connect_identifier", "long password of letters and punctuation");
+    check("scott", "127.0.0.10", "orcl", "host 127.0.0.10", "host 127.0.0.10",
+        "long password of digits and punctuation");
+    check("scott", "Abc1234", "orcl", "Abc1234", "Abc1234", "password shorter than 8 characters");
+    check("scott", "ORA-12514", "orcl", "ORA-12514: x", "ORA-12514: x", "password shaped like a message code");
+    // template text that spans several words
+    check("scott", "00942: table", "orcl", "ORA-00942: table or view does not exist",
+        "ORA-00942: table or view does not exist", "password of a code number and a word");
+    check("scott", "ORA-00942: table", "orcl", "ORA-00942: table or view does not exist",
+        "ORA-00942: table or view does not exist", "password of a code and a word");
+    check("scott", "port 1521", "orcl", "at host h port 1521.", "at host h port 1521.",
+        "password of a word and a number");
+    check("scott", "db/ora-12514", "orcl", "https://docs.oracle.com/error-help/db/ora-12514/",
+        "https://docs.oracle.com/error-help/db/ora-12514/", "password of help URL text");
+    check("scott", "PORT=1521", "orcl", "(PORT=1521)", "(PORT=1521)", "password of descriptor text");
+    {
+        ++checks;
+        bool ok = !password_maskable("") && !password_maskable("abcdefgh") && !password_maskable("12345678")
+            && !password_maskable("a1b2c3d") && password_maskable("a1b2c3d4") && password_maskable("Abc-12345x")
+            && !password_maskable("Abc-12345") && !password_maskable("error-help")
+            && !password_maskable("docs.oracle.com") && !password_maskable("10.0.0.123")
+            && !password_maskable("00942: table") && !password_maskable("port 1521")
+            && password_maskable("s3cr3t!pw") && password_maskable("pass 12x4");
+        if (!ok) {
+            ++failures;
+            printf("FAILED: password_maskable()\n");
+        }
+    }
 
     // names are matched without regard to case, as whole names only
     check("scott", "pw", "orcl", "SCOTT scott Scott", "**** **** ****", "user any case");
-    check("scott", "pw", "orcl", "SCOTTY xscott scott_1 scott$ scott# $scott", "SCOTTY xscott scott_1 scott$ scott# $scott",
+    check("scott", "pw", "orcl", "SCOTTY xscott scott_1 scott$ scott# $scott",
+        "SCOTTY xscott scott_1 scott$ scott# $scott",
         "user inside a longer name");
     check("scott", "pw", "orcl", "(scott) 'scott'. scott.t", "(****) '****'. ****.t", "user next to punctuation");
     check("a", "pw", "orcl", "a table at A.B", "**** table at ****.B", "one-letter user");
@@ -57,19 +95,22 @@ int main() {
     // message codes are kept
     check("ora", "pw", "tns", "ORA-12154: TNS-03505: ora-12154 ora tns", "ORA-12154: TNS-03505: ora-12154 **** ****",
         "user and db named like a code prefix");
-    check("scott", "ORA", "orcl", "ORA-00942 ORA", "ORA-00942 ****", "password named like a code prefix");
-    check("scott", "12514", "orcl", "ORA-12514: port 12514 x12514", "ORA-12514: port **** x****",
+    check("scott", "ORA", "orcl", "ORA-00942 ORA", "ORA-00942 ORA", "password named like a code prefix");
+    check("scott", "12514", "orcl", "ORA-12514: port 12514 x12514", "ORA-12514: port 12514 x12514",
         "password named like a code number");
+    check("scott", "pass12514", "orcl", "ORA-12514: pass12514", "ORA-12514: ****", "password with a code number");
     check("12514", "pw", "00942", "ORA-12514 ORA-00942 12514 00942", "ORA-12514 ORA-00942 **** ****",
         "names named like a code number");
-    check("scott", "Abc-12345", "orcl", "Abc-12345 xAbc-12345", "**** x****", "password that looks like a code");
+    check("scott", "Abc-12345x", "orcl", "Abc-12345x xAbc-12345x", "**** xAbc-12345x",
+        "password that starts like a code");
     check("prod", "pw", "orcl", "PROD-1 PROD-123456 prod-12345", "****-1 ****-123456 prod-12345",
         "only a five-digit code is kept");
-    check("scott", "pw", "ERP-20240", "Service ERP-20240 is not registered; erp-20240", "Service **** is not registered; ****",
+    check("scott", "pw", "ERP-20240", "Service ERP-20240 is not registered; erp-20240",
+        "Service **** is not registered; ****",
         "a database named like a code");
     check("scott", "pw", "erp-20240.example.com", "Service erp-20240.example.com is not registered",
         "Service **** is not registered", "a database starting like a code");
-    check("scott", "00942: tab", "orcl", "ORA-00942: table", "ORA-****le", "a password running past a code");
+    check("scott", "00942: tab1", "orcl", "ORA-00942: tab1 x", "ORA-**** x", "a password running past a code");
     check("scott", "pw", "dbhost:1521/svc", "dbhost:1521/svc dbhost 1521", "**** dbhost 1521",
         "a host or port on its own is not masked");
     {
@@ -128,8 +169,8 @@ int main() {
     check("abc", "pw", "abcdef", "abcdef abc", "**** ****", "overlapping names");
     check("bar-baz", "pw", "foo-bar", "foo-bar-baz; foo-bar; bar-baz", "****; ****; ****",
         "values that overlap each other");
-    check("scott", "-", "orcl", "ORA-00942 a-b", "ORA****00942 a****b", "a password that is a dash");
-    check("svc", "svc_pw", "svc", "svc_pw svc", "**** ****", "a password containing a name");
+    check("scott", "-", "orcl", "ORA-00942 a-b", "ORA-00942 a-b", "a password that is a dash");
+    check("svc", "svc_pw12", "svc", "svc_pw12 svc", "**** ****", "a password containing a name");
 
     // empty and missing values
     check(nullptr, nullptr, nullptr, "nothing to mask", "nothing to mask", "no values");
