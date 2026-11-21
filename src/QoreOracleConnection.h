@@ -29,6 +29,16 @@
 #include <unistd.h>
 
 #include <set>
+#include <string>
+
+#include "OracleRedact.h"
+
+// the size of a buffer that holds the largest message of the Oracle client
+#ifdef OCI_ERROR_MAXMSG_SIZE2
+#define QORE_OCI_ERROR_MSG_SIZE OCI_ERROR_MAXMSG_SIZE2
+#else
+#define QORE_OCI_ERROR_MSG_SIZE 3072
+#endif
 
 //#define QORE_OCI_FLAGS (OCI_DEFAULT|OCI_THREADED|OCI_NO_MUTEX|OCI_OBJECT)
 #define QORE_OCI_FLAGS (OCI_DEFAULT|OCI_THREADED|OCI_OBJECT|OCI_ENV_EVENTS)
@@ -243,6 +253,12 @@ public:
     bool in_logon = false;
 
 private:
+    //! the connection's values (user name, password, database) that are masked in messages; see redact()
+    qore_oracle_redact::secret_list_t secrets;
+
+    //! sets the values that are masked in messages from the datasource's values
+    DLLLOCAL void initSecrets();
+
     //! the process that created the connection; see isForkedChild()
     const pid_t pid = getpid();
 
@@ -340,13 +356,29 @@ public:
     DLLLOCAL int bulkLoadEnd(bool success, ExceptionSink* xsink);
 #endif
 
+    //! masks the connection's user name, password and database in a message of the Oracle client or server
+    /** see OracleRedact.h for how the values are matched
+    */
+    DLLLOCAL void redact(std::string& text) const {
+        qore_oracle_redact::redact(text, secrets);
+    }
+
     DLLLOCAL void clearWarnings() {
         ub4 ix = 1;
-        int errcode;
-        text errbuf[512];
+        sb4 errcode = 0;
+        // the largest message of the Oracle client, so that no connection value in it is cut (and not masked)
+        text errbuf[QORE_OCI_ERROR_MSG_SIZE];
 
-        while (OCIErrorGet(errhp, ix, (text*)0, &errcode, errbuf, (ub4)sizeof(errbuf), OCI_HTYPE_ERROR) != OCI_NO_DATA) {
-            doWarning(errcode, "ORACLE-WARNING", remove_trailing_newlines((char*)errbuf));
+        while (true) {
+            // empty unless the call sets it
+            errbuf[0] = 0;
+            if (OCIErrorGet(errhp, ix, (text*)0, &errcode, errbuf, (ub4)sizeof(errbuf), OCI_HTYPE_ERROR)
+                    != OCI_SUCCESS) {
+                break;
+            }
+            std::string desc = remove_trailing_newlines((char*)errbuf);
+            redact(desc);
+            doWarning((int)errcode, "ORACLE-WARNING", desc.c_str());
             ++ix;
         }
     }

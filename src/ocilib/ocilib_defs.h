@@ -476,7 +476,9 @@
 
 #define OCI_SQLCMD_COUNT                126
 
-#define OCI_ERR_MSG_SIZE                512
+/* the largest message of the Oracle client (OCI_ERROR_MAXMSG_SIZE2), so that no connection value in it is cut
+   (and could not be masked whole) */
+#define OCI_ERR_MSG_SIZE                3072
 
 #define OCI_DEF_ALIGN                   sizeof(void *)
 
