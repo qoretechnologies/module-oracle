@@ -48,9 +48,13 @@ boolean OCI_TypeInfoClose(OCI_TypeInfo *typinf)
 
     OCI_CHECK(typinf == NULL, FALSE);
 
-    for (i=0; i < typinf->nb_cols; i++)
+    // the columns are not allocated if the description could not be made
+    if (typinf->cols != NULL)
     {
-        OCI_FREE(typinf->cols[i].name);
+        for (i=0; i < typinf->nb_cols; i++)
+        {
+            OCI_FREE(typinf->cols[i].name);
+        }
     }
 
     OCI_FREE(typinf->cols);
@@ -398,11 +402,18 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
 
     if (res == FALSE)
     {
-       OCI_TypeInfoFree2(pOCILib, typinf);
-       // delete item from item list
-       if (found == FALSE)
-	  OCI_ListRemove(pOCILib, con->tinfs, item->data);
-       typinf = NULL;
+        // the description that was being made is removed from the list and freed; it has no references yet, so
+        // OCI_TypeInfoFree2() (which frees it when its last reference is released) cannot free it; a description
+        // that was found in the list is kept
+        if (found == FALSE && item != NULL)
+        {
+            OCI_TypeInfo *newinf = (OCI_TypeInfo *) item->data;
+            // frees the list item
+            OCI_ListRemove(pOCILib, con->tinfs, newinf);
+            OCI_TypeInfoClose(newinf);
+            OCI_FREE(newinf);
+        }
+        typinf = NULL;
     }
 
     OCI_RESULT(pOCILib, res);
