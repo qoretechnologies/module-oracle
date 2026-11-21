@@ -107,13 +107,19 @@ class OracleNestedTypeSchemaTest inherits QUnit::Test {
             skip_reason = "QORE_DB_CONNSTR_ORACLE_SYS not set";
             return;
         }
-        sys_h = parse_datasource(sys_connstr);
+        try {
+            sys_h = parse_datasource(sys_connstr);
+        } catch (hash<ExceptionInfo> ex) {
+            # the description of a parse error contains the whole connection string
+            throw ex.err, "QORE_DB_CONNSTR_ORACLE_SYS cannot be parsed";
+        }
 
         Datasource sys(sys_connstr);
         try {
             sys.open();
         } catch (hash<ExceptionInfo> ex) {
-            skip_reason = sprintf("the Oracle server is not available: %s: %s", ex.err, ex.desc);
+            skip_reason = sprintf("the Oracle server is not available: %s: %s", ex.err,
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
             return;
         }
         on_exit sys.rollback();
@@ -123,7 +129,7 @@ class OracleNestedTypeSchemaTest inherits QUnit::Test {
             } catch (hash<ExceptionInfo> ex) {
                 # ex: ORA-65096 in a CDB root, or ORA-01031 without the privilege
                 skip_reason = sprintf("the test users cannot be created with QORE_DB_CONNSTR_ORACLE_SYS: %s: %s",
-                    ex.err, ex.desc);
+                    ex.err, (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
                 return;
             }
             created += user;

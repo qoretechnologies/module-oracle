@@ -61,7 +61,8 @@ public class ConnectRedirectTest inherits QUnit::Test {
             s.connect(sprintf("%s:%d", listener_addr, listener_port), 5s);
             s.close();
         } catch (hash<ExceptionInfo> ex) {
-            testSkip(sprintf("the listener %s:%d cannot be reached: %s", listener_host, listener_port, ex.desc));
+            testSkip(sprintf("the Oracle listener cannot be reached: %s: %s", ex.err,
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code"));
         }
         service = ENV.QORE_ORACLE_SERVICE ?? ENV.ORACLE_PDB ?? "FREEPDB1";
         Datasource ds(sysconnstr);

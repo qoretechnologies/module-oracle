@@ -57,6 +57,16 @@ class OracleSessionInfoTest inherits QUnit::Test {
         set_return_value(main());
     }
 
+    # the description of a parse error contains the whole connection string
+    private DatasourcePool newPool(string desc) {
+        try {
+            return new DatasourcePool(desc);
+        } catch (hash<ExceptionInfo> ex) {
+            throw ex.err, sprintf("the connection pool cannot be created: %s",
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
+        }
+    }
+
     globalTearDown() {
         Oracle::setThreadSessionInfo();
     }
@@ -271,7 +281,7 @@ class OracleSessionInfoTest inherits QUnit::Test {
         Oracle::setThreadSessionInfo();
 
         # a single connection is shared by all threads
-        DatasourcePool pool(connstr + "{min=1,max=1}");
+        DatasourcePool pool = newPool(connstr + "{min=1,max=1}");
 
         hash<auto> a = runInThread(pool, <OracleSessionInfo>{"module": "thread-a", "action": "a",
             "client_info": "client-a", "client_identifier": "ident-a"});
@@ -302,7 +312,7 @@ class OracleSessionInfoTest inherits QUnit::Test {
         }
         on_exit Oracle::setThreadSessionInfo();
 
-        DatasourcePool pool(connstr + "{min=1,max=1}");
+        DatasourcePool pool = newPool(connstr + "{min=1,max=1}");
         Oracle::setThreadSessionInfo(<OracleSessionInfo>{"module": "no-acquire"});
         assertFalse(pool.currentThreadInTransaction());
 

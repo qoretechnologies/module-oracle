@@ -2,6 +2,28 @@
 #
 # sourced by init_oracle.sh (and by test-init-oracle-wait.sh): waits for the gvenzl/oracle-free service container
 
+# oracle_error_codes <output> [<text to print if the output has no code>]
+#
+# Prints the exception code and the distinct ORA codes of the output of a failed command, and nothing else of it: the
+# description of an exception can contain the connection string.
+oracle_error_codes() {
+    local exception codes
+    exception=$(printf '%s\n' "$1" | sed -n -E 's/^([A-Z][A-Z0-9_]*((:[A-Z0-9_-]+)|(-[A-Z0-9_]+))+): .*/\1/p' \
+        | head -n 1)
+    case $exception in
+        ORA-*) exception= ;;
+    esac
+    codes=$(printf '%s\n' "$1" | tr -c 'A-Za-z0-9_-' '\n' | grep -E '^ORA-[0-9]+$' | sort -u | tr '\n' ' ')
+    codes=${codes% }
+    if [ -n "$exception" ] && [ -n "$codes" ]; then
+        echo "$exception $codes"
+    elif [ -n "$exception$codes" ]; then
+        echo "$exception$codes"
+    elif [ -n "${2:-}" ]; then
+        echo "$2"
+    fi
+}
+
 # oracle_wait_for_db <probe> <max tries> <seconds between tries>
 #
 # Calls <probe> (a command or function that prints the output of a connection attempt and returns its exit status)
@@ -32,13 +54,10 @@ oracle_wait_for_db() {
             echo && echo "Oracle DB started after ${SECONDS} seconds."
             return 0
         fi
-        err=`echo "$ORACLE_WAIT_OUT" | grep -o -E "ORA-[0-9]+" | head -n 1`
+        err=`printf '%s\n' "$ORACLE_WAIT_OUT" | tr -c 'A-Za-z0-9_-' '\n' | grep -E '^ORA-[0-9]+$' | head -n 1`
         if [ -z "$err" ]; then
-            # no Oracle error: the first line of the output identifies the error
-            err=`echo "$ORACLE_WAIT_OUT" | head -n 1`
-            if [ -z "$err" ]; then
-                err="(no output, exit status $status)"
-            fi
+            # no Oracle error: the exception code identifies the error; this text is logged
+            err=`oracle_error_codes "$ORACLE_WAIT_OUT" "(no error code in the output, exit status $status)"`
         fi
         # each change of the error is logged with the time since the wait started, so that the log shows how far the
         # service got

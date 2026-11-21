@@ -4,16 +4,11 @@
 printf("\nQore named types test - various errors checking\n\n");
 
 my string $connstr;
-switch (gethostname()) {
-    case /^qube/: $connstr = "oracle:omquser2/omquser2@qube"; break;
-    case /^el6/:
-    case /^quark/: $connstr = "oracle:omquser/omquser@el6"; break;
-    case /^el5/:
-    case /^xbox/:
-    case /^stimpy/:
-    case /^ren/: $connstr = "oracle:omquser/omquser@xbox"; break;
-    default: $connstr = "oracle:omqtest/omqtest@stimpy"; break;
+if (!$ENV.QORE_DB_CONNSTR_ORACLE) {
+    stderr.printf("ERROR: QORE_DB_CONNSTR_ORACLE is not set\n");
+    exit(1);
 }
+$connstr = $ENV.QORE_DB_CONNSTR_ORACLE;
 
 my Datasource $db($connstr);
 $db.open();

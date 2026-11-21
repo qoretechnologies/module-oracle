@@ -226,7 +226,8 @@ auto sub run(code c, ...) {
         try {
             createQueue(ds);
         } catch (hash<ExceptionInfo> ex) {
-            setup_error = sprintf("the AQ queue cannot be created with %s: %s: %s", connstr, ex.err, ex.desc);
+            setup_error = sprintf("the AQ queue cannot be created: %s: %s", ex.err,
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
         }
 
         if (sysconnstr && !setup_error) {
@@ -243,7 +244,7 @@ auto sub run(code c, ...) {
                         continue;
                     }
                     lost_setup_error = sprintf("the temporary user of the lost-subscription cases cannot be set "
-                        "up: %s: %s", ex.err, ex.desc);
+                        "up: %s: %s", ex.err, (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
                     break;
                 }
             }

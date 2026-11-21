@@ -123,7 +123,7 @@ class SessionKillTest inherits QUnit::Test {
             sysExec(sprintf("grant create session, create table to %s", user));
         } catch (hash<ExceptionInfo> ex) {
             skip_reason = sprintf("cannot create test user with the privileged connection: %s: %s", ex.err,
-                ex.desc);
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
             return;
         }
 
@@ -133,7 +133,8 @@ class SessionKillTest inherits QUnit::Test {
             ds.open();
             killSession(getSid(ds));
         } catch (hash<ExceptionInfo> ex) {
-            skip_reason = sprintf("cannot kill sessions with the privileged connection: %s: %s", ex.err, ex.desc);
+            skip_reason = sprintf("cannot kill sessions with the privileged connection: %s: %s", ex.err,
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
             dropUser();
             return;
         }
