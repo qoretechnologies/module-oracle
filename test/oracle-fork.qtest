@@ -334,7 +334,8 @@ class OracleForkTest inherits QUnit::Test {
             try {
                 result = child();
             } catch (hash<ExceptionInfo> ex) {
-                result = sprintf("exception: %s: %s", ex.err, ex.desc);
+                # the result is printed if an assertion fails, and the description can hold the connection string
+                result = sprintf("exception: %s: %s", ex.err, (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
             }
             pipe.write.write(result);
             Qore::exit(0);

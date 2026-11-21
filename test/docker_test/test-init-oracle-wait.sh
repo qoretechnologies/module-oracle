@@ -108,16 +108,21 @@ check_codes "DBI:ORACLE:OCI-ERROR ORA-12154" "DBI:ORACLE:OCI-ERROR: $fake_secret
 check_codes "ORA-00001 ORA-12154" "ORA-12154: one ORA-00001 two ORA-12154"
 check_codes none "XORA-00001 ORA-00001X"
 check_codes none "oracle:u/$fake_secret@db"
-leak_probe() {
+leak_stdout() {
     printf "DATASOURCE-PARSE-ERROR: missing database name in 'oracle:u/%s'\n" "$fake_secret"
     return 1
 }
-oracle_wait_for_db leak_probe 1 0 > "$work/out" 2>&1
-rc=$?
-if [ $rc != 3 ] || grep -q -F "$fake_secret" "$work/out" || ! grep -q DATASOURCE-PARSE-ERROR "$work/out"; then
-    echo "FAIL: the log of a failed attempt: status $rc, or it has the output instead of the code"
-    fail=1
-else
-    echo "ok: the log of a failed attempt has only its code"
-fi
+leak_stderr() {
+    leak_stdout >&2
+}
+for leak_probe in leak_stdout leak_stderr; do
+    oracle_wait_for_db "$leak_probe" 1 0 > "$work/out" 2>&1
+    rc=$?
+    if [ $rc != 3 ] || grep -q -F "$fake_secret" "$work/out" || ! grep -q DATASOURCE-PARSE-ERROR "$work/out"; then
+        echo "FAIL: the log of a failed attempt ($leak_probe): status $rc, or it has the output instead of the code"
+        fail=1
+    else
+        echo "ok: the log of a failed attempt ($leak_probe) has only its code"
+    fi
+done
 exit $fail
