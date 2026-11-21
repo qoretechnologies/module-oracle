@@ -115,26 +115,43 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
     else
         return NULL;
 
-    obj_schema[0] = 0;
-    obj_name[0] = 0;
-
-    /* is the schema provided in the object name ? */
-
-    for (str = (mtext *) name; *str != 0; str++)
+    /* is the schema provided in the object name ? ("schema.name"; without a name after the '.', the whole string is
+       the name) */
     {
-        if (*str == MT('.'))
+        const mtext *obj = name;
+        size_t schema_len = 0;
+
+        for (str = (mtext *) name; *str != 0; str++)
         {
-            mtsncat(obj_schema, name, str-name);
-            mtsncat(obj_name, ++str, (size_t) OCI_SIZE_OBJ_NAME);
-            break;
+            if (*str == MT('.'))
+            {
+                if (str[1] != 0)
+                {
+                    schema_len = (size_t) (str - name);
+                    obj = str + 1;
+                }
+                break;
+            }
         }
-    }
 
-    /* if the schema is not provided, we just copy the object name */
+        size_t name_len = mtslen(obj);
 
-    if (obj_name[0] == 0)
-    {
-        mtsncat(obj_name, name, (size_t) OCI_SIZE_OBJ_NAME);
+        /* the schema and the name must each fit in their buffers; a longer one is refused, not cut, as a cut name
+           could be the name of another object */
+        if (schema_len > (size_t) OCI_SIZE_OBJ_NAME || name_len > (size_t) OCI_SIZE_OBJ_NAME)
+        {
+            if (xsink)
+                xsink->raiseException("ORACLE-OCI-ERROR", "the schema name (%d bytes) or the object name "
+                    "(%d bytes) of the given type, table or view name is longer than the supported maximum of "
+                    "%d bytes", (int) schema_len, (int) name_len, (int) OCI_SIZE_OBJ_NAME);
+            OCI_RESULT(pOCILib, FALSE);
+            return NULL;
+        }
+
+        memcpy(obj_schema, name, schema_len * sizeof(mtext));
+        obj_schema[schema_len] = 0;
+        memcpy(obj_name, obj, name_len * sizeof(mtext));
+        obj_name[name_len] = 0;
     }
 
     /* type name must be uppercase */
@@ -240,6 +257,8 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
             }
             else
             {
+                /* "schema.name": both parts were checked above to be at most OCI_SIZE_OBJ_NAME characters, so the
+                   size arithmetic below cannot underflow and the name fits */
                 mtext buffer[(OCI_SIZE_OBJ_NAME*2) + 2];
 
                 size_t size = (sizeof(buffer) - 1)/sizeof(mtext);

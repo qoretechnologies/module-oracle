@@ -1683,6 +1683,8 @@ typedef struct OCI_HashEntry {
 #define OCI_SIZE_FORMAT_NUMS    40
 #define OCI_SIZE_FORMAT_NUML    65
 #define OCI_SIZE_OBJ_NAME       30
+/* the longest AQ subscription name: "schema.queue:consumer" */
+#define OCI_SIZE_AQ_SUBSCR_NAME ((OCI_SIZE_OBJ_NAME * 3) + 2)
 
 /* direct path processing return status */
 

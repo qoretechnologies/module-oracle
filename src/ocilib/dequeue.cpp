@@ -861,6 +861,25 @@ OCI_EXPORT boolean OCI_API  OCI_DequeueSubscribe
 
     con = dequeue->typinf->con;
 
+    /* the subscription name ("[schema.]queue[:consumer]") must fit in its buffer below; a longer one is refused, not
+       cut, as a cut name could be the name of another queue */
+    if (dequeue->name != NULL)
+    {
+        size_t len = mtslen(dequeue->name);
+
+        if (dequeue->consumer != NULL)
+            len += (size_t) 1 + mtslen(dequeue->consumer);
+
+        if (len > (size_t) OCI_SIZE_AQ_SUBSCR_NAME)
+        {
+            if (xsink)
+                xsink->raiseException("ORACLE-OCI-ERROR", "the AQ subscription name (%d bytes) is longer than "
+                    "the supported maximum of %d bytes", (int) len, (int) OCI_SIZE_AQ_SUBSCR_NAME);
+            OCI_RESULT(pOCILib, FALSE);
+            return FALSE;
+        }
+    }
+
     /* clear any previous subscription */
 
     OCI_DequeueUnsubscribe(pOCILib, dequeue, xsink);
@@ -910,24 +929,30 @@ OCI_EXPORT boolean OCI_API  OCI_DequeueSubscribe
     {
         /* for AQ subscription, the name should be "[shema.]queue[:consumer]" */
 
-        mtext buffer[(OCI_SIZE_OBJ_NAME*2) + 2] = MT("");
+        mtext buffer[OCI_SIZE_AQ_SUBSCR_NAME + 1];
 
         mtext *str  = NULL;
-        size_t size = (sizeof(buffer) - 1)/sizeof(mtext);
 
         void *ostr  = NULL;
         int osize   = -1;
 
-        mtsncat(buffer, dequeue->name, size);
+        /* the length was checked above */
+        size_t name_len = mtslen(dequeue->name);
+        size_t pos = name_len;
+
+        memcpy(buffer, dequeue->name, name_len * sizeof(mtext));
 
         if (dequeue->consumer != NULL)
         {
-            size -= mtslen(dequeue->name);
-            mtsncat(buffer, MT(":"), size);
-            size -= (size_t) 1;
+            size_t consumer_len = mtslen(dequeue->consumer);
 
-            mtsncat(buffer, dequeue->consumer, size);
+            buffer[pos++] = MT(':');
+            memcpy(buffer + pos, dequeue->consumer, consumer_len * sizeof(mtext));
+            pos += consumer_len;
         }
+
+        assert(pos <= (size_t) OCI_SIZE_AQ_SUBSCR_NAME);
+        buffer[pos] = 0;
 
         /* queue name must be uppercase */
 

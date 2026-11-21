@@ -19,6 +19,11 @@
     - fixed a memory leak when binding a named type (an object or a collection) that cannot be found: the type
       description that could not be made was not freed
       (<a href="https://github.com/qoretechnologies/qore/issues/7026">issue 7026</a>)
+    - <b>Security</b>: an over-long object type name or AQ subscription name could overflow a fixed-size buffer; a
+      type name whose schema or object part is longer than 30 bytes, or an AQ subscription name longer than 92
+      bytes, now raises an \c ORACLE-OCI-ERROR exception, and such a name is no longer cut, which could find another
+      object; these are limits of the driver, below the 128 bytes that Oracle 12.2 and later allow for names
+      (<a href="https://github.com/qoretechnologies/qore/issues/7047">issue 7047</a>)
     - <b>Security</b>: the driver reports the destinations of its connections, so that code under a sandbox that
       restricts the network can connect where the policy of the sandbox allows, and connects only to the checked
       addresses; a connection whose destinations cannot be determined exactly (an unresolvable TNS alias, \c TCPS) is
