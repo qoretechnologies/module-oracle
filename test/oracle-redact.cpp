@@ -1,7 +1,8 @@
 /*  oracle-redact.cpp Copyright (C) 2026 Qore Technologies, s.r.o.
 
     Unit tests of the masking of connection values in Oracle messages (src/OracleRedact.h, qore#6991); the header
-    has no dependencies, so the test needs neither Qore nor an Oracle client.  Run by test_oracle_redact.py.
+    has no dependencies, so the test needs neither Qore nor an Oracle client.  Run by oracle-redact.qtest and
+    test_oracle_redact.py.
 */
 
 #include "../src/OracleRedact.h"
@@ -125,6 +126,9 @@ int main() {
 
     // overlapping values: the longest is masked first
     check("abc", "pw", "abcdef", "abcdef abc", "**** ****", "overlapping names");
+    check("bar-baz", "pw", "foo-bar", "foo-bar-baz; foo-bar; bar-baz", "****; ****; ****",
+        "values that overlap each other");
+    check("scott", "-", "orcl", "ORA-00942 a-b", "ORA****00942 a****b", "a password that is a dash");
     check("svc", "svc_pw", "svc", "svc_pw svc", "**** ****", "a password containing a name");
 
     // empty and missing values

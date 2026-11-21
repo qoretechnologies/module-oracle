@@ -293,9 +293,6 @@ static inline bool value_overlaps_code(const std::string& text, size_t pos, size
     size_t end = pos + code_len;
     assert(dash != std::string::npos && dash < end);
     for (const Secret& s : secrets) {
-        if (s.value.size() < 2) {
-            continue;
-        }
         for (size_t start = pos; start < end; ++start) {
             size_t vend = start + s.value.size();
             if (((start <= dash && vend > dash) || vend > end) && matches_at(text, start, s)) {
@@ -307,37 +304,46 @@ static inline bool value_overlaps_code(const std::string& text, size_t pos, size
 }
 
 //! replaces every occurrence of the values in \a text with MASK
-/** @param text the text to redact
+/** Every occurrence of every value is found first, and each run of text covered by one or more occurrences
+    (including values that overlap each other, ex: "foo-bar" and "bar-baz" in "foo-bar-baz") is replaced with one
+    MASK, so that no part of a value remains.
+
+    @param text the text to redact
     @param secrets the values to mask, from get_secrets()
 */
 static inline void redact(std::string& text, const secret_list_t& secrets) {
     if (secrets.empty() || text.empty()) {
         return;
     }
-    std::string out;
-    out.reserve(text.size());
+    std::vector<bool> masked(text.size(), false);
+    bool any = false;
     size_t pos = 0;
     while (pos < text.size()) {
         // a message code is kept whole, so that no value masks a part of it, unless a value occurs in it across its
         // '-' or past its end (then it is the value, ex: the password "Abc-12345" or the service "ERP-20240")
         size_t code_len = message_code_len(text, pos);
         if (code_len && !value_overlaps_code(text, pos, code_len, secrets)) {
-            out.append(text, pos, code_len);
             pos += code_len;
             continue;
         }
-        const Secret* found = nullptr;
         for (const Secret& s : secrets) {
             if (matches_at(text, pos, s)) {
-                found = &s;
-                break;
+                std::fill(masked.begin() + pos, masked.begin() + pos + s.value.size(), true);
+                any = true;
             }
         }
-        if (found) {
+        ++pos;
+    }
+    if (!any) {
+        return;
+    }
+    std::string out;
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (!masked[i]) {
+            out += text[i];
+        } else if (!i || !masked[i - 1]) {
             out += MASK;
-            pos += found->value.size();
-        } else {
-            out += text[pos++];
         }
     }
     text.swap(out);
