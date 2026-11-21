@@ -37,20 +37,22 @@ public class SqlStmtTest inherits QUnit::Test {
             }
         } catch (hash<ExceptionInfo> ex) {
             printf("Exception happened during datasource pool initialization:\n%s: %s\n", ex.err,
-                (ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? "no ORA code");
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
             delete ds;
             # a connection string is configured, so an unreachable DB is an error and not a reason to
             # skip; skipping here would report the test run as successful without a single assertion
-            rethrow;
+            throw ex.err, sprintf("the datasource pool initialization failed: %s",
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
         }
 
         try {
             createTable();
         } catch (hash<ExceptionInfo> ex) {
             printf("Exception happened when creating test table:\n%s: %s\n", ex.err,
-                (ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? "no ORA code");
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
             delete ds;
-            rethrow;
+            throw ex.err, sprintf("creating the test table failed: %s",
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
         }
     }
 

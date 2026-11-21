@@ -99,7 +99,7 @@ class OracleForkTest inherits QUnit::Test {
         } catch (hash<ExceptionInfo> ex) {
             ds.rollback();
             setup_error = sprintf("the AQ queue cannot be created: %s: %s", ex.err,
-                (ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? "no ORA code");
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
         }
     }
 
@@ -223,6 +223,12 @@ class OracleForkTest inherits QUnit::Test {
         q.stopSubscription();
     }
 
+    # the child's output can echo its connection string, so a failure reports only the Oracle error codes in it
+    private checkChildOutput(string expected, string output) {
+        *list<string> codes = (output =~ x/\b(ORA-[0-9]+)\b/g);
+        assertTrue(regex(output, expected), sprintf("%y in the child's output (Oracle errors: %y)", expected, codes));
+    }
+
     # the child ends its script, which destroys the parent's queue and deletes the module, while the parent's
     # subscription is active; the script runs in another process, whose output, and the child's, is read until both
     # have exited
@@ -234,7 +240,7 @@ class OracleForkTest inherits QUnit::Test {
             "    constructor(string q, string t, string c) : Oracle::AQQueue(q, t, c) {}\n"
             "    nothing onAsyncMessage() {}\n"
             "}\n"
-            "S q(" + sprintf("%y, %y, %y", QueueName, TypeName, connstr) + ");\n"
+            "S q(" + sprintf("%y, %y", QueueName, TypeName) + ", ENV.QORE_DB_CONNSTR_ORACLE);\n"
             "q.startSubscription();\n"
             "flush();\n"
             "if (!fork()) {\n"
@@ -246,8 +252,8 @@ class OracleForkTest inherits QUnit::Test {
         script.file.close();
         string output = backquote(sprintf("%s --enable-debug %s 2>&1", shellQuote(QORE_ARGV[0]),
             shellQuote(script.path)));
-        assertRegex("child: done", output);
-        assertRegex("parent: done", output);
+        checkChildOutput("child: done", output);
+        checkChildOutput("parent: done", output);
     }
 
     # the Oracle client's notification listener is started by the first subscription of a process: a child of a
@@ -272,14 +278,14 @@ class OracleForkTest inherits QUnit::Test {
             "    }\n"
             "}\n"
             # the parent uses the database without a subscription
-            "Datasource ds(" + sprintf("%y", connstr) + ");\n"
+            "Datasource ds(ENV.QORE_DB_CONNSTR_ORACLE);\n"
             "ds.open();\n"
             "flush();\n"
             "if (!fork()) {\n"
             "    Queue r();\n"
-            "    S q(" + sprintf("%y, %y, %y", QueueName, TypeName, connstr) + ", r);\n"
+            "    S q(" + sprintf("%y, %y", QueueName, TypeName) + ", ENV.QORE_DB_CONNSTR_ORACLE, r);\n"
             "    q.startSubscription();\n"
-            "    Datasource d(" + sprintf("%y", connstr) + ");\n"
+            "    Datasource d(ENV.QORE_DB_CONNSTR_ORACLE);\n"
             "    d.exec(" + sprintf("%y", PostSql) + ");\n"
             "    d.commit();\n"
             "    printf(\"child: %s\\n\", r.get(" + CallbackTimeout.durationSeconds() + "s));\n"
@@ -290,8 +296,8 @@ class OracleForkTest inherits QUnit::Test {
         script.file.close();
         string output = backquote(sprintf("%s --enable-debug %s 2>&1", shellQuote(QORE_ARGV[0]),
             shellQuote(script.path)));
-        assertRegex("child: message", output);
-        assertRegex("parent: done", output);
+        checkChildOutput("child: message", output);
+        checkChildOutput("parent: done", output);
     }
 
     # another thread holds each process-wide lock of the module while fork() is called: fork() waits for it, and in

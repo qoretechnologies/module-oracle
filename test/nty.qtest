@@ -524,11 +524,12 @@ class OracleNtyTest inherits Test {
                     db.getDriverName());
             db.open();
         } catch (hash<ExceptionInfo> ex) {
-            printf("Oracle connection failed: %s: %s\n", ex.err, (ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? "no ORA code");
+            printf("Oracle connection failed: %s: %s\n", ex.err, (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
             delete db;
             # a connection string is configured, so an unreachable DB is an error and not a reason to
             # skip; skipping here would report the test run as successful without a single assertion
-            rethrow;
+            throw ex.err, sprintf("the Oracle connection failed: %s",
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
         }
 
         dropAll();
@@ -541,9 +542,10 @@ class OracleNtyTest inherits Test {
             }
         } catch (hash<ExceptionInfo> ex) {
             printf("error setting up Oracle objects: %s: %s\n", ex.err,
-                (ex.desc =~ x/(ORA-[0-9]+)/)[0] ?? "no ORA code");
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
             delete db;
-            rethrow;
+            throw ex.err, sprintf("setting up the Oracle objects failed: %s",
+                (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
         }
     }
 
@@ -562,7 +564,8 @@ class OracleNtyTest inherits Test {
 
                     db.exec(buf);
                 } catch (hash<ExceptionInfo> ex) {
-                    throw ex.err, sprintf("%y: %s (SQL: %s)", script, ex.desc, buf), ex.arg;
+                    throw ex.err, sprintf("%y: %s", script,
+                        (ex.desc =~ x/\b(ORA-[0-9]+)\b/)[0] ?? "no ORA code");
                 }
                 remove buf;
             }
