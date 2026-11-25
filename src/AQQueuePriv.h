@@ -192,8 +192,9 @@ private:
 
    //! the object; written under m_sandbox_lock too, as the Oracle client's notification thread reads it
    QoreObject *m_self = nullptr;
-   //! the object of a subscription that could not be restored, weakly referenced until the loss is reported
-   std::atomic<QoreObject*> m_lost{nullptr};
+   //! The pending notification owns both its weak object reference and its restore failure.
+   struct SubscriptionLoss;
+   std::atomic<SubscriptionLoss*> m_lost{nullptr};
 #ifdef DEBUG
    //! true if the next check of the watchdog must handle the subscription as lost; see dbgForceLost()
    std::atomic<bool> m_dbg_lost{false};

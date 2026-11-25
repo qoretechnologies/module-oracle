@@ -56,6 +56,8 @@
       of the code that started the subscription; previously they ran with no sandbox on the Oracle notification
       and subscription watchdog threads, so a subscription started on behalf of sandboxed code could do more in
       its callbacks than that code could
+    - @ref Qore::Oracle::AQQueue::onSubscriptionLost() "AQQueue::onSubscriptionLost()" can receive the exception
+      that prevented the watchdog from restoring a subscription (Qore issue 6926)
     - fixed the AQ subscription watchdog: subscriptions started after all earlier subscriptions had been stopped were
       no longer watched, so that a lost connection was never restored or reported; a lost connection raised an
       internal OCILIB error instead of being restored;

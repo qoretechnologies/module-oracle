@@ -1238,6 +1238,20 @@ std::shared_ptr<const QoreSandboxCapture> AQQueuePriv::getSandbox() const {
    return m_sandbox;
 }
 
+// A second loss replaces a pending notification as a unit, including its reason.
+struct AQQueuePriv::SubscriptionLoss {
+   QoreObjectWeakRefHolder obj;
+   ReferenceHolder<QoreListNode> args;
+
+   SubscriptionLoss(QoreObject* object, ExceptionSink& cause)
+         : obj(object), args(new QoreListNode(autoTypeInfo), nullptr) {
+      if (!cause) {
+         cause.raiseException("AQQUEUE-ERROR", "the Oracle AQ subscription could not be restored");
+      }
+      args->push(cause.getExceptionInfo(), nullptr);
+   }
+};
+
 #ifdef DEBUG
 void AQQueuePriv::checkSubscription(bool dbg_requested) {
 #else
@@ -1251,7 +1265,7 @@ void AQQueuePriv::checkSubscription() {
    // subscription
    QoreSandboxCaptureHelper sch(*sandbox);
 
-   // errors restoring the subscription are reported when the sink goes out of scope
+   // A restore failure is consumed by the notification before the watchdog releases the queue lock.
    ExceptionSink xsink;
    {
       // a queue that another thread is using is not checked now: its connection is in use, and the watchdog must
@@ -1286,13 +1300,7 @@ void AQQueuePriv::checkSubscription() {
       // the subscription cannot be restored: it is no longer watched
       aqSubscriptionManager.remove(this);
       endSubscriptionUnlocked();
-      // the object is called later without the lock; a weak reference keeps it valid until then
-      m_self->tRef();
-      QoreObject* prev = m_lost.exchange(m_self);
-      if (prev) {
-         // a loss that has not been reported yet is reported once
-         prev->tDeref();
-      }
+      delete m_lost.exchange(new SubscriptionLoss(m_self, xsink));
    }
 
    // the subscription is reported lost on the dispatch thread, outside this thread's OCI processing (see
@@ -1308,9 +1316,7 @@ void AQQueuePriv::checkSubscription() {
       case AQCallbackDispatcher::PostResult::Stopped:
          // not reached: the watchdog is stopped before the dispatcher when the module is deleted; the loss is not
          // reported, and the weak reference taken for it is released as notifySubscriptionLost() would
-         if (QoreObject* o = m_lost.exchange(nullptr)) {
-            o->tDeref();
-         }
+         delete m_lost.exchange(nullptr);
          break;
    }
 }
@@ -1318,8 +1324,8 @@ void AQQueuePriv::checkSubscription() {
 void AQQueuePriv::notifySubscriptionLost() {
    // the queue's lock is not needed: another thread can use the queue for a long time (getMessage() can wait without a
    // time limit)
-   QoreObject* obj = m_lost.exchange(nullptr);
-   if (!obj) {
+   std::unique_ptr<SubscriptionLoss> lost(m_lost.exchange(nullptr));
+   if (!lost) {
       return;
    }
    std::shared_ptr<const QoreSandboxCapture> sandbox = getSandbox();
@@ -1332,9 +1338,8 @@ void AQQueuePriv::notifySubscriptionLost() {
       OraThreadSessionInfoScope sis;
       // an exception that the method raises is reported when the sink goes out of scope
       ExceptionSink xsink;
-      obj->evalMethod("onSubscriptionLost", 0, &xsink);
+      ValueHolder rv(lost->obj->evalMethod("onSubscriptionLost", *lost->args, &xsink), &xsink);
    }
-   obj->tDeref();
 }
 
 void AQQueuePriv::postAsyncMessage() {
@@ -1436,10 +1441,8 @@ QoreValue AQQueuePriv::dbgCallback(bool lost, bool here, ExceptionSink* xsink) {
    AQCallbackDispatcher::PostResult rc;
    if (lost) {
       // as checkSubscription() reports a lost subscription
-      obj->tRef();
-      if (QoreObject* prev = m_lost.exchange(obj)) {
-         prev->tDeref();
-      }
+      ExceptionSink cause;
+      delete m_lost.exchange(new SubscriptionLoss(obj, cause));
       if (here) {
          notifySubscriptionLost();
          return new QoreStringNode("made");
@@ -1447,9 +1450,7 @@ QoreValue AQQueuePriv::dbgCallback(bool lost, bool here, ExceptionSink* xsink) {
       rc = aqCallbackDispatcher.post(AQCallbackDispatcher::Kind::SubscriptionLost, this);
       if (rc != AQCallbackDispatcher::PostResult::Queued) {
          // the loss is not reported: the weak reference taken for it is released as notifySubscriptionLost() would
-         if (QoreObject* o = m_lost.exchange(nullptr)) {
-            o->tDeref();
-         }
+         delete m_lost.exchange(nullptr);
       }
    } else {
       if (here) {
@@ -2019,5 +2020,15 @@ nothing AQQueue::onAsyncMessage() {
     @ref AQQueue::startSubscription() to restore the subscription, for example
  */
 nothing AQQueue::onSubscriptionLost() {
-   //xsink->raiseException("AQQUEUE-ONSUBSCRIPTIONLOST-ERROR", "abstract implementation of AQQueue::onAsyncMessage called");
+}
+
+//! Reports the reason why the watchdog could not restore a subscription
+/** @param reason the exception from restoring the connection or registering the subscription
+
+    The default implementation calls the zero-argument @ref AQQueue::onSubscriptionLost() so existing
+    subclasses receive the notification. A subclass can override this overload to inspect the Oracle error.
+ */
+nothing AQQueue::onSubscriptionLost(hash<ExceptionInfo> reason) {
+   (void)reason;
+   ValueHolder rv(self->evalMethod("onSubscriptionLost", nullptr, xsink), xsink);
 }
