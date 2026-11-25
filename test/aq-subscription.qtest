@@ -156,8 +156,8 @@ class Subscriber inherits Oracle::AQQueue {
         results.push({\"event\": \"message\", \"result\": read_file(path)});
     }
 
-    nothing onSubscriptionLost() {
-        results.push({\"event\": \"lost\", \"result\": read_file(path)});
+    nothing onSubscriptionLost(hash<ExceptionInfo> reason) {
+        results.push({\"event\": \"lost\", \"result\": {\"read\": read_file(path), \"reason\": reason}});
         if (gate) {
             # the subscription is restored once the test has made the database available again
             gate.get();
@@ -621,7 +621,10 @@ auto sub run(code c, ...) {
             sys.exec(sprintf("alter system kill session '%d,%d' immediate", s.sid, s.serial));
         }
 
-        assertEq(expected, getResult(results, "lost"), "onSubscriptionLost()");
+        hash<auto> lost = getResult(results, "lost");
+        assertEq(expected, lost.read, "onSubscriptionLost()");
+        assertTrue(lost.reason instanceof hash<ExceptionInfo>, "the restore exception");
+        assertRegex("ORA-28000", lost.reason.desc, "Oracle reports that the account is locked");
 
         # onSubscriptionLost() restarts the subscription once the account is available again
         sys.exec("alter user " + user + " account unlock");
