@@ -69,9 +69,9 @@ class OracleNestedTypeSchemaTest inherits QUnit::Test {
         # unique for the run, also across hosts and containers that use the same database and can have the same
         # process IDs: each run creates and drops only its own users
         string id = sprintf("%d_%08d", getpid(), clock_getmicros() % 100000000);
-        # the user names, with their 5-byte prefix, must fit the driver's limit of 30 bytes for a schema name
-        @assert(id.size() <= 25);
+        # OCI supplies the selected column's schema name as a counted string (qore#7050).
         owner = "QNTO_" + id;
+        owner += strmul("X", 24 - owner.size());
         other = "QNTU_" + id;
         third = "QNTT_" + id;
 

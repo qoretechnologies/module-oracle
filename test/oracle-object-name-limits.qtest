@@ -47,6 +47,7 @@ class OracleObjectNameLimitsTest inherits QUnit::Test {
         connstr = ENV.QORE_DB_CONNSTR_ORACLE;
         # 11 characters
         id = sprintf("%03d%08d", getpid() % 1000, clock_getmicros() % 100000000);
+        addTestCase("selected type names of 8, 16 and 24 bytes", \selectedNames());
         addTestCase("schema part of a type name", \schemaPart());
         addTestCase("object part of a type name", \objectPart());
         addTestCase("AQ subscription name", \subscriptionName());
@@ -120,6 +121,18 @@ class OracleObjectNameLimitsTest inherits QUnit::Test {
         }
         # the connection still works
         assertEq(1, ds.selectRow("select 1 as x from dual").x, label + ": the connection works");
+    }
+
+    selectedNames() {
+        Datasource ds = getConnection();
+        on_exit ds.close();
+        string prefix = sprintf("Q%07X", (clock_getmicros() ^ getpid()) & 0xfffffff);
+        foreach int len in ((8, 16, 24)) {
+            string name = prefix + strmul("X", len - prefix.size());
+            createType(ds, name);
+            hash<auto> row = ds.selectRow(sprintf("select %s(%d) as o from dual", name, len));
+            assertEq(len, row.o.A, name);
+        }
     }
 
     schemaPart() {
