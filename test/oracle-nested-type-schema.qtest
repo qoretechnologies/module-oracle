@@ -40,9 +40,6 @@ class OracleNestedTypeSchemaTest inherits QUnit::Test {
     #! the password of the test users
     const UserPass = "Nest_pw_7057";
 
-    #! a type name that is longer than the 30 bytes that the driver supports
-    const LongName = "INNER_" + strmul("L", 25);
-
     #! the length of a chain of types that can be resolved
     const ShallowChain = 20;
     #! the longest chain of types that the driver follows (the number in the type name; it has one more level)
@@ -69,9 +66,9 @@ class OracleNestedTypeSchemaTest inherits QUnit::Test {
         # unique for the run, also across hosts and containers that use the same database and can have the same
         # process IDs: each run creates and drops only its own users
         string id = sprintf("%d_%08d", getpid(), clock_getmicros() % 100000000);
-        # the user names, with their 5-byte prefix, must fit the driver's limit of 30 bytes for a schema name
-        @assert(id.size() <= 25);
+        # OCI supplies the selected column's schema name as a counted string (qore#7050).
         owner = "QNTO_" + id;
+        owner += strmul("X", 24 - owner.size());
         other = "QNTU_" + id;
         third = "QNTT_" + id;
 
@@ -87,7 +84,9 @@ class OracleNestedTypeSchemaTest inherits QUnit::Test {
         addTestCase("a selected type with a quoted lower-case name", \topLevelQuoted());
         addTestCase("types of the same name on one connection", \sameConnection());
         addTestCase("types that refer to each other", \resolvableCycle());
-        addTestCase("an attribute type with a name that is too long", \longAttributeName());
+        foreach int len in ((30, 31, 128)) {
+            addTestCase(sprintf("nested types and schema with %d-byte names", len), \longAttributeName(), len);
+        }
         addTestCase("an attribute type of a third schema", \thirdSchema());
         addTestCase("a chain of types that is too deep", \deepChain());
         addTestCase("the depth of types is checked with described types", \deepChainCached());
@@ -178,10 +177,6 @@ class OracleNestedTypeSchemaTest inherits QUnit::Test {
                 "create type cyc1_t",
                 "create type cyc2_t as object (r ref cyc1_t, n number)",
                 "create or replace type cyc1_t as object (r ref cyc2_t, n number)",
-                # an attribute type whose name is longer than the driver supports
-                sprintf("create type %s as object (n number)", LongName),
-                sprintf("create type outer_l as object (i %s)", LongName),
-                sprintf("create function make_l return outer_l is begin return outer_l(%s(1)); end;", LongName),
                 # an attribute that follows an object attribute
                 "create type after_a as object (i inner_a, z number)",
                 # an attribute type of a third schema
@@ -192,7 +187,7 @@ class OracleNestedTypeSchemaTest inherits QUnit::Test {
             );
             map ds.exec($1), sql;
             foreach string type in (("inner_a", "outer_a", "inner_b", "outer_b", "tab_b", "\"inner_q\"", "inner_q",
-                    "outer_q", "outer_d", "make_d", "m1_t", "m2_t", "make_m1", "make_m2", "cyc1_t", "cyc2_t", LongName, "outer_l", "make_l", "outer_c", "after_a")) {
+                    "outer_q", "outer_d", "make_d", "m1_t", "m2_t", "make_m1", "make_m2", "cyc1_t", "cyc2_t", "outer_c", "after_a")) {
                 ds.exec(sprintf("grant execute on %s to %s", type, other));
             }
             # a chain of objects that each hold a collection of the object before it
@@ -432,14 +427,28 @@ class OracleNestedTypeSchemaTest inherits QUnit::Test {
         assertEq(5, v.N);
     }
 
-    longAttributeName() {
+    longAttributeName(int len) {
         checkSkip();
-        Datasource ds = getConnection(other);
-        on_exit ds.close();
-        *hash<ExceptionInfo> ex = getError(ds, sprintf("select %s.make_l() as o from dual", owner));
-        assertEq("ORACLE-OCI-ERROR", ex.err);
-        assertRegex("longer than the supported maximum", ex.desc ?? "");
-        assertEq(1, ds.selectRow("select 1 as x from dual").x, "the connection works");
+        Datasource sys(sys_connstr);
+        on_exit sys.close();
+        string schema = owner + strmul("X", len - owner.size());
+        try {
+            sys.exec(sprintf("create user %s identified by \"%s\"", schema, UserPass));
+        } catch (hash<ExceptionInfo> ex) {
+            if (len > 30 && ex.desc =~ /ORA-00972/) {
+                testSkip("the database limits identifiers to 30 bytes");
+            }
+            rethrow;
+        }
+        created += schema;
+        string inner = schema + ".I" + strmul("X", len - 1);
+        string outer = schema + ".O" + strmul("X", len - 1);
+        sys.exec(sprintf("create type %s as object (n number)", inner));
+        sys.exec(sprintf("create type %s as object (i %s)", outer, inner));
+        sys.exec(sprintf("grant execute on %s to %s", inner, other));
+        sys.exec(sprintf("grant execute on %s to %s", outer, other));
+        sys.commit();
+        assertEq({"I": {"N": len}}, selectObject(other, sprintf("%s(%s(%d))", outer, inner, len)));
     }
 
     thirdSchema() {

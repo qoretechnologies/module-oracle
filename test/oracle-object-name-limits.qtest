@@ -4,7 +4,7 @@
 /*  oracle-object-name-limits.qtest Copyright (C) 2026 Qore Technologies, s.r.o.
 
     Tests object names that are longer than the driver supports (qore#7047): a type name whose schema or object part
-    is longer than 30 bytes, and an AQ subscription name that is longer than 92 bytes, are refused with an
+    is longer than 128 bytes, and an AQ subscription name that is longer than 92 bytes, are refused with an
     exception; they are neither cut (a cut name could be the name of another object) nor copied past the end of a
     buffer.
 
@@ -37,7 +37,7 @@ class OracleObjectNameLimitsTest inherits QUnit::Test {
     }
 
     #! the longest schema or object part of a type name that the driver supports
-    const MaxNameLen = 30;
+    const MaxNameLen = 128;
     #! the longest AQ subscription name that the driver supports ("schema.queue:consumer")
     const MaxSubscrNameLen = 92;
     #! the description of the error for a name that is too long
@@ -47,6 +47,7 @@ class OracleObjectNameLimitsTest inherits QUnit::Test {
         connstr = ENV.QORE_DB_CONNSTR_ORACLE;
         # 11 characters
         id = sprintf("%03d%08d", getpid() % 1000, clock_getmicros() % 100000000);
+        addTestCase("selected type names of 8, 16 and 24 bytes", \selectedNames());
         addTestCase("schema part of a type name", \schemaPart());
         addTestCase("object part of a type name", \objectPart());
         addTestCase("AQ subscription name", \subscriptionName());
@@ -122,11 +123,23 @@ class OracleObjectNameLimitsTest inherits QUnit::Test {
         assertEq(1, ds.selectRow("select 1 as x from dual").x, label + ": the connection works");
     }
 
+    selectedNames() {
+        Datasource ds = getConnection();
+        on_exit ds.close();
+        string prefix = sprintf("Q%07X", (clock_getmicros() ^ getpid()) & 0xfffffff);
+        foreach int len in ((8, 16, 24)) {
+            string name = prefix + strmul("X", len - prefix.size());
+            createType(ds, name);
+            hash<auto> row = ds.selectRow(sprintf("select %s(%d) as o from dual", name, len));
+            assertEq(len, row.o.A, name);
+        }
+    }
+
     schemaPart() {
         Datasource ds = getConnection();
         on_exit ds.close();
         # the longest first
-        foreach int len in ((200, 128, MaxNameLen + 1, MaxNameLen)) {
+        foreach int len in ((200, MaxNameLen + 1, MaxNameLen, 31, 30)) {
             checkBind(ds, strmul("S", len) + ".T" + id, len > MaxNameLen, sprintf("schema of %d bytes", len));
         }
     }
@@ -134,20 +147,35 @@ class OracleObjectNameLimitsTest inherits QUnit::Test {
     objectPart() {
         Datasource ds = getConnection();
         on_exit ds.close();
-        # a type whose name is the first 30 characters of the longer names below: a name that was cut would find it
         string prefix = "Q" + id;
-        string type30 = prefix + strmul("X", MaxNameLen - prefix.size());
-        createType(ds, type30);
-        hash<auto> row = ds.selectRow("select %v as o from dual", bindOracleObject(type30, {"A": 30}));
-        assertEq(30, row.o.A, "the type with a name of 30 bytes is bound");
-
-        foreach int len in ((MaxNameLen + 1, 128, 200)) {
-            string name = type30 + strmul("X", len - MaxNameLen);
+        foreach int len in ((MaxNameLen + 1, 200)) {
+            string name = prefix + strmul("X", len - prefix.size());
             checkBind(ds, name, True, sprintf("type name of %d bytes", len));
             checkBind(ds, "SCHEMA." + name, True, sprintf("type name of %d bytes with a schema", len));
         }
-        # a missing type with a name of 30 characters is looked up
-        checkBind(ds, prefix + strmul("Y", MaxNameLen - prefix.size()), False, "type name of 30 bytes");
+
+        foreach int len in ((30, 31, MaxNameLen)) {
+            string name = prefix + strmul("X", len - prefix.size());
+            # Look up the full name before creating it. A truncated lookup could find the shorter type.
+            checkBind(ds, name, False, sprintf("missing type of %d bytes", len));
+            try {
+                createType(ds, name);
+            } catch (hash<ExceptionInfo> ex) {
+                if (len > 30 && ex.desc =~ /ORA-00972/) {
+                    testSkip("the database limits identifiers to 30 bytes");
+                }
+                rethrow;
+            }
+            hash<auto> row = ds.selectRow("select %v as o from dual", bindOracleObject(name, {"A": len}));
+            assertEq(len, row.o.A, name);
+
+            string coll = "C" + substr(name, 1);
+            ds.exec(sprintf("create type %s as table of number", coll));
+            created += coll;
+            ds.commit();
+            row = ds.selectRow("select %v as c from dual", bindOracleCollection(coll, (len, len + 1)));
+            assertEq((len, len + 1), row.c, coll);
+        }
     }
 
     subscriptionName() {

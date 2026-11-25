@@ -36,7 +36,7 @@ class OracleTypeInfoErrorTest inherits QUnit::Test {
 
     constructor() : QUnit::Test("oracle type info errors", "1.0", \ARGV) {
         connstr = ENV.QORE_DB_CONNSTR_ORACLE;
-        # at most 30 characters (OCI_SIZE_OBJ_NAME in OCILIB): at most 4 + 7 + 1 + 9 + 2
+        # also fits a database with 30-byte identifiers: at most 4 + 7 + 1 + 9 + 2
         string id = sprintf("%d_%d", getpid(), clock_getmicros() % 1000000000);
         type_name = sprintf("QTI_%s_T", id);
         missing_name = sprintf("QTI_%s_M", id);

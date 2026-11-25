@@ -908,7 +908,7 @@ OCI_EXPORT boolean OCI_API OCI_Cleanup2(OCI_Library *pOCILib, ExceptionSink* xsi
 OCI_EXPORT OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *con, const mtext *name, unsigned int type, ExceptionSink* xsink);
 // returns the description of the object type with exactly the given schema and type names (as Oracle stores them;
 // not parsed, and their case is kept; schema_len can be 0 for the schema of the connection); the names need not be
-// terminated; each is at most OCI_SIZE_OBJ_NAME characters, or an exception is raised
+// terminated; each is at most OCI_SIZE_SQL_IDENTIFIER bytes, or an exception is raised
 OCI_EXPORT OCI_TypeInfo * OCI_API OCI_TypeInfoGetExact2(OCI_Library *pOCILib, OCI_Connection *con, const mtext *schema, size_t schema_len, const mtext *name, size_t name_len, ExceptionSink* xsink);
 //OCI_EXPORT boolean OCI_API OCI_ObjectSetRef2(OCI_Library *pOCILib, OCI_Object *obj, const mtext *attr, OCI_Ref *value);
 //OCI_EXPORT boolean OCI_API OCI_ObjectGetSelfRef2(OCI_Library *pOCILib, OCI_Object *obj, OCI_Ref *ref);
