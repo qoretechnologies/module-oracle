@@ -96,15 +96,15 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet(OCI_Connection *con, const mtext *name,
 static boolean OCI_TypeInfoCheckNameLen(OCI_Library *pOCILib, size_t schema_len, size_t name_len,
                                         ExceptionSink* xsink)
 {
-    if (schema_len > (size_t) OCI_SIZE_OBJ_NAME || name_len > (size_t) OCI_SIZE_OBJ_NAME)
+    if (schema_len > (size_t) OCI_SIZE_SQL_IDENTIFIER || name_len > (size_t) OCI_SIZE_SQL_IDENTIFIER)
     {
         if (xsink)
         {
             xsink->raiseException("ORACLE-OCI-ERROR", "the %s name (%d bytes) of the given type, table or view "
                 "name is longer than the supported maximum of %d bytes",
-                schema_len > (size_t) OCI_SIZE_OBJ_NAME ? "schema" : "object",
-                (int) (schema_len > (size_t) OCI_SIZE_OBJ_NAME ? schema_len : name_len),
-                (int) OCI_SIZE_OBJ_NAME);
+                schema_len > (size_t) OCI_SIZE_SQL_IDENTIFIER ? "schema" : "object",
+                (int) (schema_len > (size_t) OCI_SIZE_SQL_IDENTIFIER ? schema_len : name_len),
+                (int) OCI_SIZE_SQL_IDENTIFIER);
         }
         OCI_RESULT(pOCILib, FALSE);
         return FALSE;
@@ -184,7 +184,7 @@ static boolean OCI_TypeInfoCheckLayout(OCI_TypeInfo *typinf, unsigned int level)
 
 /* returns the description of the type, table or view with exactly the given schema and object names (as they are
    stored by Oracle; the schema can be empty for the schema of the connection), from the list of the connection or
-   made and added to it; each name is at most OCI_SIZE_OBJ_NAME characters; returns NULL if the object cannot be
+   made and added to it; each name is at most OCI_SIZE_SQL_IDENTIFIER bytes; returns NULL if the object cannot be
    described, not always with an exception, so callers must check the return value */
 static OCI_TypeInfo * OCI_TypeInfoFind(OCI_Library *pOCILib, OCI_Connection *con, const mtext *obj_schema,
                                        const mtext *obj_name, unsigned int type, ExceptionSink* xsink)
@@ -315,8 +315,8 @@ static OCI_TypeInfo * OCI_TypeInfoFind(OCI_Library *pOCILib, OCI_Connection *con
             else
             {
                 /* "schema.name": OCI_TypeInfoGet2() and OCI_TypeInfoGetExact2() checked both parts to be at most
-                   OCI_SIZE_OBJ_NAME characters, so the size arithmetic below cannot underflow and the name fits */
-                mtext buffer[(OCI_SIZE_OBJ_NAME*2) + 2];
+                   OCI_SIZE_SQL_IDENTIFIER bytes, so the size arithmetic below cannot underflow and the name fits */
+                mtext buffer[(OCI_SIZE_SQL_IDENTIFIER*2) + 2];
 
                 size_t size = (sizeof(buffer) - 1)/sizeof(mtext);
                 void *ostr1 = NULL;
@@ -556,8 +556,8 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGet2(OCI_Library *pOCILib, OCI_Connection *co
 {
     mtext *str = NULL;
 
-    mtext obj_schema[OCI_SIZE_OBJ_NAME+1];
-    mtext obj_name[OCI_SIZE_OBJ_NAME+1];
+    mtext obj_schema[OCI_SIZE_SQL_IDENTIFIER+1];
+    mtext obj_name[OCI_SIZE_SQL_IDENTIFIER+1];
 
     OCI_CHECK_INITIALIZED2(pOCILib, NULL);
 
@@ -617,8 +617,8 @@ OCI_TypeInfo * OCI_API OCI_TypeInfoGetExact2(OCI_Library *pOCILib, OCI_Connectio
                                              size_t schema_len, const mtext *name, size_t name_len,
                                              ExceptionSink* xsink)
 {
-    mtext obj_schema[OCI_SIZE_OBJ_NAME+1];
-    mtext obj_name[OCI_SIZE_OBJ_NAME+1];
+    mtext obj_schema[OCI_SIZE_SQL_IDENTIFIER+1];
+    mtext obj_name[OCI_SIZE_SQL_IDENTIFIER+1];
 
     OCI_CHECK_INITIALIZED2(pOCILib, NULL);
 

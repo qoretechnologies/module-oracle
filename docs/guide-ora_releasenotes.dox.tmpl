@@ -20,12 +20,12 @@
       description that could not be made was not freed
       (<a href="https://github.com/qoretechnologies/qore/issues/7026">issue 7026</a>)
     - <b>Security</b>: an over-long object type name or AQ subscription name could overflow a fixed-size buffer; a
-      type name whose schema or object part is longer than 30 bytes, or an AQ subscription name longer than 92
-      bytes, now raises an \c ORACLE-OCI-ERROR exception, and such a name is no longer cut, which could find another
-      object.  The 30-byte limit for the parts of a type name is the driver's, below the 128 bytes that Oracle 12.2
-      and later allow: binding, or selecting a column of, an object type whose schema or type name is longer than 30
-      bytes raises this exception
+      type name whose schema or object part exceeds the supported limit, or an AQ subscription name longer than
+      92 bytes, now raises an \c ORACLE-OCI-ERROR exception
       (<a href="https://github.com/qoretechnologies/qore/issues/7047">issue 7047</a>)
+    - binding and selecting named types supports schema and object names of up to 128 bytes each on databases
+      with \c COMPATIBLE set to 12.2 or higher, including names of nested types
+      (<a href="https://github.com/qoretechnologies/qore/issues/7051">issue 7051</a>)
     - <b>Security</b>: selecting an object type of another schema whose attributes or collection elements are object
       types could crash the process or decode an attribute with the wrong type; the type of each column, attribute
       and element is now resolved in the schema that owns it, with its exact name (also a quoted mixed-case name),
